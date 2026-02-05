@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { Layers, Map as MapIcon, Database, ChevronRight, Activity, Upload, Loader2 } from 'lucide-react';
+import { Layers, Map as MapIcon, Database, ChevronRight, Activity, Upload, Loader2, Download } from 'lucide-react';
 import { Region, Aquifer, Well, Measurement } from './types';
 import { loadAllData } from './services/dataLoader';
 import MapView from './components/MapView';
@@ -52,9 +52,36 @@ const App: React.FC = () => {
     selectedAquifer ? wells.filter(w => w.aquiferId === selectedAquifer.id && w.regionId === selectedAquifer.regionId) : [],
   [selectedAquifer, wells]);
 
-  const selectedWellMeasurements = useMemo(() => 
+  const selectedWellMeasurements = useMemo(() =>
     selectedWell ? measurements.filter(m => m.wellId === selectedWell.id) : [],
   [selectedWell, measurements]);
+
+  // Export time series data to CSV
+  const exportToCSV = () => {
+    if (!selectedWell || selectedWellMeasurements.length === 0) return;
+
+    const headers = ['Date', 'Water Table Elevation (ft)', 'Well Name', 'Aquifer ID'];
+    const rows = selectedWellMeasurements
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+      .map(m => [
+        new Date(m.date).toLocaleDateString(),
+        m.wte.toString(),
+        m.wellName,
+        m.aquiferId
+      ]);
+
+    const csvContent = [headers, ...rows]
+      .map(row => row.map(cell => `"${cell}"`).join(','))
+      .join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${selectedWell.name.replace(/[^a-z0-9]/gi, '_')}_water_levels.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   // Loading state
   if (isLoading) {
@@ -193,8 +220,19 @@ const App: React.FC = () => {
                     <Activity size={18} className="text-blue-500" />
                     <h3 className="font-bold text-slate-800">Water Table Elevation: {selectedWell.name}</h3>
                   </div>
-                  <div className="text-xs text-slate-500 uppercase tracking-wider font-semibold">
-                    Units: Feet (WTE)
+                  <div className="flex items-center space-x-4">
+                    <button
+                      onClick={exportToCSV}
+                      disabled={selectedWellMeasurements.length === 0}
+                      className="flex items-center space-x-1.5 px-3 py-1.5 bg-green-50 text-green-700 rounded-md text-sm font-medium hover:bg-green-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Export data to CSV"
+                    >
+                      <Download size={14} />
+                      <span>Export CSV</span>
+                    </button>
+                    <div className="text-xs text-slate-500 uppercase tracking-wider font-semibold">
+                      Units: Feet (WTE)
+                    </div>
                   </div>
                 </div>
                 <div className="flex-1 min-h-0">
