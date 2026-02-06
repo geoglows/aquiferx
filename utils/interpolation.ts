@@ -1,7 +1,11 @@
-
 /**
- * Attempt cubic spline interpolation for smoother curves.
- * Falls back gracefully for edge cases.
+ * PCHIP (Piecewise Cubic Hermite Interpolating Polynomial) interpolation.
+ * Matches the scipy.interpolate.PchipInterpolator algorithm used by PANDAS.
+ *
+ * Key properties:
+ * - Shape-preserving: won't overshoot monotonic data
+ * - Monotonicity-preserving: maintains monotonicity in each interval
+ * - Uses Fritsch-Carlson method for derivative estimation
  */
 export function interpolatePCHIP(x: number[], y: number[], targetX: number[]): number[] {
   const n = x.length;
@@ -17,10 +21,7 @@ export function interpolatePCHIP(x: number[], y: number[], targetX: number[]): n
     });
   }
 
-  // Use natural cubic spline for 3+ points (smoother than PCHIP)
-  // This allows overshooting but produces nicer curves
-
-  // 1. Calculate intervals and slopes
+  // 1. Calculate intervals (h) and secant slopes (delta)
   const h = new Array(n - 1);
   const delta = new Array(n - 1);
   for (let i = 0; i < n - 1; i++) {
@@ -32,69 +33,92 @@ export function interpolatePCHIP(x: number[], y: number[], targetX: number[]): n
     }
   }
 
-  // 2. Build tridiagonal system for natural cubic spline
-  // Second derivatives at each point
-  const a = new Array(n).fill(0);
-  const b = new Array(n).fill(0);
-  const c = new Array(n).fill(0);
+  // 2. Compute derivatives at each point using PCHIP method (Fritsch-Carlson)
   const d = new Array(n).fill(0);
 
-  // Natural spline: second derivative = 0 at endpoints
-  b[0] = 1;
-  b[n - 1] = 1;
-
+  // Interior points: use weighted harmonic mean of adjacent slopes
   for (let i = 1; i < n - 1; i++) {
-    a[i] = h[i - 1];
-    b[i] = 2 * (h[i - 1] + h[i]);
-    c[i] = h[i];
-    d[i] = 6 * (delta[i] - delta[i - 1]);
-  }
+    const d0 = delta[i - 1];
+    const d1 = delta[i];
 
-  // Solve tridiagonal system using Thomas algorithm
-  const m = new Array(n).fill(0); // second derivatives
-
-  // Forward elimination
-  for (let i = 1; i < n; i++) {
-    if (b[i - 1] === 0) continue;
-    const w = a[i] / b[i - 1];
-    b[i] -= w * c[i - 1];
-    d[i] -= w * d[i - 1];
-  }
-
-  // Back substitution
-  if (b[n - 1] !== 0) {
-    m[n - 1] = d[n - 1] / b[n - 1];
-  }
-  for (let i = n - 2; i >= 0; i--) {
-    if (b[i] !== 0) {
-      m[i] = (d[i] - c[i] * m[i + 1]) / b[i];
+    // If slopes have different signs or either is zero, derivative is zero
+    if (d0 * d1 <= 0) {
+      d[i] = 0;
+    } else {
+      // Weighted harmonic mean (PCHIP formula from scipy)
+      const h0 = h[i - 1];
+      const h1 = h[i];
+      const w1 = 2 * h1 + h0;
+      const w2 = h1 + 2 * h0;
+      d[i] = (w1 + w2) / (w1 / d0 + w2 / d1);
     }
   }
 
-  // 3. Interpolate using cubic spline formula
+  // Endpoints: use one-sided three-point difference formula
+  // Left endpoint
+  d[0] = pchipEndSlope(h[0], h[1], delta[0], delta[1]);
+  // Right endpoint
+  d[n - 1] = pchipEndSlope(h[n - 2], h[n - 3], delta[n - 2], delta[n - 3]);
+
+  // 3. Interpolate using Hermite cubic polynomials
   return targetX.map(tx => {
     // Clamp to range
     if (tx <= x[0]) return y[0];
     if (tx >= x[n - 1]) return y[n - 1];
 
-    // Find interval
-    let i = 0;
-    while (i < n - 2 && x[i + 1] < tx) i++;
+    // Find interval using binary search for efficiency
+    let lo = 0;
+    let hi = n - 1;
+    while (lo < hi - 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (x[mid] <= tx) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    const i = lo;
 
     // Guard against zero interval
     if (h[i] === 0) return y[i];
 
-    // Cubic spline interpolation formula
-    const t = tx - x[i];
-    const hi = h[i];
+    // Hermite basis functions
+    const t = (tx - x[i]) / h[i];  // Normalized parameter [0, 1]
+    const t2 = t * t;
+    const t3 = t2 * t;
 
-    const a_coef = (m[i + 1] - m[i]) / (6 * hi);
-    const b_coef = m[i] / 2;
-    const c_coef = delta[i] - hi * (2 * m[i] + m[i + 1]) / 6;
-    const d_coef = y[i];
+    // Hermite basis polynomials
+    const h00 = 2 * t3 - 3 * t2 + 1;      // value at start
+    const h10 = t3 - 2 * t2 + t;           // derivative at start
+    const h01 = -2 * t3 + 3 * t2;          // value at end
+    const h11 = t3 - t2;                   // derivative at end
 
-    const result = a_coef * t * t * t + b_coef * t * t + c_coef * t + d_coef;
+    // Interpolated value using Hermite formula
+    const result = h00 * y[i] + h10 * h[i] * d[i] + h01 * y[i + 1] + h11 * h[i] * d[i + 1];
 
     return isFinite(result) ? result : y[i];
   });
+}
+
+/**
+ * Compute the one-sided derivative at an endpoint for PCHIP.
+ * Uses the "not-a-knot" style endpoint condition from scipy.
+ */
+function pchipEndSlope(h0: number, h1: number, d0: number, d1: number): number {
+  // Handle edge cases
+  if (h0 === 0) return d1;
+  if (h1 === 0) return d0;
+
+  // Three-point difference formula
+  const slope = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+
+  // Ensure monotonicity preservation
+  if (Math.sign(slope) !== Math.sign(d0)) {
+    return 0;
+  }
+  if (Math.sign(d0) !== Math.sign(d1) && Math.abs(slope) > 3 * Math.abs(d0)) {
+    return 3 * d0;
+  }
+
+  return slope;
 }
