@@ -18,7 +18,7 @@ const App: React.FC = () => {
 
   const [selectedRegion, setSelectedRegion] = useState<Region | null>(null);
   const [selectedAquifer, setSelectedAquifer] = useState<Aquifer | null>(null);
-  const [selectedWell, setSelectedWell] = useState<Well | null>(null);
+  const [selectedWells, setSelectedWells] = useState<Well[]>([]);
   const [isDataManagerOpen, setIsDataManagerOpen] = useState(false);
 
   // Load data on mount
@@ -53,12 +53,160 @@ const App: React.FC = () => {
   [selectedAquifer, wells]);
 
   const selectedWellMeasurements = useMemo(() =>
-    selectedWell ? measurements.filter(m => m.wellId === selectedWell.id) : [],
-  [selectedWell, measurements]);
+    selectedWells.length > 0
+      ? measurements.filter(m => selectedWells.some(w => w.id === m.wellId))
+      : [],
+  [selectedWells, measurements]);
+
+  const handleWellClick = (well: Well, shiftKey: boolean) => {
+    if (shiftKey) {
+      setSelectedWells(prev =>
+        prev.some(w => w.id === well.id)
+          ? prev.filter(w => w.id !== well.id)
+          : [...prev, well]
+      );
+    } else {
+      setSelectedWells([well]);
+    }
+  };
+
+  const handleWellBoxSelect = (wells: Well[]) => {
+    setSelectedWells(wells);
+  };
+
+  // --- Region/Aquifer rename & delete handlers ---
+
+  const handleRenameRegion = async (regionId: string, newName: string) => {
+    setRegions(prev => prev.map(r => r.id === regionId ? { ...r, name: newName } : r));
+    // Persist updated regions.json manifest
+    const updatedManifest = regions.map(r =>
+      r.id === regionId
+        ? { id: r.id, path: `/data/${r.id}`, name: newName }
+        : { id: r.id, path: `/data/${r.id}`, name: r.name }
+    );
+    await fetch('/api/save-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: [{ path: 'regions.json', content: JSON.stringify(updatedManifest, null, 2) }] }),
+    });
+  };
+
+  const handleDeleteRegion = async (regionId: string) => {
+    // Clear selection if needed
+    if (selectedRegion?.id === regionId) {
+      setSelectedRegion(null);
+      setSelectedAquifer(null);
+      setSelectedWells([]);
+    }
+    // Remove from state
+    setRegions(prev => prev.filter(r => r.id !== regionId));
+    setAquifers(prev => prev.filter(a => a.regionId !== regionId));
+    setWells(prev => prev.filter(w => w.regionId !== regionId));
+    setMeasurements(prev => prev.filter(m => {
+      const well = wells.find(w => w.id === m.wellId);
+      return !well || well.regionId !== regionId;
+    }));
+    // Find the region's folder path from the manifest
+    const region = regions.find(r => r.id === regionId);
+    const folderName = region ? region.id : regionId;
+    // Delete folder on disk
+    await fetch('/api/delete-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder: folderName }),
+    });
+    // Update regions.json manifest
+    const updatedManifest = regions
+      .filter(r => r.id !== regionId)
+      .map(r => ({ id: r.id, path: `/data/${r.id}`, name: r.name }));
+    await fetch('/api/save-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: [{ path: 'regions.json', content: JSON.stringify(updatedManifest, null, 2) }] }),
+    });
+  };
+
+  const handleRenameAquifer = async (aquiferId: string, newName: string) => {
+    setAquifers(prev => prev.map(a => a.id === aquiferId ? { ...a, name: newName } : a));
+    // Rebuild and persist the aquifers.geojson for the affected region
+    const aquifer = aquifers.find(a => a.id === aquiferId);
+    if (!aquifer) return;
+    const regionId = aquifer.regionId;
+    const regionAquifers = aquifers
+      .filter(a => a.regionId === regionId)
+      .map(a => a.id === aquiferId ? { ...a, name: newName } : a);
+    const features = regionAquifers.flatMap(a =>
+      (a.geojson?.features || []).map((f: any) => ({
+        ...f,
+        properties: { ...f.properties, aquifer_id: a.id, aquifer_name: a.name },
+      }))
+    );
+    const geojsonContent = JSON.stringify({ type: 'FeatureCollection', features }, null, 2);
+    await fetch('/api/save-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: [{ path: `${regionId}/aquifers.geojson`, content: geojsonContent }] }),
+    });
+  };
+
+  const handleDeleteAquifer = async (aquiferId: string) => {
+    const aquifer = aquifers.find(a => a.id === aquiferId);
+    if (!aquifer) return;
+    const regionId = aquifer.regionId;
+    // Clear selection if needed
+    if (selectedAquifer?.id === aquiferId) {
+      setSelectedAquifer(null);
+      setSelectedWells([]);
+    }
+    // Compute remaining data for the region before removing from state
+    const remainingAquifers = aquifers.filter(a => !(a.id === aquiferId && a.regionId === regionId));
+    const remainingWells = wells.filter(w => !(w.aquiferId === aquiferId && w.regionId === regionId));
+    const deletedWellIds = new Set(wells.filter(w => w.aquiferId === aquiferId && w.regionId === regionId).map(w => w.id));
+    const remainingMeasurements = measurements.filter(m => !deletedWellIds.has(m.wellId));
+    // Update state
+    setAquifers(remainingAquifers);
+    setWells(remainingWells);
+    setMeasurements(remainingMeasurements);
+    // Rebuild files for the region
+    const regionAquifers = remainingAquifers.filter(a => a.regionId === regionId);
+    const regionWells = remainingWells.filter(w => w.regionId === regionId);
+    const regionMeasurements = remainingMeasurements.filter(m => regionWells.some(w => w.id === m.wellId));
+    // Aquifers GeoJSON
+    const features = regionAquifers.flatMap(a =>
+      (a.geojson?.features || []).map((f: any) => ({
+        ...f,
+        properties: { ...f.properties, aquifer_id: a.id, aquifer_name: a.name },
+      }))
+    );
+    const geojsonContent = JSON.stringify({ type: 'FeatureCollection', features }, null, 2);
+    // Wells CSV
+    const wellsCsvHeader = 'well_id,well_name,lat,long,gse,aquifer_id,aquifer_name';
+    const wellsCsvRows = regionWells.map(w =>
+      `${w.id},${w.name},${w.lat},${w.lng},${w.gse},${w.aquiferId},${w.aquiferName}`
+    );
+    const wellsCsvContent = [wellsCsvHeader, ...wellsCsvRows].join('\n');
+    // Water levels CSV
+    const wlCsvHeader = 'well_id,well_name,date,wte,aquifer_id';
+    const wlCsvRows = regionMeasurements.map(m =>
+      `${m.wellId},${m.wellName},${m.date},${m.wte},${m.aquiferId}`
+    );
+    const wlCsvContent = [wlCsvHeader, ...wlCsvRows].join('\n');
+    await fetch('/api/save-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        files: [
+          { path: `${regionId}/aquifers.geojson`, content: geojsonContent },
+          { path: `${regionId}/wells.csv`, content: wellsCsvContent },
+          { path: `${regionId}/water_levels.csv`, content: wlCsvContent },
+        ],
+      }),
+    });
+  };
 
   // Export time series data to CSV
   const exportToCSV = () => {
-    if (!selectedWell || selectedWellMeasurements.length === 0) return;
+    if (selectedWells.length === 0 || selectedWellMeasurements.length === 0) return;
 
     const headers = ['Date', 'Water Table Elevation (ft)', 'Well Name', 'Aquifer ID'];
     const rows = selectedWellMeasurements
@@ -78,7 +226,9 @@ const App: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${selectedWell.name.replace(/[^a-z0-9]/gi, '_')}_water_levels.csv`;
+    const firstName = selectedWells[0].name.replace(/[^a-z0-9]/gi, '_');
+    const suffix = selectedWells.length > 1 ? `_and_${selectedWells.length - 1}_others` : '';
+    link.download = `${firstName}${suffix}_water_levels.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -117,21 +267,25 @@ const App: React.FC = () => {
   return (
     <div className="flex h-screen w-full overflow-hidden bg-slate-50 font-sans">
       {/* Sidebar */}
-      <Sidebar 
+      <Sidebar
         regions={regions}
         selectedRegion={selectedRegion}
         setSelectedRegion={(r) => {
           setSelectedRegion(r);
           setSelectedAquifer(null);
-          setSelectedWell(null);
+          setSelectedWells([]);
         }}
         aquifers={filteredAquifers}
         selectedAquifer={selectedAquifer}
         setSelectedAquifer={(a) => {
           setSelectedAquifer(a);
-          setSelectedWell(null);
+          setSelectedWells([]);
         }}
         openDataManager={() => setIsDataManagerOpen(true)}
+        onRenameRegion={handleRenameRegion}
+        onDeleteRegion={handleDeleteRegion}
+        onRenameAquifer={handleRenameAquifer}
+        onDeleteAquifer={handleDeleteAquifer}
       />
 
       {/* Main Content Area */}
@@ -144,7 +298,7 @@ const App: React.FC = () => {
               onClick={() => {
                 setSelectedRegion(null);
                 setSelectedAquifer(null);
-                setSelectedWell(null);
+                setSelectedWells([]);
               }}
               className="font-semibold text-slate-800 hover:text-blue-600 transition-colors"
             >
@@ -156,7 +310,7 @@ const App: React.FC = () => {
                 <button
                   onClick={() => {
                     setSelectedAquifer(null);
-                    setSelectedWell(null);
+                    setSelectedWells([]);
                   }}
                   className="hover:text-blue-600 transition-colors"
                 >
@@ -168,17 +322,20 @@ const App: React.FC = () => {
               <>
                 <ChevronRight size={14} className="text-slate-400" />
                 <button
-                  onClick={() => setSelectedWell(null)}
+                  onClick={() => setSelectedWells([])}
                   className="hover:text-blue-600 transition-colors"
                 >
                   {selectedAquifer.name}
                 </button>
               </>
             )}
-            {selectedWell && (
+            {selectedWells.length > 0 && (
               <>
                 <ChevronRight size={14} className="text-slate-400" />
-                <span className="font-medium text-blue-600">{selectedWell.name}</span>
+                <span className="font-medium text-blue-600">
+                  {selectedWells[0].name}
+                  {selectedWells.length > 1 && ` + ${selectedWells.length - 1} more`}
+                </span>
               </>
             )}
           </div>
@@ -201,24 +358,32 @@ const App: React.FC = () => {
               measurements={measurements}
               selectedRegion={selectedRegion}
               selectedAquifer={selectedAquifer}
+              selectedWells={selectedWells}
               onRegionClick={(r) => {
                 setSelectedRegion(r);
                 setSelectedAquifer(null);
-                setSelectedWell(null);
+                setSelectedWells([]);
               }}
               onAquiferClick={setSelectedAquifer}
-              onWellClick={setSelectedWell}
+              onWellClick={handleWellClick}
+              onWellBoxSelect={handleWellBoxSelect}
             />
           </div>
 
           {/* Time Series Section */}
-          <div className={`transition-all duration-300 ease-in-out border-t border-slate-200 bg-white ${selectedWell ? 'h-1/3' : 'h-0 overflow-hidden'}`}>
-            {selectedWell && (
+          <div className={`transition-all duration-300 ease-in-out border-t border-slate-200 bg-white ${selectedWells.length > 0 ? 'h-1/3' : 'h-0 overflow-hidden'}`}>
+            {selectedWells.length > 0 && (
               <div className="p-4 h-full flex flex-col">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center space-x-2">
                     <Activity size={18} className="text-blue-500" />
-                    <h3 className="font-bold text-slate-800">Water Table Elevation: {selectedWell.name}</h3>
+                    <h3 className="font-bold text-slate-800">
+                      Water Table Elevation: {
+                        selectedWells.length <= 3
+                          ? selectedWells.map(w => w.name).join(', ')
+                          : `${selectedWells.length} wells selected`
+                      }
+                    </h3>
                   </div>
                   <div className="flex items-center space-x-4">
                     <button
@@ -236,9 +401,9 @@ const App: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex-1 min-h-0">
-                  <TimeSeriesChart 
+                  <TimeSeriesChart
                     measurements={selectedWellMeasurements}
-                    wellName={selectedWell.name}
+                    selectedWells={selectedWells}
                   />
                 </div>
               </div>

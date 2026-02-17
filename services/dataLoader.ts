@@ -50,6 +50,39 @@ function calculateBounds(geojson: any): [number, number, number, number] {
   return [minLat, minLng, maxLat, maxLng];
 }
 
+// Split a CSV line respecting quoted fields
+function splitCSVLine(line: string, delimiter: string): string[] {
+  const fields: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (i + 1 < line.length && line[i + 1] === '"') {
+          current += '"';
+          i++; // skip escaped quote
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === delimiter) {
+        fields.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+  }
+  fields.push(current.trim());
+  return fields;
+}
+
 // Parse CSV text into rows
 function parseCSV(text: string): Record<string, string>[] {
   const lines = text.split('\n').filter(line => line.trim());
@@ -59,11 +92,11 @@ function parseCSV(text: string): Record<string, string>[] {
   const firstLine = lines[0];
   const delimiter = firstLine.includes('\t') ? '\t' : ',';
 
-  const headers = lines[0].split(delimiter).map(h => h.trim());
+  const headers = splitCSVLine(lines[0], delimiter);
   const rows: Record<string, string>[] = [];
 
   for (let i = 1; i < lines.length; i++) {
-    const values = lines[i].split(delimiter);
+    const values = splitCSVLine(lines[i], delimiter);
     const row: Record<string, string> = {};
     headers.forEach((header, idx) => {
       row[header] = values[idx]?.trim() || '';

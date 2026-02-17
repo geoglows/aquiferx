@@ -11,7 +11,7 @@
   },
   {
     "id": "dominican-republic",
-    "path": "/data/dominican republic",
+    "path": "/data/dominican-republic",
     "name": "Dominican Republic"
   },
   {
@@ -23,5 +23,15 @@
     "id": "jordan",
     "path": "/data/jordan",
     "name": "Jordan"
+  },
+  {
+    "id": "guam",
+    "path": "/data/guam",
+    "name": "Guam"
+  },
+  {
+    "id": "volta-basin",
+    "path": "/data/volta-basin",
+    "name": "Volta Basin"
   }
 ]

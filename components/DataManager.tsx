@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback } from 'react';
-import { X, Upload, FileText, CheckCircle2, AlertCircle, ChevronRight, ChevronLeft, Download, MapPin, Droplets, Layers } from 'lucide-react';
+import { X, Upload, FileText, CheckCircle2, AlertCircle, ChevronRight, ChevronLeft, Download, MapPin, Droplets, Layers, Check, Loader2 } from 'lucide-react';
 import { Region, Aquifer, Well, Measurement } from '../types';
 import shp from 'shpjs';
 import JSZip from 'jszip';
@@ -59,6 +59,15 @@ const DataManager: React.FC<DataManagerProps> = ({
   const [waterLevelsFile, setWaterLevelsFile] = useState<UploadedFile | null>(null);
 
   const [dateFormat, setDateFormat] = useState('iso');
+
+  // Check if there's only a single aquifer (aquifer_id is unnecessary)
+  const singleAquifer = (() => {
+    if (!aquiferFile) return false;
+    const features = aquiferFile.data?.type === 'FeatureCollection'
+      ? aquiferFile.data.features
+      : [aquiferFile.data];
+    return features.length === 1;
+  })();
   const [showColumnMapper, setShowColumnMapper] = useState(false);
   const [currentMappingFile, setCurrentMappingFile] = useState<'region' | 'aquifer' | 'wells' | 'waterLevels' | null>(null);
 
@@ -90,16 +99,49 @@ const DataManager: React.FC<DataManagerProps> = ({
     return true;
   };
 
+  // Split a CSV line respecting quoted fields
+  const splitCSVLine = (line: string, delimiter: string): string[] => {
+    const fields: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (i + 1 < line.length && line[i + 1] === '"') {
+            current += '"';
+            i++; // skip escaped quote
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          current += ch;
+        }
+      } else {
+        if (ch === '"') {
+          inQuotes = true;
+        } else if (ch === delimiter) {
+          fields.push(current.trim());
+          current = '';
+        } else {
+          current += ch;
+        }
+      }
+    }
+    fields.push(current.trim());
+    return fields;
+  };
+
   // Parse CSV text into rows
   const parseCSV = (text: string): { headers: string[]; rows: Record<string, string>[] } => {
     const lines = text.split('\n').filter(line => line.trim());
     if (lines.length < 1) return { headers: [], rows: [] };
 
     const delimiter = lines[0].includes('\t') ? '\t' : ',';
-    const headers = lines[0].split(delimiter).map(h => h.trim());
+    const headers = splitCSVLine(lines[0], delimiter);
 
     const rows = lines.slice(1).map(line => {
-      const values = line.split(delimiter);
+      const values = splitCSVLine(line, delimiter);
       const row: Record<string, string> = {};
       headers.forEach((h, i) => { row[h] = values[i]?.trim() || ''; });
       return row;
@@ -152,6 +194,45 @@ const DataManager: React.FC<DataManagerProps> = ({
     }
 
     return dateStr; // Return original if parsing fails
+  };
+
+  // Detect date format from sample values
+  const detectDateFormat = (rows: Record<string, string>[], dateCol: string): string => {
+    // Sample up to 20 non-empty date values
+    const samples: string[] = [];
+    for (const row of rows) {
+      const val = row[dateCol]?.trim();
+      if (val && samples.length < 20) samples.push(val);
+    }
+    if (samples.length === 0) return 'iso';
+
+    // Check if all samples match YYYY-MM-DD (iso)
+    if (samples.every(s => /^\d{4}-\d{1,2}-\d{1,2}$/.test(s))) return 'iso';
+
+    // Check for slash-separated dates
+    const slashSamples = samples.filter(s => /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(s));
+    if (slashSamples.length > 0) {
+      // Look at the first part vs second part to distinguish US vs EU
+      // If any first part > 12, it must be day-first (EU)
+      // If any second part > 12, it must be month-first (US)
+      let hasFirstOver12 = false;
+      let hasSecondOver12 = false;
+      let hasShortParts = false;
+      for (const s of slashSamples) {
+        const parts = s.split('/');
+        const first = parseInt(parts[0], 10);
+        const second = parseInt(parts[1], 10);
+        if (first > 12) hasFirstOver12 = true;
+        if (second > 12) hasSecondOver12 = true;
+        if (parts[0].length === 1 || parts[1].length === 1) hasShortParts = true;
+      }
+      if (hasFirstOver12) return hasShortParts ? 'eu-short' : 'eu';
+      if (hasSecondOver12) return hasShortParts ? 'us-short' : 'us';
+      // Ambiguous (all values <= 12 for both parts) — default to US
+      return hasShortParts ? 'us-short' : 'us';
+    }
+
+    return 'iso';
   };
 
   // Handle file upload
@@ -223,6 +304,12 @@ const DataManager: React.FC<DataManagerProps> = ({
       uploadedFile.mapping = autoMapColumns(uploadedFile.columns, fileType);
 
       // Set the file
+      // Auto-detect date format for water levels
+      if (fileType === 'waterLevels' && uploadedFile.mapping['date'] && Array.isArray(uploadedFile.data)) {
+        const detected = detectDateFormat(uploadedFile.data as Record<string, string>[], uploadedFile.mapping['date']);
+        setDateFormat(detected);
+      }
+
       switch (fileType) {
         case 'region':
           setRegionFile(uploadedFile);
@@ -306,14 +393,14 @@ const DataManager: React.FC<DataManagerProps> = ({
           { key: 'well_id', label: 'Well ID', required: true },
           { key: 'lat', label: 'Latitude', required: true },
           { key: 'long', label: 'Longitude', required: true },
-          { key: 'aquifer_id', label: 'Aquifer ID', required: false }
+          ...(!singleAquifer ? [{ key: 'aquifer_id', label: 'Aquifer ID', required: false }] : [])
         ];
       case 'waterLevels':
         return [
           { key: 'well_id', label: 'Well ID', required: true },
           { key: 'date', label: 'Date', required: true },
           { key: 'wte', label: 'Water Table Elevation', required: true },
-          { key: 'aquifer_id', label: 'Aquifer ID', required: false }
+          ...(!singleAquifer ? [{ key: 'aquifer_id', label: 'Aquifer ID', required: false }] : [])
         ];
       default:
         return [];
@@ -396,7 +483,7 @@ const DataManager: React.FC<DataManagerProps> = ({
       : [aquiferFile!.data];
     for (const feature of aquiferFeatures) {
       const id = feature.properties?.[aquiferFile!.mapping['aquifer_id']];
-      if (id) aquiferIds.add(String(id));
+      if (id !== undefined && id !== null && id !== '') aquiferIds.add(String(id));
     }
 
     // Get well IDs and check aquifer references
@@ -409,7 +496,7 @@ const DataManager: React.FC<DataManagerProps> = ({
       const wellId = well[wellIdCol];
       if (wellId) wellIds.add(wellId);
 
-      if (wellAqIdCol && well[wellAqIdCol]) {
+      if (!singleAquifer && wellAqIdCol && well[wellAqIdCol]) {
         const aqId = well[wellAqIdCol];
         if (!aquiferIds.has(aqId)) {
           errors.push(`Well ${wellId} references non-existent aquifer ${aqId}`);
@@ -417,7 +504,7 @@ const DataManager: React.FC<DataManagerProps> = ({
       }
     }
 
-    if (!wellAqIdCol) {
+    if (!singleAquifer && !wellAqIdCol) {
       warnings.push('Wells file has no aquifer_id column. Point-in-polygon assignment will be attempted.');
     }
 
@@ -504,6 +591,11 @@ const DataManager: React.FC<DataManagerProps> = ({
         }))
       };
 
+      // If single aquifer, grab its ID for auto-assignment
+      const singleAquiferId = singleAquifer
+        ? String(aquiferFeatures[0].properties?.[aquiferFile!.mapping['aquifer_id']] ?? '')
+        : '';
+
       // Process wells CSV
       const wellsData = wellsFile!.data as Record<string, string>[];
       const wellIdCol = wellsFile!.mapping['well_id'];
@@ -515,7 +607,7 @@ const DataManager: React.FC<DataManagerProps> = ({
         well_id: w[wellIdCol] || '',
         lat: w[latCol] || '',
         long: w[longCol] || '',
-        aquifer_id: wellAqIdCol ? w[wellAqIdCol] || '' : ''
+        aquifer_id: singleAquifer ? singleAquiferId : (wellAqIdCol ? w[wellAqIdCol] || '' : '')
       })).filter(w => w.well_id && w.lat && w.long);
 
       // Process water levels CSV
@@ -532,7 +624,7 @@ const DataManager: React.FC<DataManagerProps> = ({
           well_id: m[wlWellIdCol] || '',
           date: parseDate(m[dateCol] || '', dateFormat),
           wte: m[wteCol] || '',
-          aquifer_id: wlAqIdCol ? m[wlAqIdCol] || '' : ''
+          aquifer_id: singleAquifer ? singleAquiferId : (wlAqIdCol ? m[wlAqIdCol] || '' : '')
         }));
 
       // Generate CSV strings
@@ -580,8 +672,17 @@ const DataManager: React.FC<DataManagerProps> = ({
       const zipBlob = await zip.generateAsync({ type: 'blob' });
       setZipFile({ name: `${folderName}.zip`, blob: zipBlob });
 
-      addLog(`Zip file ready: ${folderName}.zip`, 'success');
-      addLog(`Extract to public/data/ and refresh the app`, 'info');
+      // Store file contents for direct save
+      setSavedFiles([
+        { path: `${folderName}/region.geojson`, content: JSON.stringify(processedRegion, null, 2) },
+        { path: `${folderName}/aquifers.geojson`, content: JSON.stringify(processedAquifers, null, 2) },
+        { path: `${folderName}/wells.csv`, content: wellsCsv },
+        { path: `${folderName}/water_levels.csv`, content: waterLevelsCsv },
+        { path: 'regions.json', content: JSON.stringify(regionsManifest, null, 2) },
+      ]);
+      setSaveStatus('idle');
+
+      addLog(`Data ready for ${folderName}`, 'success');
 
       setStep(6);
 
@@ -593,6 +694,8 @@ const DataManager: React.FC<DataManagerProps> = ({
   };
 
   const [zipFile, setZipFile] = useState<{ name: string; blob: Blob } | null>(null);
+  const [savedFiles, setSavedFiles] = useState<{ path: string; content: string }[] | null>(null);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
   const downloadZip = () => {
     if (!zipFile) return;
@@ -602,6 +705,26 @@ const DataManager: React.FC<DataManagerProps> = ({
     a.download = zipFile.name;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const saveToProject = async () => {
+    if (!savedFiles) return;
+    setSaveStatus('saving');
+    try {
+      const res = await fetch('/api/save-data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: savedFiles })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setSaveStatus('saved');
+      addLog('Files saved to public/data/ — reloading data...', 'success');
+      // Reload data so the app picks up the new region immediately
+      setTimeout(() => window.location.reload(), 1000);
+    } catch (err) {
+      setSaveStatus('error');
+      addLog(`Failed to save: ${err}`, 'error');
+    }
   };
 
   // Column Mapper Modal
@@ -840,30 +963,59 @@ const DataManager: React.FC<DataManagerProps> = ({
             </div>
           )}
 
-          {/* Step 6: Download Files */}
+          {/* Step 6: Save / Download Files */}
           {step === 6 && (
             <div>
-              <h3 className="text-lg font-semibold text-slate-800 mb-4">Download & Install</h3>
+              <h3 className="text-lg font-semibold text-slate-800 mb-4">Save Data</h3>
 
-              {zipFile && (
+              {savedFiles && (
                 <div className="flex flex-col items-center justify-center p-8 bg-slate-50 rounded-xl border-2 border-dashed border-slate-300 mb-4">
-                  <div className="p-4 bg-blue-100 rounded-full mb-4">
-                    <Download size={32} className="text-blue-600" />
-                  </div>
-                  <p className="text-lg font-semibold text-slate-700 mb-2">{zipFile.name}</p>
-                  <p className="text-sm text-slate-500 mb-4">Contains region data and updated manifest</p>
-                  <button
-                    onClick={downloadZip}
-                    className="flex items-center space-x-2 px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors"
-                  >
-                    <Download size={20} />
-                    <span>Download Zip</span>
-                  </button>
+                  {saveStatus === 'saved' ? (
+                    <>
+                      <div className="p-4 bg-green-100 rounded-full mb-4">
+                        <Check size={32} className="text-green-600" />
+                      </div>
+                      <p className="text-lg font-semibold text-green-700 mb-2">Saved successfully!</p>
+                      <p className="text-sm text-slate-500">Reloading app...</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="p-4 bg-blue-100 rounded-full mb-4">
+                        <Upload size={32} className="text-blue-600" />
+                      </div>
+                      <p className="text-lg font-semibold text-slate-700 mb-2">{getFolderName(regionName)}</p>
+                      <p className="text-sm text-slate-500 mb-4">{savedFiles.length} files ready</p>
+                      <div className="flex items-center space-x-3">
+                        <button
+                          onClick={saveToProject}
+                          disabled={saveStatus === 'saving'}
+                          className="flex items-center space-x-2 px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50"
+                        >
+                          {saveStatus === 'saving' ? (
+                            <Loader2 size={20} className="animate-spin" />
+                          ) : (
+                            <Upload size={20} />
+                          )}
+                          <span>{saveStatus === 'saving' ? 'Saving...' : 'Save to Project'}</span>
+                        </button>
+                        <button
+                          onClick={downloadZip}
+                          className="flex items-center space-x-2 px-6 py-3 bg-slate-200 text-slate-700 rounded-lg font-semibold hover:bg-slate-300 transition-colors"
+                        >
+                          <Download size={20} />
+                          <span>Download Zip</span>
+                        </button>
+                      </div>
+                      {saveStatus === 'error' && (
+                        <p className="text-sm text-red-600 mt-3">Save failed — try downloading the zip instead.</p>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
 
               <div className="p-4 bg-slate-100 rounded-lg mb-4">
-                <p className="text-sm font-medium text-slate-700 mb-2">Zip contents:</p>
+                <p className="text-sm font-medium text-slate-700 mb-2">Files:</p>
                 <ul className="text-sm text-slate-600 font-mono space-y-1">
                   <li>{getFolderName(regionName)}/region.geojson</li>
                   <li>{getFolderName(regionName)}/aquifers.geojson</li>
@@ -871,12 +1023,6 @@ const DataManager: React.FC<DataManagerProps> = ({
                   <li>{getFolderName(regionName)}/water_levels.csv</li>
                   <li>regions.json</li>
                 </ul>
-              </div>
-
-              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                <p className="text-sm text-amber-800">
-                  <strong>Instructions:</strong> Extract the zip into <span className="font-mono">public/data/</span> and refresh the app.
-                </p>
               </div>
             </div>
           )}
