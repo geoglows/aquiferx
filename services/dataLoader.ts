@@ -1,4 +1,5 @@
 import shp from 'shpjs';
+import polylabel from 'polylabel';
 import { Region, Aquifer, Well, Measurement } from '../types';
 
 interface DataFolder {
@@ -48,6 +49,58 @@ function calculateBounds(geojson: any): [number, number, number, number] {
   }
 
   return [minLat, minLng, maxLat, maxLng];
+}
+
+// Compute optimal label point using pole-of-inaccessibility algorithm.
+// Returns [lat, lng]. Picks the largest polygon from a FeatureCollection.
+function computeLabelPoint(geojson: any, bounds: [number, number, number, number]): [number, number] {
+  // Extract all polygon rings, pick the one with the largest area
+  const polygons: number[][][] = [];
+  const geometries: any[] = [];
+
+  if (geojson.type === 'FeatureCollection') {
+    for (const f of geojson.features) {
+      if (f.geometry) geometries.push(f.geometry);
+    }
+  } else if (geojson.type === 'Feature') {
+    if (geojson.geometry) geometries.push(geojson.geometry);
+  } else if (geojson.coordinates) {
+    geometries.push(geojson);
+  }
+
+  for (const geom of geometries) {
+    if (geom.type === 'Polygon' && geom.coordinates?.length > 0) {
+      polygons.push(geom.coordinates);
+    } else if (geom.type === 'MultiPolygon') {
+      for (const poly of geom.coordinates) {
+        if (poly?.length > 0) polygons.push(poly);
+      }
+    }
+  }
+
+  if (polygons.length === 0) {
+    // Fallback to bounds center
+    return [(bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2];
+  }
+
+  // Pick the polygon with the largest outer ring (by area approximation)
+  let bestPoly = polygons[0];
+  let bestArea = 0;
+  for (const poly of polygons) {
+    const ring = poly[0];
+    let area = 0;
+    for (let i = 0; i < ring.length - 1; i++) {
+      area += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+    }
+    area = Math.abs(area);
+    if (area > bestArea) {
+      bestArea = area;
+      bestPoly = poly;
+    }
+  }
+
+  const result = polylabel(bestPoly, 0.001);
+  return [result[1], result[0]]; // [lat, lng]
 }
 
 // Split a CSV line respecting quoted fields
@@ -214,12 +267,31 @@ export async function loadAquifers(regionId: string, regionPath: string, wells: 
         const aquiferGeojson = { type: 'FeatureCollection', features: data.features };
         const bounds = calculateBounds(aquiferGeojson);
 
+        // Check for stored label_point in geojson properties, otherwise compute
+        let labelPoint: [number, number] | null = null;
+        for (const f of data.features) {
+          const lp = f.properties?.label_point;
+          if (Array.isArray(lp) && lp.length === 2) {
+            labelPoint = [lp[0], lp[1]]; // [lat, lng]
+            break;
+          }
+        }
+        if (!labelPoint) {
+          labelPoint = computeLabelPoint(aquiferGeojson, bounds);
+          // Store back into the first feature for future use
+          if (data.features.length > 0) {
+            if (!data.features[0].properties) data.features[0].properties = {};
+            data.features[0].properties.label_point = labelPoint;
+          }
+        }
+
         aquifers.push({
           id,
           name: data.name,
           regionId,
           geojson: aquiferGeojson,
-          bounds
+          bounds,
+          labelPoint
         });
       }
     }
@@ -243,7 +315,8 @@ export async function loadAquifers(regionId: string, regionPath: string, wells: 
             name,
             regionId,
             geojson: { type: 'FeatureCollection', features: [] },
-            bounds
+            bounds,
+            labelPoint: [(bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2]
           });
         }
       }

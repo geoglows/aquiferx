@@ -182,13 +182,13 @@ const App: React.FC = () => {
     // Wells CSV
     const wellsCsvHeader = 'well_id,well_name,lat,long,gse,aquifer_id,aquifer_name';
     const wellsCsvRows = regionWells.map(w =>
-      `${w.id},${w.name},${w.lat},${w.lng},${w.gse},${w.aquiferId},${w.aquiferName}`
+      `${w.id},"${w.name}",${w.lat},${w.lng},${w.gse},${w.aquiferId},"${w.aquiferName}"`
     );
     const wellsCsvContent = [wellsCsvHeader, ...wellsCsvRows].join('\n');
     // Water levels CSV
     const wlCsvHeader = 'well_id,well_name,date,wte,aquifer_id';
     const wlCsvRows = regionMeasurements.map(m =>
-      `${m.wellId},${m.wellName},${m.date},${m.wte},${m.aquiferId}`
+      `${m.wellId},"${m.wellName}",${m.date},${m.wte},${m.aquiferId}`
     );
     const wlCsvContent = [wlCsvHeader, ...wlCsvRows].join('\n');
     await fetch('/api/save-data', {

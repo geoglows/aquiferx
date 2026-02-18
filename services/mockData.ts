@@ -24,6 +24,7 @@ export const mockAquifers: Aquifer[] = [
     name: 'Central Virgin River',
     regionId: 'R1',
     bounds: [37.0, -113.55, 37.1, -113.4],
+    labelPoint: [37.05, -113.475],
     geojson: {
       type: 'Feature',
       geometry: {

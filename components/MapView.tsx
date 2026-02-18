@@ -5,32 +5,37 @@ import { Layers, ChevronRight } from 'lucide-react';
 import { Region, Aquifer, Well, Measurement } from '../types';
 
 const BASEMAPS = {
-  'Topographic': {
+  'OpenStreetMap': {
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    thumbnail: 'https://www.arcgis.com/sharing/rest/content/items/b834a68d7a484c5fb473d4ba90571f26/info/thumbnail/ago_downloaded.png'
+  },
+  'Topographic (Esri)': {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri',
     thumbnail: 'https://www.arcgis.com/sharing/rest/content/items/67372ff42cd145319639a99152b15bc3/info/thumbnail/ago_downloaded.png'
   },
-  'Imagery': {
+  'Imagery (Esri)': {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri',
     thumbnail: 'https://www.arcgis.com/sharing/rest/content/items/10df2279f9684e4a9f6a7f08febac2a9/info/thumbnail/ago_downloaded.png'
   },
-  'Streets': {
+  'Streets (Esri)': {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri',
     thumbnail: 'https://www.arcgis.com/sharing/rest/content/items/3b93337983e9436f8db950e38a8629af/info/thumbnail/ago_downloaded.png'
   },
-  'Light Gray': {
+  'Light Gray (Esri)': {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri',
     thumbnail: 'https://www.arcgis.com/sharing/rest/content/items/8b3d38c0819547faa83f7b7aca80bd76/info/thumbnail/ago_downloaded.png'
   },
-  'Dark Gray': {
+  'Dark Gray (Esri)': {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri',
     thumbnail: 'https://www.arcgis.com/sharing/rest/content/items/358ec1e175ea41c3bf5c68f0da11ae2b/info/thumbnail/ago_downloaded.png'
   },
-  'Terrain': {
+  'Terrain (Esri)': {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri',
     thumbnail: 'https://www.arcgis.com/sharing/rest/content/items/c61ad8ab017d49e1a82f580ee1298571/info/thumbnail/ago_downloaded.png'
@@ -77,14 +82,20 @@ const MapView: React.FC<MapViewProps> = ({
   const regionLayerRef = useRef<L.FeatureGroup | null>(null);
   const aquiferLayerRef = useRef<L.FeatureGroup | null>(null);
   const wellLayerRef = useRef<L.FeatureGroup | null>(null);
+  const wellLabelLayerRef = useRef<L.FeatureGroup | null>(null);
+  const aquiferLabelLayerRef = useRef<L.FeatureGroup | null>(null);
 
   const visibleWellsRef = useRef<Well[]>([]);
   const onWellBoxSelectRef = useRef(onWellBoxSelect);
   onWellBoxSelectRef.current = onWellBoxSelect;
 
-  const [currentBasemap, setCurrentBasemap] = useState<keyof typeof BASEMAPS>('Topographic');
+  const [currentBasemap, setCurrentBasemap] = useState<keyof typeof BASEMAPS>('OpenStreetMap');
   const [isBasemapMenuOpen, setIsBasemapMenuOpen] = useState(false);
   const [minObs, setMinObs] = useState(1);
+  const [showAquiferNames, setShowAquiferNames] = useState(true);
+  const [showWellIds, setShowWellIds] = useState(false);
+  const [showWellNames, setShowWellNames] = useState(false);
+  const [labelFontSize, setLabelFontSize] = useState(9);
 
   // Box-drag selection state
   const [shiftHeld, setShiftHeld] = useState(false);
@@ -101,7 +112,9 @@ const MapView: React.FC<MapViewProps> = ({
 
       regionLayerRef.current = L.featureGroup().addTo(mapRef.current);
       aquiferLayerRef.current = L.featureGroup().addTo(mapRef.current);
+      aquiferLabelLayerRef.current = L.featureGroup().addTo(mapRef.current);
       wellLayerRef.current = L.featureGroup().addTo(mapRef.current);
+      wellLabelLayerRef.current = L.featureGroup().addTo(mapRef.current);
 
       // Click on empty map space clears well selection
       mapRef.current.on('click', () => {
@@ -154,7 +167,7 @@ const MapView: React.FC<MapViewProps> = ({
     }
   }, [regions, selectedRegion]);
 
-  // Update Aquifer Layer
+  // Update Aquifer Layer (polygons only)
   useEffect(() => {
     if (!aquiferLayerRef.current || !mapRef.current) return;
     aquiferLayerRef.current.clearLayers();
@@ -165,9 +178,9 @@ const MapView: React.FC<MapViewProps> = ({
         const layer = L.geoJSON(a.geojson, {
           style: {
             color: isSelected ? '#6366f1' : '#475569',
-            weight: 2,
-            fillOpacity: isSelected ? 0.3 : 0.15,
-            fillColor: isSelected ? '#6366f1' : '#64748b'
+            weight: isSelected ? 5 : 2,
+            fillOpacity: isSelected ? 0 : 0.15,
+            fillColor: '#64748b'
           }
         });
         layer.on('click', () => onAquiferClick(a));
@@ -184,6 +197,28 @@ const MapView: React.FC<MapViewProps> = ({
       }
     }
   }, [aquifers, selectedRegion, selectedAquifer]);
+
+  // Aquifer name labels (separate from polygons so font size changes don't rebuild polygons)
+  useEffect(() => {
+    aquiferLabelLayerRef.current?.clearLayers();
+    if (!showAquiferNames || !selectedRegion) return;
+
+    aquifers.forEach(a => {
+      if (selectedAquifer?.id === a.id) return;
+      const [lat, lng] = a.labelPoint;
+      const aFontSize = Math.round(labelFontSize * 1.2);
+      const label = L.marker([lat, lng], {
+        icon: L.divIcon({
+          className: '',
+          html: `<div style="white-space:nowrap;font-size:${aFontSize}px;color:#fff;text-shadow:0 0 3px #000,0 0 6px #000;pointer-events:none;font-weight:600;text-align:center">${a.name} (${a.id})</div>`,
+          iconSize: [400, 20],
+          iconAnchor: [200, 10],
+        }),
+        interactive: false,
+      });
+      aquiferLabelLayerRef.current?.addLayer(label);
+    });
+  }, [aquifers, selectedRegion, selectedAquifer, showAquiferNames, labelFontSize]);
 
   // Build well markers — only when wells/aquifer/filter changes, NOT on selection change
   const wellMarkerMapRef = useRef<Map<string, L.CircleMarker>>(new Map());
@@ -239,6 +274,38 @@ const MapView: React.FC<MapViewProps> = ({
       });
     });
   }, [selectedWells]);
+
+  // Well labels
+  useEffect(() => {
+    wellLabelLayerRef.current?.clearLayers();
+    if (!showWellIds && !showWellNames) return;
+    if (!selectedAquifer) return;
+
+    wellMarkerMapRef.current.forEach((marker, wellId) => {
+      const well = wells.find(w => w.id === wellId);
+      if (!well) return;
+
+      let text = '';
+      if (showWellIds && showWellNames) {
+        text = `${well.name} (${well.id})`;
+      } else if (showWellNames) {
+        text = well.name;
+      } else {
+        text = well.id;
+      }
+
+      const label = L.marker([well.lat, well.lng], {
+        icon: L.divIcon({
+          className: '',
+          html: `<div style="white-space:nowrap;font-size:${labelFontSize}px;color:#1e293b;text-shadow:0 0 2px #fff,0 0 4px #fff;pointer-events:none;font-weight:500;margin-left:8px;margin-top:-${labelFontSize + 5}px">${text}</div>`,
+          iconSize: [0, 0],
+          iconAnchor: [0, 0],
+        }),
+        interactive: false,
+      });
+      wellLabelLayerRef.current?.addLayer(label);
+    });
+  }, [showWellIds, showWellNames, selectedAquifer, wells, minObs, wellMeasurementCounts, labelFontSize]);
 
   // Track shift key for box-drag overlay
   useEffect(() => {
@@ -353,18 +420,49 @@ const MapView: React.FC<MapViewProps> = ({
         </div>
       )}
 
-      {/* Min Obs Control */}
-      <div className="absolute bottom-6 left-3 z-[1000] flex items-center gap-2 bg-white rounded shadow-md border border-slate-300 px-2 py-1">
-        <label htmlFor="min-obs" className="text-xs font-medium text-slate-600 whitespace-nowrap">Min obs</label>
-        <input
-          id="min-obs"
-          type="number"
-          min={1}
-          step={1}
-          value={minObs}
-          onChange={(e) => setMinObs(Math.max(1, parseInt(e.target.value) || 1))}
-          className="w-14 text-xs text-center border border-slate-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
-        />
+      {/* Map Options Panel */}
+      <div className="absolute bottom-6 left-3 z-[1000] flex flex-col gap-1.5 bg-white rounded shadow-md border border-slate-300 px-2 py-1.5">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1">
+            <label htmlFor="min-obs" className="text-xs font-medium text-slate-600 whitespace-nowrap">Min obs</label>
+            <input
+              id="min-obs"
+              type="number"
+              min={1}
+              step={1}
+              value={minObs}
+              onChange={(e) => setMinObs(Math.max(1, parseInt(e.target.value) || 1))}
+              className="w-14 text-xs text-center border border-slate-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            />
+          </div>
+          <div className="flex items-center gap-1">
+            <label htmlFor="label-font" className="text-xs font-medium text-slate-600 whitespace-nowrap">Font</label>
+            <input
+              id="label-font"
+              type="number"
+              min={6}
+              max={24}
+              step={1}
+              value={labelFontSize}
+              onChange={(e) => setLabelFontSize(Math.max(6, Math.min(24, parseInt(e.target.value) || 9)))}
+              className="w-12 text-xs text-center border border-slate-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1 cursor-pointer">
+            <input type="checkbox" checked={showAquiferNames} onChange={(e) => setShowAquiferNames(e.target.checked)} className="w-3 h-3" />
+            <span className="text-xs text-slate-600">Aquifer names</span>
+          </label>
+          <label className="flex items-center gap-1 cursor-pointer">
+            <input type="checkbox" checked={showWellIds} onChange={(e) => setShowWellIds(e.target.checked)} className="w-3 h-3" />
+            <span className="text-xs text-slate-600">Well IDs</span>
+          </label>
+          <label className="flex items-center gap-1 cursor-pointer">
+            <input type="checkbox" checked={showWellNames} onChange={(e) => setShowWellNames(e.target.checked)} className="w-3 h-3" />
+            <span className="text-xs text-slate-600">Well names</span>
+          </label>
+        </div>
       </div>
 
       {/* Basemap Gallery */}

@@ -15,14 +15,19 @@
     "name": "Dominican Republic"
   },
   {
-    "id": "niger",
-    "path": "/data/niger",
-    "name": "Niger"
+    "id": "jamaica",
+    "path": "/data/jamaica",
+    "name": "Jamaica"
   },
   {
     "id": "jordan",
     "path": "/data/jordan",
     "name": "Jordan"
+  },
+  {
+    "id": "niger",
+    "path": "/data/niger",
+    "name": "Niger"
   },
   {
     "id": "guam",
@@ -33,10 +38,5 @@
     "id": "volta-basin",
     "path": "/data/volta-basin",
     "name": "Volta Basin"
-  },
-  {
-    "id": "jamaica",
-    "path": "/data/jamaica",
-    "name": "Jamaica"
   }
 ]

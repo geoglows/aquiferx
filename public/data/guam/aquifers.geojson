@@ -4,7 +4,7 @@
     {
       "type": "Feature",
       "properties": {
-        "aquifer_id": "",
+        "aquifer_id": "0",
         "aquifer_name": "Hagatna"
       },
       "geometry": {

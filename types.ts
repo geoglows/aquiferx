@@ -12,6 +12,7 @@ export interface Aquifer {
   regionId: string;
   geojson: any;
   bounds: [number, number, number, number];
+  labelPoint: [number, number]; // [lat, lng] for label placement
 }
 
 export interface Well {
