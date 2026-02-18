@@ -1,12 +1,13 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { Layers, Map as MapIcon, Database, ChevronRight, Activity, Upload, Loader2, Download } from 'lucide-react';
+import { Layers, Map as MapIcon, Database, ChevronRight, Activity, Upload, Loader2, Download, Table } from 'lucide-react';
 import { Region, Aquifer, Well, Measurement } from './types';
 import { loadAllData } from './services/dataLoader';
 import MapView from './components/MapView';
 import Sidebar from './components/Sidebar';
 import TimeSeriesChart from './components/TimeSeriesChart';
 import DataManager from './components/DataManager';
+import DataEditor from './components/DataEditor';
 
 const App: React.FC = () => {
   const [regions, setRegions] = useState<Region[]>([]);
@@ -20,6 +21,7 @@ const App: React.FC = () => {
   const [selectedAquifer, setSelectedAquifer] = useState<Aquifer | null>(null);
   const [selectedWells, setSelectedWells] = useState<Well[]>([]);
   const [isDataManagerOpen, setIsDataManagerOpen] = useState(false);
+  const [isDataEditorOpen, setIsDataEditorOpen] = useState(false);
 
   // Load data on mount
   useEffect(() => {
@@ -233,6 +235,26 @@ const App: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  // Save handler for DataEditor
+  const handleDataEditorSave = async (updatedMeasurements: Measurement[]) => {
+    setMeasurements(updatedMeasurements);
+    // Rebuild and persist the water_levels.csv for this region
+    const regionId = selectedWells[0].regionId;
+    const regionWells = wells.filter(w => w.regionId === regionId);
+    const regionWellIds = new Set(regionWells.map(w => w.id));
+    const regionMeasurements = updatedMeasurements.filter(m => regionWellIds.has(m.wellId));
+    const wlCsvHeader = 'well_id,well_name,date,wte,aquifer_id';
+    const wlCsvRows = regionMeasurements.map(m =>
+      `${m.wellId},"${m.wellName}",${m.date},${m.wte},${m.aquiferId}`
+    );
+    const wlCsvContent = [wlCsvHeader, ...wlCsvRows].join('\n');
+    await fetch('/api/save-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: [{ path: `${regionId}/water_levels.csv`, content: wlCsvContent }] }),
+    });
+  };
+
   // Loading state
   if (isLoading) {
     return (
@@ -344,7 +366,7 @@ const App: React.FC = () => {
             className="flex items-center space-x-2 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-md text-sm font-medium hover:bg-blue-100 transition-colors"
           >
             <Database size={16} />
-            <span>Manage Data</span>
+            <span>Import Data</span>
           </button>
         </header>
 
@@ -387,6 +409,15 @@ const App: React.FC = () => {
                   </div>
                   <div className="flex items-center space-x-4">
                     <button
+                      onClick={() => setIsDataEditorOpen(true)}
+                      disabled={selectedWells.length !== 1}
+                      className="flex items-center space-x-1.5 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-md text-sm font-medium hover:bg-blue-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title={selectedWells.length !== 1 ? 'Select a single well to edit' : 'View/Edit measurement data'}
+                    >
+                      <Table size={14} />
+                      <span>View/Edit</span>
+                    </button>
+                    <button
                       onClick={exportToCSV}
                       disabled={selectedWellMeasurements.length === 0}
                       className="flex items-center space-x-1.5 px-3 py-1.5 bg-green-50 text-green-700 rounded-md text-sm font-medium hover:bg-green-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -421,6 +452,18 @@ const App: React.FC = () => {
           onUpdateWells={setWells}
           onUpdateMeasurements={setMeasurements}
           existingRegions={regions.map(r => r.id)}
+        />
+      )}
+
+      {/* Data Editor Modal */}
+      {isDataEditorOpen && selectedWells.length === 1 && (
+        <DataEditor
+          well={selectedWells[0]}
+          measurements={selectedWellMeasurements}
+          allMeasurements={measurements}
+          regionId={selectedWells[0].regionId}
+          onClose={() => setIsDataEditorOpen(false)}
+          onSave={handleDataEditorSave}
         />
       )}
     </div>

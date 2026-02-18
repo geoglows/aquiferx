@@ -243,7 +243,7 @@ const MapView: React.FC<MapViewProps> = ({
           opacity: 1,
           fillOpacity: 0.8
         });
-        marker.bindTooltip(`Well: ${w.name}<br/>ID: ${w.id}<br/>Measurements: ${measurementCount}`, { direction: 'top' });
+        marker.bindTooltip(`Well: ${w.name}<br/>ID: ${w.id}${w.gse ? `<br/>GSE: ${w.gse}` : ''}<br/>Observations: ${measurementCount}`, { direction: 'top' });
         marker.on('click', (e) => {
           L.DomEvent.stopPropagation(e);
           const shiftKey = (e as any).originalEvent?.shiftKey ?? false;

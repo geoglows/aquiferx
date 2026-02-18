@@ -358,12 +358,14 @@ const DataManager: React.FC<DataManagerProps> = ({
       const wellNameIdx = lowerColumns.findIndex(c => (c.includes('well') && c.includes('name')) || c === 'well_name' || c === 'name');
       const latIdx = lowerColumns.findIndex(c => c === 'lat' || c.includes('latitude') || c === 'lat_dec');
       const longIdx = lowerColumns.findIndex(c => c === 'long' || c === 'lng' || c.includes('longitude') || c === 'long_dec');
+      const gseIdx = lowerColumns.findIndex(c => c === 'gse' || c === 'ground_surface_elevation' || c === 'elevation' || c === 'surface_elevation');
       const aqIdIdx = lowerColumns.findIndex(c => c.includes('aquifer') && c.includes('id') || c === 'aquifer_id');
 
       if (wellIdIdx >= 0) mapping['well_id'] = columns[wellIdIdx];
       if (wellNameIdx >= 0) mapping['well_name'] = columns[wellNameIdx];
       if (latIdx >= 0) mapping['lat'] = columns[latIdx];
       if (longIdx >= 0) mapping['long'] = columns[longIdx];
+      if (gseIdx >= 0) mapping['gse'] = columns[gseIdx];
       if (aqIdIdx >= 0) mapping['aquifer_id'] = columns[aqIdIdx];
     } else if (fileType === 'waterLevels') {
       const wellIdIdx = lowerColumns.findIndex(c => c.includes('well') && c.includes('id') || c === 'well_id');
@@ -396,6 +398,7 @@ const DataManager: React.FC<DataManagerProps> = ({
           { key: 'well_name', label: 'Well Name', required: false },
           { key: 'lat', label: 'Latitude', required: true },
           { key: 'long', label: 'Longitude', required: true },
+          { key: 'gse', label: 'Ground Surface Elevation', required: false },
           ...(!singleAquifer ? [{ key: 'aquifer_id', label: 'Aquifer ID', required: false }] : [])
         ];
       case 'waterLevels':
@@ -605,6 +608,7 @@ const DataManager: React.FC<DataManagerProps> = ({
       const wellNameCol = wellsFile!.mapping['well_name'];
       const latCol = wellsFile!.mapping['lat'];
       const longCol = wellsFile!.mapping['long'];
+      const gseCol = wellsFile!.mapping['gse'];
       const wellAqIdCol = wellsFile!.mapping['aquifer_id'];
 
       const processedWells = wellsData.map(w => ({
@@ -612,6 +616,7 @@ const DataManager: React.FC<DataManagerProps> = ({
         well_name: wellNameCol ? w[wellNameCol] || '' : '',
         lat: w[latCol] || '',
         long: w[longCol] || '',
+        gse: gseCol ? w[gseCol] || '' : '',
         aquifer_id: singleAquifer ? singleAquiferId : (wellAqIdCol ? w[wellAqIdCol] || '' : '')
       })).filter(w => w.well_id && w.lat && w.long);
 
@@ -633,8 +638,8 @@ const DataManager: React.FC<DataManagerProps> = ({
         }));
 
       // Generate CSV strings
-      const wellsCsv = 'well_id,well_name,lat,long,aquifer_id\n' +
-        processedWells.map(w => `${w.well_id},"${w.well_name}",${w.lat},${w.long},${w.aquifer_id}`).join('\n');
+      const wellsCsv = 'well_id,well_name,lat,long,gse,aquifer_id\n' +
+        processedWells.map(w => `${w.well_id},"${w.well_name}",${w.lat},${w.long},${w.gse},${w.aquifer_id}`).join('\n');
 
       const waterLevelsCsv = 'well_id,date,wte,aquifer_id\n' +
         processedWaterLevels.map(m => `${m.well_id},${m.date},${m.wte},${m.aquifer_id}`).join('\n');
