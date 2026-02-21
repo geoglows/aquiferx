@@ -149,13 +149,50 @@ The `value` column contains the measurement in the unit specified by the data ty
 
 ### Managing Data Types
 
-In the Import Data hub, add a "Manage Data Types" link or gear icon in the Measurements section header. This opens a simple list editor:
+In the Import Data hub, add a "Manage Data Types" link or gear icon in the Measurements section header. Clicking it opens a modal dialog for managing the region's data types.
 
-- Shows all defined data types (name, code, unit) for the active region.
-- **Add**: Prompts for name, code, and unit. Validates the code format and uniqueness.
-- **Remove**: Shows a confirmation dialog: "Deleting the [name] data type will also delete N associated measurements. Continue?" Then deletes the `data_{code}.csv` file and removes the entry from `dataTypes`.
-- **WTE row**: Shown but with the delete button disabled/hidden. The unit is read-only (tied to `lengthUnit`).
-- Users can also add a new data type inline during import if the type they need doesn't exist yet (see Measurements section below).
+#### Data Type Editor Modal
+
+The modal displays a table/list of all defined data types for the active region:
+
+| Name | Code | Unit | Records | Actions |
+|---|---|---|---|---|
+| Water Table Elevation | wte | ft | 3,200 | *(locked)* |
+| Salinity | salinity | mg/L | 450 | Edit, Delete |
+| pH | ph | — | 0 | Edit, Delete |
+
+Below the table, an **"Add Data Type"** button.
+
+**WTE row**: Always present as the first row. The name and code are read-only. The unit is read-only and mirrors the region's `lengthUnit`. The delete button is disabled/hidden. The WTE row cannot be edited or removed.
+
+#### Adding a Data Type
+
+Clicking "Add Data Type" expands an inline form (or small sub-dialog) with three fields:
+
+- **Name** (required): The display name, e.g., "Trichloroethylene". Free text, max 50 characters.
+- **Code** (required): The short identifier used in file names, e.g., "tce". Auto-generated from the name as a suggestion (lowercase, spaces → underscores, strip special characters), but editable. Validated: lowercase alphanumeric and underscores only, max 20 characters, must be unique within the region, must not be "wte" (reserved).
+- **Unit** (optional): The measurement unit, e.g., "PPM", "mg/L", "μS/cm". Free text, max 20 characters. Can be left blank for dimensionless values (like pH).
+
+A "Save" button adds the entry to `dataTypes` in `regions.json`. No `data_{code}.csv` file is created yet — that happens when measurements of this type are first imported.
+
+#### Editing a Data Type
+
+Clicking "Edit" on a custom data type opens the same inline form pre-populated with the current values. The **code field is read-only** after creation (since it's used as a filename). The name and unit can be changed.
+
+- If the **unit** is changed and there are existing measurements, show an informational note: "Changing the unit does not convert existing values. Ensure existing data is consistent with the new unit."
+- Save updates the entry in `regions.json`.
+
+#### Deleting a Data Type
+
+Clicking "Delete" shows a confirmation dialog:
+- If there are existing measurements: "Deleting [Name] will permanently delete N measurements. Continue?"
+- If there are no measurements: "Delete the [Name] data type? Continue?"
+
+On confirmation, delete the `data_{code}.csv` file (if it exists) and remove the entry from `dataTypes` in `regions.json`.
+
+#### Inline Add During Import
+
+Users can also add a new data type inline during the measurement import sub-wizard (in the data type selection step). An "Add new data type" button opens the same add form described above. After saving, the new type appears in the toggle list and can be selected for the current import.
 
 ---
 
