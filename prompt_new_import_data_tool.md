@@ -22,7 +22,7 @@ Data dependencies: Aquifers are attached to a specific region, wells are attache
 Break the implementation into separate components rather than a single monolithic file:
 
 - `ImportDataHub.tsx` — the main four-panel view with counters and state management
-- `RegionImporter.tsx` — region add sub-wizard
+- `RegionImporter.tsx` — region add sub-wizard (create new or import package)
 - `AquiferImporter.tsx` — aquifer add sub-wizard with append/replace options
 - `WellImporter.tsx` — well add sub-wizard with aquifer assignment and USGS download
 - `MeasurementImporter.tsx` — measurement add sub-wizard with multi-type support, depth conversion, and USGS download
@@ -30,6 +30,10 @@ Break the implementation into separate components rather than a single monolithi
 ### Auto-Save Behavior
 
 Each sub-wizard saves its data automatically when it completes (via the existing `/api/save-data` endpoint). When a sub-wizard finishes and returns to the hub, the data is already persisted. There is no separate "Save" step on the hub. The existing "Download Region" option in the main interface kebab menu is sufficient for downloads.
+
+### Region Data Storage
+
+Each region is fully self-contained in its own folder under `public/data/`. There is no centralized `regions.json` file. Instead, each region folder contains a `region.json` file with all region metadata. See [Directory Structure](#directory-structure) and [Region Discovery](#region-discovery) for details.
 
 ---
 
@@ -39,14 +43,26 @@ This section includes a list of all current regions and displays a count of the 
 
 When a region is selected, calculate the number of aquifers attached to this region and display that in the aquifers section. Likewise, count the total numbers of wells in the region and display in the Wells section. For the Measurements section, show a per-data-type breakdown of record counts (see [Data Types](#data-types)).
 
-There should be an "Add Region" button. When clicked, bring up a sub-wizard with the following steps:
+There should be an "Add Region" button. When clicked, offer two options:
+
+### Option 1: Create New Region
+
+Bring up a sub-wizard with the following steps:
 
 1. **Region attributes**: Prompt for the region name, length units (ft/m), and a **"Single unit (no aquifer subdivisions)"** toggle (default: off). This toggle controls whether the region uses aquifer boundaries or treats the entire region as one analysis unit (see [Single-Unit Mode](#single-unit-mode)).
 2. **Region boundary**: Prompt for the region GeoJSON/shapefile.
 
-After upload, return to the main Import Data window and select the new region as the active region. A WTE data type entry is automatically created for the new region (see [Data Types](#data-types)). The single-unit toggle should also be editable on existing regions (via the region attributes), with appropriate warnings if changing modes on a region that already has data (see [Single-Unit Mode](#single-unit-mode)).
+After upload, create the region folder, write `region.json` with the metadata, save `region.geojson`, return to the main Import Data window, and select the new region as the active region. A WTE data type entry is automatically created for the new region (see [Data Types](#data-types)).
 
 When uploading a region file, reproject to WGS84 (EPSG:4326) if necessary (see [Reprojection](#reprojection) section).
+
+### Option 2: Import Region Package
+
+Upload a region package zip file (see [Region Packages](#region-packages)). This populates everything — region metadata, boundary, aquifers, wells, and all measurement data — in one step.
+
+### Editing Region Attributes
+
+The single-unit toggle and other region attributes should be editable on existing regions, with appropriate warnings if changing modes on a region that already has data (see [Single-Unit Mode](#single-unit-mode)).
 
 ---
 
@@ -112,7 +128,7 @@ The application supports multiple measurement data types per region. WTE (Water 
 
 ### Definition and Storage
 
-Data type definitions are stored in the region entry in `regions.json`:
+Data type definitions are stored in the region's `region.json` file:
 
 ```json
 {
@@ -173,16 +189,16 @@ Clicking "Add Data Type" expands an inline form (or small sub-dialog) with three
 - **Code** (required): The short identifier used in file names, e.g., "tce". Auto-generated from the name as a suggestion (lowercase, spaces → underscores, strip special characters), but editable. Validated: lowercase alphanumeric and underscores only, max 20 characters, must be unique within the region, must not be "wte" (reserved).
 - **Unit** (optional): The measurement unit, e.g., "PPM", "mg/L", "μS/cm". Free text, max 20 characters. Can be left blank for dimensionless values (like pH).
 
-**Cross-region suggestions**: Above or alongside the form, show a "From other regions" suggestion list. This is populated by scanning all other regions' `dataTypes` arrays and collecting any types not already defined in the current region (deduplicate by code). Clicking a suggestion auto-fills all three fields. This avoids repetitive data entry when the same parameter (e.g., "Salinity", "mg/L") is used across multiple regions.
+**Cross-region suggestions**: Above or alongside the form, show a "From other regions" suggestion list. This is populated by scanning all other regions' `region.json` files and collecting any data types not already defined in the current region (deduplicate by code). Clicking a suggestion auto-fills all three fields. This avoids repetitive data entry when the same parameter (e.g., "Salinity", "mg/L") is used across multiple regions.
 
-A "Save" button adds the entry to `dataTypes` in `regions.json`. No `data_{code}.csv` file is created yet — that happens when measurements of this type are first imported.
+A "Save" button adds the entry to `dataTypes` in the region's `region.json`. No `data_{code}.csv` file is created yet — that happens when measurements of this type are first imported.
 
 #### Editing a Data Type
 
 Clicking "Edit" on a custom data type opens the same inline form pre-populated with the current values. The **code field is read-only** after creation (since it's used as a filename). The name and unit can be changed.
 
 - If the **unit** is changed and there are existing measurements, show an informational note: "Changing the unit does not convert existing values. Ensure existing data is consistent with the new unit."
-- Save updates the entry in `regions.json`.
+- Save updates the entry in `region.json`.
 
 #### Deleting a Data Type
 
@@ -190,7 +206,7 @@ Clicking "Delete" shows a confirmation dialog:
 - If there are existing measurements: "Deleting [Name] will permanently delete N measurements. Continue?"
 - If there are no measurements: "Delete the [Name] data type? Continue?"
 
-On confirmation, delete the `data_{code}.csv` file (if it exists) and remove the entry from `dataTypes` in `regions.json`.
+On confirmation, delete the `data_{code}.csv` file (if it exists) and remove the entry from `dataTypes` in `region.json`.
 
 #### Inline Add During Import
 
@@ -274,7 +290,7 @@ Single-unit mode is for regions where the user wants to analyze the entire regio
 
 ### Data Model
 
-Add a `singleUnit` boolean field to each region entry in `regions.json`. Default: `false`.
+The `singleUnit` boolean field is stored in the region's `region.json` file. Default: `false`.
 
 ```json
 {
@@ -309,13 +325,70 @@ When a single-unit region is selected in the main app:
 
 The single-unit toggle should be editable on existing regions. Changing modes has consequences:
 
-- **Aquifer mode → Single-unit**: Warn: "Switching to single-unit mode will remove all aquifer boundaries. Wells and measurements will be reassigned to aquifer_id=0. Continue?" If confirmed, delete `aquifers.geojson`, regenerate it from the region boundary with `aquifer_id=0`, and update all `aquifer_id` values in `wells.csv` and all `data_*.csv` files to `0`.
+- **Aquifer mode → Single-unit**: Warn: "Switching to single-unit mode will remove all aquifer boundaries. Wells and measurements will be reassigned to aquifer_id=0. Continue?" If confirmed, delete `aquifers.geojson`, regenerate it from the region boundary with `aquifer_id=0`, and update all `aquifer_id` values in `wells.csv` and all `data_*.csv` files to `0`. Update `region.json`.
 
-- **Single-unit → Aquifer mode**: Warn: "Switching to aquifer mode requires uploading aquifer boundaries. Existing wells will need to be reassigned to aquifers. Continue?" If confirmed, delete the auto-generated `aquifers.geojson`. The aquifers section becomes active and the user must upload aquifer boundaries. Wells and measurements retain `aquifer_id=0` until reassigned (the wells section should prompt for reassignment).
+- **Single-unit → Aquifer mode**: Warn: "Switching to aquifer mode requires uploading aquifer boundaries. Existing wells will need to be reassigned to aquifers. Continue?" If confirmed, delete the auto-generated `aquifers.geojson`. The aquifers section becomes active and the user must upload aquifer boundaries. Wells and measurements retain `aquifer_id=0` until reassigned (the wells section should prompt for reassignment). Update `region.json`.
 
 ### Distinction from Single-Aquifer Regions
 
 A single-unit region is conceptually different from a region that happens to have one uploaded aquifer. In the latter case, the aquifer may have its own name, its boundary may differ from the region boundary, and it appears in the UI as a normal aquifer. Single-unit mode is specifically for "I don't care about aquifer boundaries."
+
+---
+
+## Region Discovery
+
+There is no centralized `regions.json` file. The app discovers regions by scanning the `public/data/` directory at startup:
+
+1. List all subdirectories in `public/data/`.
+2. For each subdirectory, check if a `region.json` file exists.
+3. If yes, read it and treat the directory as a region. The directory name serves as the region `id`.
+4. If no `region.json` is found, skip the directory.
+
+This means adding a region creates a folder + `region.json`, and deleting a region removes the folder entirely.
+
+---
+
+## Region Packages
+
+A region package is a zip file containing all data for a single region. This enables downloading a complete region and re-uploading it elsewhere (or sharing between users/instances).
+
+### Download
+
+The existing "Download Region" option in the main interface kebab menu should produce a zip file containing all files in the region folder:
+
+```
+region.json              (metadata: id, name, lengthUnit, singleUnit, dataTypes)
+region.geojson           (boundary)
+aquifers.geojson         (if present)
+wells.csv                (if present)
+data_wte.csv             (if present)
+data_salinity.csv        (if present, example custom type)
+data_ph.csv              (if present, example custom type)
+```
+
+The zip should be flat (no subfolder). The filename should be the region id, e.g., `oregon.zip`.
+
+### Upload (Import Region Package)
+
+In the Import Data hub's Regions section, the "Add Region" flow offers "Import region package" as an alternative to creating a new region manually. The upload flow:
+
+1. User selects a zip file.
+2. App reads `region.json` from the zip and extracts the `id` field.
+3. **If a region folder with that `id` already exists**: Show a confirmation dialog — "A region named [name] already exists. This will replace it and all its data. This cannot be undone. Continue?"
+4. If confirmed (or no conflict): create/overwrite the region folder and extract all files from the zip.
+5. Return to the Import Data hub with the imported region selected as active.
+
+### Zip Validation
+
+Before extracting, validate the zip contents:
+
+- `region.json` must exist and contain the required fields: `id`, `name`, `lengthUnit`. If `dataTypes` is missing, auto-create it with the default WTE entry using the `lengthUnit` value. If `singleUnit` is missing, default to `false`.
+- `region.geojson` must exist and be valid GeoJSON.
+- If `wells.csv` exists but `aquifers.geojson` does not:
+  - If `singleUnit` is `true`: auto-generate `aquifers.geojson` from `region.geojson` with `aquifer_id=0`.
+  - If `singleUnit` is `false`: report a warning — "Wells found but no aquifer boundaries. Wells may not display correctly until aquifers are uploaded."
+- Any `data_*.csv` files should have corresponding entries in `dataTypes`. If a file exists without a matching type definition (e.g., `data_salinity.csv` but no salinity entry in `dataTypes`), auto-add the type with code derived from the filename, a placeholder name (titlecase of the code), and an empty unit. Log a warning.
+- Reproject `region.geojson` and `aquifers.geojson` to EPSG:4326 if they are not already in that projection (see [Reprojection](#reprojection)).
 
 ---
 
@@ -432,45 +505,54 @@ For all USGS API calls, show:
 
 ---
 
-## Existing Data Migration
+## Directory Structure
 
-The new approach introduces two changes to existing data files:
-
-1. Every measurement file must include an `aquifer_id` column.
-2. The file `water_levels.csv` is renamed to `data_wte.csv`.
-3. Each region in `regions.json` needs a `dataTypes` array.
-
-**Create a separate migration script** (`scripts/migrate_data_files.ts` or similar) that:
-
-1. Reads `regions.json` to get all region IDs.
-2. For each region:
-   a. Reads `wells.csv` to build a `well_id → aquifer_id` lookup map.
-   b. Reads `water_levels.csv`, adds an `aquifer_id` column by looking up each row's `well_id`, and writes the result as `data_wte.csv`.
-   c. Deletes the old `water_levels.csv`.
-3. Updates `regions.json` to add a `dataTypes` array to each region entry: `[{ "code": "wte", "name": "Water Table Elevation", "unit": "<lengthUnit>" }]`, using the region's existing `lengthUnit` value.
-4. Logs which regions were updated and how many rows were modified.
-
-Save detailed instructions for this migration in `prompt_aquifer_id.md`.
-
----
-
-## Updated Directory Structure
-
-After migration, the per-region directory structure is:
+Each region is fully self-contained in its own folder:
 
 ```
 /public/data/
-├── regions.json
-├── [region-id]/
+├── oregon/
+│   ├── region.json              (metadata: id, name, lengthUnit, singleUnit, dataTypes)
+│   ├── region.geojson           (boundary polygon)
+│   ├── aquifers.geojson         (aquifer boundaries)
+│   ├── wells.csv                (well locations)
+│   ├── data_wte.csv             (water table elevation measurements)
+│   ├── data_salinity.csv        (example custom type)
+│   └── data_ph.csv              (example custom type)
+├── volta-basin/
+│   ├── region.json
 │   ├── region.geojson
 │   ├── aquifers.geojson
 │   ├── wells.csv
-│   ├── data_wte.csv          (was water_levels.csv)
-│   ├── data_salinity.csv     (example custom type)
-│   └── data_ph.csv           (example custom type)
+│   └── data_wte.csv
+└── ...
 ```
 
-The set of `data_*.csv` files present in a region folder corresponds to the data types that have been imported. The `dataTypes` array in `regions.json` defines all available types (including those with no data yet). To check which types have data, glob for `data_*.csv` files or check file existence.
+There is no top-level `regions.json`. Each region's `region.json` contains all metadata previously stored in that centralized file. The set of `data_*.csv` files present in a region folder corresponds to the data types that have been imported. The `dataTypes` array in `region.json` defines all available types (including those with no data yet). To check which types have data, glob for `data_*.csv` files or check file existence.
+
+---
+
+## Existing Data Migration
+
+The new approach introduces several changes to existing data files:
+
+1. The centralized `regions.json` is replaced by per-folder `region.json` files.
+2. Each `region.json` includes a `dataTypes` array and a `singleUnit` field.
+3. The file `water_levels.csv` is renamed to `data_wte.csv`.
+4. Every measurement file must include an `aquifer_id` column.
+
+**Create a separate migration script** (`scripts/migrate_data_files.ts` or similar) that:
+
+1. Reads the existing `regions.json` to get all region entries.
+2. For each region:
+   a. Creates a `region.json` file in the region's folder containing: `id` (folder name), `name`, `lengthUnit` (from the old entry), `singleUnit: false`, and `dataTypes: [{ "code": "wte", "name": "Water Table Elevation", "unit": "<lengthUnit>" }]`.
+   b. Reads `wells.csv` to build a `well_id → aquifer_id` lookup map.
+   c. Reads `water_levels.csv`, adds an `aquifer_id` column by looking up each row's `well_id`, and writes the result as `data_wte.csv`.
+   d. Deletes the old `water_levels.csv`.
+3. Deletes the old top-level `regions.json`.
+4. Logs which regions were migrated and how many rows were modified.
+
+Save detailed instructions for this migration in `prompt_aquifer_id.md`.
 
 ---
 
@@ -478,6 +560,7 @@ The set of `data_*.csv` files present in a region folder corresponds to the data
 
 Any operation that deletes existing data must show a confirmation dialog before proceeding. Specifically:
 
+- **Import region package (overwrite)**: "A region named [name] already exists. This will replace it and all its data. This cannot be undone. Continue?"
 - **Replace aquifers**: "Replacing aquifers will delete all existing wells (N) and measurements (N across all data types) in this region. Continue?"
 - **Replace wells (all)**: "Replacing wells will delete all associated measurements (N across all data types) in this region. Continue?"
 - **Replace wells (single aquifer)**: "Replacing wells in [aquifer name] will delete N wells and their associated measurements across all data types. Continue?"
