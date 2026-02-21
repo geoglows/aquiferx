@@ -173,6 +173,8 @@ Clicking "Add Data Type" expands an inline form (or small sub-dialog) with three
 - **Code** (required): The short identifier used in file names, e.g., "tce". Auto-generated from the name as a suggestion (lowercase, spaces → underscores, strip special characters), but editable. Validated: lowercase alphanumeric and underscores only, max 20 characters, must be unique within the region, must not be "wte" (reserved).
 - **Unit** (optional): The measurement unit, e.g., "PPM", "mg/L", "μS/cm". Free text, max 20 characters. Can be left blank for dimensionless values (like pH).
 
+**Cross-region suggestions**: Above or alongside the form, show a "From other regions" suggestion list. This is populated by scanning all other regions' `dataTypes` arrays and collecting any types not already defined in the current region (deduplicate by code). Clicking a suggestion auto-fills all three fields. This avoids repetitive data entry when the same parameter (e.g., "Salinity", "mg/L") is used across multiple regions.
+
 A "Save" button adds the entry to `dataTypes` in `regions.json`. No `data_{code}.csv` file is created yet — that happens when measurements of this type are first imported.
 
 #### Editing a Data Type
@@ -330,9 +332,16 @@ The selected data type controls:
 - **Min measurements filter**: The filter applies to the selected data type. A well with 100 WTE records but 0 salinity records should be filtered out when viewing salinity.
 - **Well list / map coloring**: If wells are color-coded or sized by measurement count, use the count for the selected data type.
 
+### Region Context and Scoping
+
+Data types are defined per-region, so the data type selector changes when the user switches regions. To make this clear:
+
+- **Show the region name alongside the data type selector** — e.g., "Oregon — WTE (ft)" — so it's obvious the selector is scoped to the active region. When the user switches regions, the selector resets to WTE (the default) and the label updates to reflect the new region.
+- If the new region has only WTE, the selector hides or becomes a static label. If it has multiple types, the full dropdown appears. The visible change in the selector when switching regions reinforces that data types are region-specific.
+
 ### Placement
 
-The data type selector should be placed prominently — near the top of the left panel or near the time series chart — so users understand that it affects what they're viewing. The current data type should be clearly labeled.
+The data type selector should be placed prominently — near the top of the left panel or near the time series chart — so users understand that it affects what they're viewing. The current data type and region name should be clearly labeled.
 
 ### Future Consideration
 
