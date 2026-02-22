@@ -1,8 +1,24 @@
 
+export interface DataType {
+  code: string;
+  name: string;
+  unit: string;
+}
+
+export interface RegionMeta {
+  id: string;
+  name: string;
+  lengthUnit: 'ft' | 'm';
+  singleUnit: boolean;
+  dataTypes: DataType[];
+}
+
 export interface Region {
   id: string;
   name: string;
   lengthUnit: 'ft' | 'm';
+  singleUnit: boolean;
+  dataTypes: DataType[];
   geojson: any;
   bounds: [number, number, number, number]; // [minLat, minLng, maxLat, maxLng]
 }
@@ -31,12 +47,13 @@ export interface Measurement {
   wellId: string;
   wellName: string;
   date: string; // ISO or human readable
-  wte: number; // Water Table Elevation
+  value: number; // Measurement value (e.g. Water Table Elevation)
+  dataType: string; // Data type code (e.g. 'wte')
   aquiferId: string;
 }
 
 export interface ChartPoint {
   date: number; // timestamp
-  wte: number;
+  value: number;
   isInterpolated: boolean;
 }

@@ -50,6 +50,7 @@ interface MapViewProps {
   selectedRegion: Region | null;
   selectedAquifer: Aquifer | null;
   selectedWells: Well[];
+  selectedDataType?: string;
   onRegionClick: (r: Region) => void;
   onAquiferClick: (a: Aquifer) => void;
   onWellClick: (w: Well, shiftKey: boolean) => void;
@@ -64,19 +65,22 @@ const MapView: React.FC<MapViewProps> = ({
   selectedRegion,
   selectedAquifer,
   selectedWells,
+  selectedDataType = 'wte',
   onRegionClick,
   onAquiferClick,
   onWellClick,
   onWellBoxSelect
 }) => {
-  // Count measurements per well
+  // Count measurements per well for the active data type
   const wellMeasurementCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const m of measurements) {
-      counts.set(m.wellId, (counts.get(m.wellId) || 0) + 1);
+      if (m.dataType === selectedDataType) {
+        counts.set(m.wellId, (counts.get(m.wellId) || 0) + 1);
+      }
     }
     return counts;
-  }, [measurements]);
+  }, [measurements, selectedDataType]);
   const mapRef = useRef<L.Map | null>(null);
   const basemapLayerRef = useRef<L.TileLayer | null>(null);
   const regionLayerRef = useRef<L.FeatureGroup | null>(null);

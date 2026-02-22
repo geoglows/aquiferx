@@ -1,12 +1,12 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Layers, Map as MapIcon, Database, ChevronRight, Activity, Upload, Loader2, Download, Table } from 'lucide-react';
-import { Region, Aquifer, Well, Measurement } from './types';
+import { Region, Aquifer, Well, Measurement, DataType } from './types';
 import { loadAllData } from './services/dataLoader';
 import MapView from './components/MapView';
 import Sidebar from './components/Sidebar';
 import TimeSeriesChart from './components/TimeSeriesChart';
-import DataManager from './components/DataManager';
+import ImportDataHub from './components/import/ImportDataHub';
 import DataEditor from './components/DataEditor';
 import JSZip from 'jszip';
 
@@ -24,6 +24,12 @@ const App: React.FC = () => {
   const [isDataManagerOpen, setIsDataManagerOpen] = useState(false);
   const [isDataEditorOpen, setIsDataEditorOpen] = useState(false);
   const [showGSE, setShowGSE] = useState(false);
+  const [selectedDataType, setSelectedDataType] = useState<string>('wte');
+
+  // Reset selectedDataType when region changes
+  useEffect(() => {
+    setSelectedDataType('wte');
+  }, [selectedRegion?.id]);
 
   // Load data on mount
   useEffect(() => {
@@ -47,8 +53,30 @@ const App: React.FC = () => {
     loadData();
   }, []);
 
+  // Callback for ImportDataHub / DataManager to refresh data
+  const handleDataChanged = async () => {
+    try {
+      const data = await loadAllData();
+      setRegions(data.regions);
+      setAquifers(data.aquifers);
+      setWells(data.wells);
+      setMeasurements(data.measurements);
+    } catch (e) {
+      console.error('Failed to reload data:', e);
+    }
+  };
+
+  // Active data type object
+  const activeDataType = useMemo<DataType>(() => {
+    if (selectedRegion) {
+      const dt = selectedRegion.dataTypes.find(d => d.code === selectedDataType);
+      if (dt) return dt;
+    }
+    return { code: 'wte', name: 'Water Table Elevation', unit: 'ft' };
+  }, [selectedRegion, selectedDataType]);
+
   // Filtered views
-  const filteredAquifers = useMemo(() => 
+  const filteredAquifers = useMemo(() =>
     selectedRegion ? aquifers.filter(a => a.regionId === selectedRegion.id) : [],
   [selectedRegion, aquifers]);
 
@@ -58,9 +86,9 @@ const App: React.FC = () => {
 
   const selectedWellMeasurements = useMemo(() =>
     selectedWells.length > 0
-      ? measurements.filter(m => selectedWells.some(w => w.id === m.wellId))
+      ? measurements.filter(m => selectedWells.some(w => w.id === m.wellId) && m.dataType === selectedDataType)
       : [],
-  [selectedWells, measurements]);
+  [selectedWells, measurements, selectedDataType]);
 
   const handleWellClick = (well: Well, shiftKey: boolean) => {
     if (shiftKey) {
@@ -80,18 +108,117 @@ const App: React.FC = () => {
 
   // --- Region/Aquifer rename & delete handlers ---
 
-  const handleEditRegion = async (regionId: string, newName: string, lengthUnit: 'ft' | 'm') => {
-    setRegions(prev => prev.map(r => r.id === regionId ? { ...r, name: newName, lengthUnit } : r));
-    // Persist updated regions.json manifest
-    const updatedManifest = regions.map(r =>
-      r.id === regionId
-        ? { id: r.id, path: `/data/${r.id}`, name: newName, lengthUnit }
-        : { id: r.id, path: `/data/${r.id}`, name: r.name, lengthUnit: r.lengthUnit }
-    );
+  const handleEditRegion = async (regionId: string, newName: string, lengthUnit: 'ft' | 'm', singleUnit?: boolean) => {
+    const region = regions.find(r => r.id === regionId);
+    if (!region) return;
+    const newSingleUnit = singleUnit !== undefined ? singleUnit : region.singleUnit;
+    const singleUnitChanged = newSingleUnit !== region.singleUnit;
+
+    setRegions(prev => prev.map(r => r.id === regionId ? { ...r, name: newName, lengthUnit, singleUnit: newSingleUnit } : r));
+
+    // Handle single-unit mode change
+    if (singleUnitChanged) {
+      if (newSingleUnit) {
+        // Switching TO single-unit: rewrite aquifers.geojson with single boundary, update wells/measurements aquifer_id to "0"
+        try {
+          // Create single-unit aquifer from region boundary
+          const gjRes = await fetch(`/data/${regionId}/region.geojson`);
+          if (gjRes.ok) {
+            const regionGj = await gjRes.json();
+            const singleAquifer = {
+              type: 'FeatureCollection',
+              features: [{
+                type: 'Feature',
+                properties: { aquifer_id: '0', aquifer_name: newName },
+                geometry: regionGj.type === 'FeatureCollection' ? regionGj.features[0]?.geometry : regionGj.geometry
+              }]
+            };
+            const filesToSave: { path: string; content: string }[] = [
+              { path: `${regionId}/aquifers.geojson`, content: JSON.stringify(singleAquifer, null, 2) }
+            ];
+
+            // Update wells.csv — set all aquifer_id to "0"
+            try {
+              const wRes = await fetch(`/data/${regionId}/wells.csv`);
+              if (wRes.ok) {
+                const text = await wRes.text();
+                const lines = text.split('\n');
+                if (lines.length > 1) {
+                  const headers = lines[0];
+                  const cols = headers.split(',');
+                  const aqIdx = cols.findIndex(c => c.trim() === 'aquifer_id');
+                  if (aqIdx >= 0) {
+                    const newLines = [headers, ...lines.slice(1).filter(l => l.trim()).map(line => {
+                      const parts = line.split(',');
+                      parts[aqIdx] = '0';
+                      return parts.join(',');
+                    })];
+                    filesToSave.push({ path: `${regionId}/wells.csv`, content: newLines.join('\n') });
+                  }
+                }
+              }
+            } catch {}
+
+            // Update all data_*.csv — set all aquifer_id to "0"
+            for (const dt of region.dataTypes) {
+              try {
+                const mRes = await fetch(`/data/${regionId}/data_${dt.code}.csv`);
+                if (mRes.ok) {
+                  const text = await mRes.text();
+                  const lines = text.split('\n');
+                  if (lines.length > 1) {
+                    const headers = lines[0];
+                    const cols = headers.split(',');
+                    const aqIdx = cols.findIndex(c => c.trim() === 'aquifer_id');
+                    if (aqIdx >= 0) {
+                      const newLines = [headers, ...lines.slice(1).filter(l => l.trim()).map(line => {
+                        const parts = line.split(',');
+                        parts[aqIdx] = '0';
+                        return parts.join(',');
+                      })];
+                      filesToSave.push({ path: `${regionId}/data_${dt.code}.csv`, content: newLines.join('\n') });
+                    }
+                  }
+                }
+              } catch {}
+            }
+
+            await fetch('/api/save-data', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ files: filesToSave }),
+            });
+          }
+        } catch (err) {
+          console.error('Failed to switch to single-unit mode:', err);
+        }
+      } else {
+        // Switching FROM single-unit: delete the auto-generated aquifer, clear aquifer assignments
+        try {
+          await fetch('/api/delete-file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filePath: `${regionId}/aquifers.geojson` }),
+          });
+        } catch {}
+      }
+
+      // Reload data to reflect changes
+      handleDataChanged();
+    }
+
+    // Persist updated region.json (per-folder)
+    const regionMeta = {
+      id: regionId,
+      name: newName,
+      lengthUnit,
+      singleUnit: newSingleUnit,
+      dataTypes: region.dataTypes
+    };
     await fetch('/api/save-data', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files: [{ path: 'regions.json', content: JSON.stringify(updatedManifest, null, 2) }] }),
+      body: JSON.stringify({ files: [{ path: `${regionId}/region.json`, content: JSON.stringify(regionMeta, null, 2) }] }),
     });
   };
 
@@ -110,23 +237,11 @@ const App: React.FC = () => {
       const well = wells.find(w => w.id === m.wellId);
       return !well || well.regionId !== regionId;
     }));
-    // Find the region's folder path from the manifest
-    const region = regions.find(r => r.id === regionId);
-    const folderName = region ? region.id : regionId;
     // Delete folder on disk
     await fetch('/api/delete-folder', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ folder: folderName }),
-    });
-    // Update regions.json manifest
-    const updatedManifest = regions
-      .filter(r => r.id !== regionId)
-      .map(r => ({ id: r.id, path: `/data/${r.id}`, name: r.name, lengthUnit: r.lengthUnit }));
-    await fetch('/api/save-data', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files: [{ path: 'regions.json', content: JSON.stringify(updatedManifest, null, 2) }] }),
+      body: JSON.stringify({ folder: regionId }),
     });
   };
 
@@ -134,19 +249,33 @@ const App: React.FC = () => {
     const region = regions.find(r => r.id === regionId);
     if (!region) return;
     const basePath = `/data/${regionId}`;
-    const fileNames = ['region.geojson', 'aquifers.geojson', 'wells.csv', 'water_levels.csv'];
     const zip = new JSZip();
-    const folder = zip.folder(regionId)!;
-    for (const name of fileNames) {
+
+    // Always include region.json and region.geojson
+    const staticFiles = ['region.json', 'region.geojson', 'aquifers.geojson', 'wells.csv'];
+    for (const name of staticFiles) {
       try {
         const res = await fetch(`${basePath}/${name}`);
         if (res.ok) {
-          folder.file(name, await res.text());
+          zip.file(name, await res.text());
         }
       } catch {
         // skip files that don't exist
       }
     }
+
+    // Dynamically include all data_*.csv files
+    for (const dt of region.dataTypes) {
+      try {
+        const res = await fetch(`${basePath}/data_${dt.code}.csv`);
+        if (res.ok) {
+          zip.file(`data_${dt.code}.csv`, await res.text());
+        }
+      } catch {
+        // skip
+      }
+    }
+
     const blob = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -183,6 +312,7 @@ const App: React.FC = () => {
     const aquifer = aquifers.find(a => a.id === aquiferId);
     if (!aquifer) return;
     const regionId = aquifer.regionId;
+    const region = regions.find(r => r.id === regionId);
     // Clear selection if needed
     if (selectedAquifer?.id === aquiferId) {
       setSelectedAquifer(null);
@@ -215,12 +345,19 @@ const App: React.FC = () => {
       `${w.id},"${w.name}",${w.lat},${w.lng},${w.gse},${w.aquiferId},"${w.aquiferName}"`
     );
     const wellsCsvContent = [wellsCsvHeader, ...wellsCsvRows].join('\n');
-    // Water levels CSV
-    const wlCsvHeader = 'well_id,well_name,date,wte,aquifer_id';
-    const wlCsvRows = regionMeasurements.map(m =>
-      `${m.wellId},"${m.wellName}",${m.date},${m.wte},${m.aquiferId}`
-    );
-    const wlCsvContent = [wlCsvHeader, ...wlCsvRows].join('\n');
+
+    // Rebuild data CSVs per data type
+    const dataTypes = region?.dataTypes || [{ code: 'wte', name: 'Water Table Elevation', unit: 'ft' }];
+    const dataFiles: { path: string; content: string }[] = [];
+    for (const dt of dataTypes) {
+      const dtMeasurements = regionMeasurements.filter(m => m.dataType === dt.code);
+      const header = 'well_id,well_name,date,value,aquifer_id';
+      const rows = dtMeasurements.map(m =>
+        `${m.wellId},"${m.wellName}",${m.date},${m.value},${m.aquiferId}`
+      );
+      dataFiles.push({ path: `${regionId}/data_${dt.code}.csv`, content: [header, ...rows].join('\n') });
+    }
+
     await fetch('/api/save-data', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -228,7 +365,7 @@ const App: React.FC = () => {
         files: [
           { path: `${regionId}/aquifers.geojson`, content: geojsonContent },
           { path: `${regionId}/wells.csv`, content: wellsCsvContent },
-          { path: `${regionId}/water_levels.csv`, content: wlCsvContent },
+          ...dataFiles,
         ],
       }),
     });
@@ -238,13 +375,13 @@ const App: React.FC = () => {
   const exportToCSV = () => {
     if (selectedWells.length === 0 || selectedWellMeasurements.length === 0) return;
 
-    const unit = selectedRegion?.lengthUnit === 'm' ? 'm' : 'ft';
-    const headers = ['Date', `Water Table Elevation (${unit})`, 'Well Name', 'Aquifer ID'];
+    const unit = activeDataType.unit;
+    const headers = ['Date', `${activeDataType.name} (${unit})`, 'Well Name', 'Aquifer ID'];
     const rows = selectedWellMeasurements
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
       .map(m => [
         new Date(m.date).toLocaleDateString(),
-        m.wte.toString(),
+        m.value.toString(),
         m.wellName,
         m.aquiferId
       ]);
@@ -259,16 +396,16 @@ const App: React.FC = () => {
     link.href = url;
     const firstName = selectedWells[0].name.replace(/[^a-z0-9]/gi, '_');
     const suffix = selectedWells.length > 1 ? `_and_${selectedWells.length - 1}_others` : '';
-    link.download = `${firstName}${suffix}_water_levels.csv`;
+    link.download = `${firstName}${suffix}_${activeDataType.code}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
   // Chart inline edit/delete handlers
-  const handleChartEditMeasurement = async (wellId: string, date: number, newWte: number) => {
+  const handleChartEditMeasurement = async (wellId: string, date: number, newValue: number) => {
     const updatedMeasurements = measurements.map(m =>
-      m.wellId === wellId && new Date(m.date).getTime() === date
-        ? { ...m, wte: newWte }
+      m.wellId === wellId && new Date(m.date).getTime() === date && m.dataType === selectedDataType
+        ? { ...m, value: newValue }
         : m
     );
     await handleDataEditorSave(updatedMeasurements);
@@ -276,7 +413,7 @@ const App: React.FC = () => {
 
   const handleChartDeleteMeasurement = async (wellId: string, date: number) => {
     const updatedMeasurements = measurements.filter(m =>
-      !(m.wellId === wellId && new Date(m.date).getTime() === date)
+      !(m.wellId === wellId && new Date(m.date).getTime() === date && m.dataType === selectedDataType)
     );
     await handleDataEditorSave(updatedMeasurements);
   };
@@ -284,20 +421,24 @@ const App: React.FC = () => {
   // Save handler for DataEditor
   const handleDataEditorSave = async (updatedMeasurements: Measurement[]) => {
     setMeasurements(updatedMeasurements);
-    // Rebuild and persist the water_levels.csv for this region
+    // Rebuild and persist the data CSV for the active data type in this region
     const regionId = selectedWells[0].regionId;
+    const region = regions.find(r => r.id === regionId);
     const regionWells = wells.filter(w => w.regionId === regionId);
     const regionWellIds = new Set(regionWells.map(w => w.id));
-    const regionMeasurements = updatedMeasurements.filter(m => regionWellIds.has(m.wellId));
-    const wlCsvHeader = 'well_id,well_name,date,wte,aquifer_id';
-    const wlCsvRows = regionMeasurements.map(m =>
-      `${m.wellId},"${m.wellName}",${m.date},${m.wte},${m.aquiferId}`
+
+    // Write the CSV for the active data type
+    const dtCode = selectedDataType;
+    const regionMeasurements = updatedMeasurements.filter(m => regionWellIds.has(m.wellId) && m.dataType === dtCode);
+    const header = 'well_id,well_name,date,value,aquifer_id';
+    const rows = regionMeasurements.map(m =>
+      `${m.wellId},"${m.wellName}",${m.date},${m.value},${m.aquiferId}`
     );
-    const wlCsvContent = [wlCsvHeader, ...wlCsvRows].join('\n');
+    const csvContent = [header, ...rows].join('\n');
     await fetch('/api/save-data', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files: [{ path: `${regionId}/water_levels.csv`, content: wlCsvContent }] }),
+      body: JSON.stringify({ files: [{ path: `${regionId}/data_${dtCode}.csv`, content: csvContent }] }),
     });
   };
 
@@ -332,6 +473,8 @@ const App: React.FC = () => {
     );
   }
 
+  const hasMultipleDataTypes = selectedRegion && selectedRegion.dataTypes.length > 1;
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-slate-50 font-sans">
       {/* Sidebar */}
@@ -340,8 +483,14 @@ const App: React.FC = () => {
         selectedRegion={selectedRegion}
         setSelectedRegion={(r) => {
           setSelectedRegion(r);
-          setSelectedAquifer(null);
           setSelectedWells([]);
+          // For single-unit regions, auto-select the default aquifer
+          if (r && r.singleUnit) {
+            const singleAquifer = aquifers.find(a => a.regionId === r.id);
+            setSelectedAquifer(singleAquifer || null);
+          } else {
+            setSelectedAquifer(null);
+          }
         }}
         aquifers={filteredAquifers}
         selectedAquifer={selectedAquifer}
@@ -408,13 +557,26 @@ const App: React.FC = () => {
               </>
             )}
           </div>
-          <button 
-            onClick={() => setIsDataManagerOpen(true)}
-            className="flex items-center space-x-2 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-md text-sm font-medium hover:bg-blue-100 transition-colors"
-          >
-            <Database size={16} />
-            <span>Import Data</span>
-          </button>
+          <div className="flex items-center space-x-3">
+            {hasMultipleDataTypes && (
+              <select
+                value={selectedDataType}
+                onChange={(e) => setSelectedDataType(e.target.value)}
+                className="px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                {selectedRegion!.dataTypes.map(dt => (
+                  <option key={dt.code} value={dt.code}>{dt.name} ({dt.unit})</option>
+                ))}
+              </select>
+            )}
+            <button
+              onClick={() => setIsDataManagerOpen(true)}
+              className="flex items-center space-x-2 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-md text-sm font-medium hover:bg-blue-100 transition-colors"
+            >
+              <Database size={16} />
+              <span>Manage Data</span>
+            </button>
+          </div>
         </header>
 
         {/* Map and Chart Split View */}
@@ -428,6 +590,7 @@ const App: React.FC = () => {
               selectedRegion={selectedRegion}
               selectedAquifer={selectedAquifer}
               selectedWells={selectedWells}
+              selectedDataType={selectedDataType}
               onRegionClick={(r) => {
                 setSelectedRegion(r);
                 setSelectedAquifer(null);
@@ -447,7 +610,7 @@ const App: React.FC = () => {
                   <div className="flex items-center space-x-2">
                     <Activity size={18} className="text-blue-500" />
                     <h3 className="font-bold text-slate-800">
-                      Water Table Elevation: {
+                      {activeDataType.name}: {
                         selectedWells.length <= 3
                           ? selectedWells.map(w => w.name).join(', ')
                           : `${selectedWells.length} wells selected`
@@ -455,15 +618,17 @@ const App: React.FC = () => {
                     </h3>
                   </div>
                   <div className="flex items-center space-x-4">
-                    <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={showGSE}
-                        onChange={(e) => setShowGSE(e.target.checked)}
-                        className="accent-blue-500"
-                      />
-                      GSE
-                    </label>
+                    {activeDataType.code === 'wte' && (
+                      <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={showGSE}
+                          onChange={(e) => setShowGSE(e.target.checked)}
+                          className="accent-blue-500"
+                        />
+                        GSE
+                      </label>
+                    )}
                     <button
                       onClick={() => setIsDataEditorOpen(true)}
                       disabled={selectedWells.length !== 1}
@@ -483,7 +648,7 @@ const App: React.FC = () => {
                       <span>Export CSV</span>
                     </button>
                     <div className="text-xs text-slate-500 uppercase tracking-wider font-semibold">
-                      Units: {selectedRegion?.lengthUnit === 'm' ? 'Meters' : 'Feet'} (WTE)
+                      Units: {activeDataType.unit === 'm' ? 'Meters' : activeDataType.unit === 'ft' ? 'Feet' : activeDataType.unit} ({activeDataType.code.toUpperCase()})
                     </div>
                   </div>
                 </div>
@@ -491,7 +656,8 @@ const App: React.FC = () => {
                   <TimeSeriesChart
                     measurements={selectedWellMeasurements}
                     selectedWells={selectedWells}
-                    showGSE={showGSE}
+                    showGSE={showGSE && activeDataType.code === 'wte'}
+                    dataType={activeDataType}
                     onEditMeasurement={handleChartEditMeasurement}
                     onDeleteMeasurement={handleChartDeleteMeasurement}
                   />
@@ -502,15 +668,11 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      {/* Data Management Overlay */}
+      {/* Import Data Hub */}
       {isDataManagerOpen && (
-        <DataManager
+        <ImportDataHub
           onClose={() => setIsDataManagerOpen(false)}
-          onUpdateRegions={setRegions}
-          onUpdateAquifers={setAquifers}
-          onUpdateWells={setWells}
-          onUpdateMeasurements={setMeasurements}
-          existingRegions={regions.map(r => r.id)}
+          onDataChanged={handleDataChanged}
         />
       )}
 
@@ -521,6 +683,7 @@ const App: React.FC = () => {
           measurements={selectedWellMeasurements}
           allMeasurements={measurements}
           regionId={selectedWells[0].regionId}
+          dataType={activeDataType}
           onClose={() => setIsDataEditorOpen(false)}
           onSave={handleDataEditorSave}
         />

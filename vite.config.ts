@@ -7,6 +7,69 @@ function saveDataPlugin(): Plugin {
   return {
     name: 'save-data',
     configureServer(server) {
+      // GET /api/regions — scan public/data/ subdirectories for region.json
+      server.middlewares.use('/api/regions', (req, res) => {
+        if (req.method !== 'GET') {
+          res.statusCode = 405;
+          res.end('Method not allowed');
+          return;
+        }
+        try {
+          const dataDir = path.resolve(__dirname, 'public/data');
+          const entries = fs.readdirSync(dataDir, { withFileTypes: true });
+          const regions: any[] = [];
+          for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            const regionJsonPath = path.join(dataDir, entry.name, 'region.json');
+            if (fs.existsSync(regionJsonPath)) {
+              try {
+                const meta = JSON.parse(fs.readFileSync(regionJsonPath, 'utf-8'));
+                regions.push(meta);
+              } catch (e) {
+                // skip malformed region.json
+              }
+            }
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(regions));
+        } catch (err) {
+          res.statusCode = 500;
+          res.end(String(err));
+        }
+      });
+
+      // POST /api/delete-file — delete a single file within public/data/
+      server.middlewares.use('/api/delete-file', (req, res) => {
+        if (req.method !== 'POST') {
+          res.statusCode = 405;
+          res.end('Method not allowed');
+          return;
+        }
+        let body = '';
+        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('end', () => {
+          try {
+            const { filePath } = JSON.parse(body) as { filePath: string };
+            const dataDir = path.resolve(__dirname, 'public/data');
+            const fullPath = path.resolve(dataDir, filePath);
+            // Safety: ensure we're deleting inside public/data
+            if (!fullPath.startsWith(dataDir + path.sep) || fullPath === dataDir) {
+              res.statusCode = 400;
+              res.end(`Invalid path: ${filePath}`);
+              return;
+            }
+            if (fs.existsSync(fullPath)) {
+              fs.unlinkSync(fullPath);
+            }
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ ok: true }));
+          } catch (err) {
+            res.statusCode = 500;
+            res.end(String(err));
+          }
+        });
+      });
+
       // Delete a region folder
       server.middlewares.use('/api/delete-folder', (req, res) => {
         if (req.method !== 'POST') {
@@ -82,7 +145,8 @@ export default defineConfig(({ mode }) => {
       plugins: [react(), saveDataPlugin()],
       define: {
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+        'process.env.USGS_API_KEY': JSON.stringify(env.USGS_API_KEY || '')
       },
       resolve: {
         alias: {

@@ -1,13 +1,14 @@
 
 import React, { useState, useMemo } from 'react';
 import { X, Trash2, Save } from 'lucide-react';
-import { Well, Measurement } from '../types';
+import { Well, Measurement, DataType } from '../types';
 
 interface DataEditorProps {
   well: Well;
   measurements: Measurement[];
   allMeasurements: Measurement[];
   regionId: string;
+  dataType: DataType;
   onClose: () => void;
   onSave: (updatedMeasurements: Measurement[]) => void;
 }
@@ -21,7 +22,7 @@ function computeOutlierBounds(values: number[], multiplier: number): { lower: nu
   return { lower: q1 - multiplier * iqr, upper: q3 + multiplier * iqr };
 }
 
-const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurements, regionId, onClose, onSave }) => {
+const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurements, regionId, dataType, onClose, onSave }) => {
   // Local editable copy, sorted by date ascending
   const [rows, setRows] = useState<Measurement[]>(() =>
     [...measurements].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
@@ -31,18 +32,18 @@ const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurem
   const [iqrMultiplier, setIqrMultiplier] = useState(3);
 
   const outlierBounds = useMemo(() => {
-    const activeValues = rows.filter((_, i) => !deletedIndices.has(i)).map(r => r.wte);
+    const activeValues = rows.filter((_, i) => !deletedIndices.has(i)).map(r => r.value);
     return computeOutlierBounds(activeValues, iqrMultiplier);
   }, [rows, deletedIndices, iqrMultiplier]);
 
   const outlierCount = useMemo(() =>
-    rows.filter((r, i) => !deletedIndices.has(i) && (r.wte < outlierBounds.lower || r.wte > outlierBounds.upper)).length,
+    rows.filter((r, i) => !deletedIndices.has(i) && (r.value < outlierBounds.lower || r.value > outlierBounds.upper)).length,
   [rows, deletedIndices, outlierBounds]);
 
-  const handleWteChange = (index: number, value: string) => {
-    const num = parseFloat(value);
+  const handleValueChange = (index: number, val: string) => {
+    const num = parseFloat(val);
     if (isNaN(num)) return;
-    setRows(prev => prev.map((r, i) => i === index ? { ...r, wte: num } : r));
+    setRows(prev => prev.map((r, i) => i === index ? { ...r, value: num } : r));
   };
 
   const toggleDelete = (index: number) => {
@@ -58,7 +59,7 @@ const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurem
     setIsSaving(true);
     try {
       const survivingRows = rows.filter((_, i) => !deletedIndices.has(i));
-      const otherMeasurements = allMeasurements.filter(m => m.wellId !== well.id);
+      const otherMeasurements = allMeasurements.filter(m => !(m.wellId === well.id && m.dataType === dataType.code));
       const updatedAll = [...otherMeasurements, ...survivingRows];
       onSave(updatedAll);
       onClose();
@@ -72,12 +73,14 @@ const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurem
   const hasChanges = useMemo(() => {
     if (deletedIndices.size > 0) return true;
     for (let i = 0; i < rows.length; i++) {
-      if (rows[i].wte !== measurements.find(m => m.date === rows[i].date && m.wellId === rows[i].wellId)?.wte) {
+      if (rows[i].value !== measurements.find(m => m.date === rows[i].date && m.wellId === rows[i].wellId)?.value) {
         return true;
       }
     }
     return false;
   }, [rows, deletedIndices, measurements]);
+
+  const columnLabel = `${dataType.name} (${dataType.unit})`;
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]" onClick={onClose}>
@@ -120,14 +123,14 @@ const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurem
             <thead>
               <tr className="text-left text-slate-500 border-b border-slate-200">
                 <th className="py-2 pr-4 font-medium">Date</th>
-                <th className="py-2 pr-4 font-medium">WTE (ft)</th>
+                <th className="py-2 pr-4 font-medium">{columnLabel}</th>
                 <th className="py-2 w-10"></th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row, i) => {
                 const isDeleted = deletedIndices.has(i);
-                const isOutlier = !isDeleted && (row.wte < outlierBounds.lower || row.wte > outlierBounds.upper);
+                const isOutlier = !isDeleted && (row.value < outlierBounds.lower || row.value > outlierBounds.upper);
                 return (
                   <tr
                     key={`${row.date}-${i}`}
@@ -143,9 +146,9 @@ const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurem
                       <input
                         type="number"
                         step="any"
-                        value={row.wte}
+                        value={row.value}
                         disabled={isDeleted}
-                        onChange={e => handleWteChange(i, e.target.value)}
+                        onChange={e => handleValueChange(i, e.target.value)}
                         className={`w-28 px-2 py-1 rounded border text-sm ${
                           isOutlier ? 'border-red-300 bg-red-50' : 'border-slate-200 bg-white'
                         } focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:bg-slate-100 disabled:text-slate-400`}

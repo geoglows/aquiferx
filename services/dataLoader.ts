@@ -1,6 +1,6 @@
 import shp from 'shpjs';
 import polylabel from 'polylabel';
-import { Region, Aquifer, Well, Measurement } from '../types';
+import { Region, Aquifer, Well, Measurement, RegionMeta } from '../types';
 
 interface DataFolder {
   name: string;
@@ -104,7 +104,7 @@ function computeLabelPoint(geojson: any, bounds: [number, number, number, number
 }
 
 // Split a CSV line respecting quoted fields
-function splitCSVLine(line: string, delimiter: string): string[] {
+export function splitCSVLine(line: string, delimiter: string): string[] {
   const fields: string[] = [];
   let current = '';
   let inQuotes = false;
@@ -137,7 +137,7 @@ function splitCSVLine(line: string, delimiter: string): string[] {
 }
 
 // Parse CSV text into rows
-function parseCSV(text: string): Record<string, string>[] {
+export function parseCSV(text: string): Record<string, string>[] {
   const lines = text.split('\n').filter(line => line.trim());
   if (lines.length < 2) return [];
 
@@ -172,62 +172,17 @@ async function loadGeoJSON(path: string): Promise<any> {
   return response.json();
 }
 
-// Load all regions from data folders
-export async function loadRegions(): Promise<Region[]> {
-  const regions: Region[] = [];
-  const folders: DataFolder[] = [
-    { name: 'Oregon - Klamath Basin', path: '/data/oregon' },
-    { name: 'Utah', path: '/data/utah' }
-  ];
-
-  for (const folder of folders) {
-    try {
-      const regionPath = `${folder.path}/region`;
-      const regionFilename = folder.path.split('/').pop();
-
-      // Try .geojson first (preferred)
-      try {
-        const response = await fetch(`${regionPath}/${regionFilename}.geojson`);
-        if (response.ok) {
-          const geojson = await response.json();
-          const bounds = calculateBounds(geojson);
-          regions.push({
-            id: regionFilename || folder.name,
-            name: folder.name,
-            lengthUnit: 'ft',
-            geojson: geojson.type === 'FeatureCollection' ? geojson : { type: 'FeatureCollection', features: [geojson] },
-            bounds
-          });
-          continue;
-        }
-      } catch (e) {
-        // GeoJSON not found, try shapefile
-      }
-
-      // Fallback to .shp
-      try {
-        const shpPath = `${regionPath}/${regionFilename}.shp`;
-        const response = await fetch(shpPath);
-        if (response.ok) {
-          const geojson = await loadShapefile(shpPath);
-          const bounds = calculateBounds(geojson);
-          regions.push({
-            id: regionFilename || folder.name,
-            name: folder.name,
-            lengthUnit: 'ft',
-            geojson: geojson.type === 'FeatureCollection' ? geojson : { type: 'FeatureCollection', features: [geojson] },
-            bounds
-          });
-        }
-      } catch (e) {
-        console.warn(`Could not load region for ${folder.name}`, e);
-      }
-    } catch (e) {
-      console.warn(`Error loading region ${folder.name}:`, e);
+// Load region manifest via API
+async function loadRegionManifest(): Promise<RegionMeta[]> {
+  try {
+    const response = await fetch('/api/regions');
+    if (response.ok) {
+      return await response.json();
     }
+  } catch (e) {
+    console.warn('Could not load regions from API:', e);
   }
-
-  return regions;
+  return [];
 }
 
 // Load aquifers for a region from aquifers.geojson
@@ -371,99 +326,93 @@ export async function loadWells(regionPath: string, regionId: string): Promise<W
   return wells;
 }
 
-// Load water level measurements from CSV
-export async function loadMeasurements(regionPath: string, regionId: string): Promise<Measurement[]> {
+// Load measurements from data_{code}.csv files for each data type
+export async function loadMeasurements(regionPath: string, regionId: string, dataTypes: { code: string; name: string; unit: string }[]): Promise<Measurement[]> {
   const measurements: Measurement[] = [];
 
-  try {
-    const response = await fetch(`${regionPath}/water_levels.csv`);
-    if (!response.ok) return measurements;
+  for (const dt of dataTypes) {
+    try {
+      const response = await fetch(`${regionPath}/data_${dt.code}.csv`);
+      if (!response.ok) continue;
 
-    const text = await response.text();
-    const rows = parseCSV(text);
+      const text = await response.text();
+      const rows = parseCSV(text);
 
-    for (const row of rows) {
-      // Standard column names: well_id, date, wte, aquifer_id
-      const wellId = row['well_id'] || '';
-      const wellName = row['well_name'] || '';
-      const date = row['date'] || '';
-      const wte = parseFloat(row['wte'] || '0');
-      const aquiferId = row['aquifer_id'] || '';
+      for (const row of rows) {
+        const wellId = row['well_id'] || '';
+        const wellName = row['well_name'] || '';
+        const date = row['date'] || '';
+        const value = parseFloat(row['value'] || '0');
+        const aquiferId = row['aquifer_id'] || '';
 
-      if (wellId && date && !isNaN(wte)) {
-        measurements.push({
-          wellId,
-          wellName,
-          date,
-          wte,
-          aquiferId
-        });
+        if (wellId && date && !isNaN(value)) {
+          measurements.push({
+            wellId,
+            wellName,
+            date,
+            value,
+            dataType: dt.code,
+            aquiferId
+          });
+        }
       }
+    } catch (e) {
+      console.warn(`Error loading ${dt.code} measurements for ${regionId}:`, e);
     }
-  } catch (e) {
-    console.warn(`Error loading measurements for ${regionId}:`, e);
   }
 
   return measurements;
 }
 
-// Load region manifest
-async function loadRegionManifest(): Promise<{ id: string; path: string; name: string; lengthUnit?: 'ft' | 'm' }[]> {
-  try {
-    const response = await fetch('/data/regions.json');
-    if (response.ok) {
-      return await response.json();
-    }
-  } catch (e) {
-    console.warn('Could not load regions.json manifest:', e);
-  }
-  return [];
-}
-
 // Load all data
-// Each region folder should contain: region.geojson, aquifers.geojson, wells.csv, water_levels.csv
+// Each region folder should contain: region.json, region.geojson, aquifers.geojson, wells.csv, data_*.csv
 export async function loadAllData(): Promise<{
   regions: Region[];
   aquifers: Aquifer[];
   wells: Well[];
   measurements: Measurement[];
 }> {
-  const regionFolders = await loadRegionManifest();
+  const regionMetas = await loadRegionManifest();
 
   const regions: Region[] = [];
   const allAquifers: Aquifer[] = [];
   const allWells: Well[] = [];
   const allMeasurements: Measurement[] = [];
 
-  for (const folder of regionFolders) {
+  for (const meta of regionMetas) {
+    const folderPath = `/data/${meta.id}`;
+
     // Load region boundary from region.geojson
     try {
-      const response = await fetch(`${folder.path}/region.geojson`);
+      const response = await fetch(`${folderPath}/region.geojson`);
       if (response.ok) {
         const geojson = await response.json();
         const bounds = calculateBounds(geojson);
         regions.push({
-          id: folder.id,
-          name: folder.name,
-          lengthUnit: folder.lengthUnit || 'ft',
+          id: meta.id,
+          name: meta.name,
+          lengthUnit: meta.lengthUnit || 'ft',
+          singleUnit: meta.singleUnit || false,
+          dataTypes: meta.dataTypes || [{ code: 'wte', name: 'Water Table Elevation', unit: meta.lengthUnit || 'ft' }],
           geojson: geojson.type === 'FeatureCollection' ? geojson : { type: 'FeatureCollection', features: [geojson] },
           bounds
         });
       }
     } catch (e) {
-      console.warn(`Error loading region ${folder.name}:`, e);
+      console.warn(`Error loading region ${meta.name}:`, e);
     }
 
     // Load wells
-    const wells = await loadWells(folder.path, folder.id);
+    const wells = await loadWells(folderPath, meta.id);
     for (const w of wells) allWells.push(w);
 
     // Load aquifers
-    const aquifers = await loadAquifers(folder.id, folder.path, wells);
+    const aquifers = await loadAquifers(meta.id, folderPath, wells);
     for (const a of aquifers) allAquifers.push(a);
 
-    // Load measurements
-    const measurements = await loadMeasurements(folder.path, folder.id);
+    // Load measurements from all data type CSVs
+    const dataTypes = meta.dataTypes || [{ code: 'wte', name: 'Water Table Elevation', unit: meta.lengthUnit || 'ft' }];
+    const measurements = await loadMeasurements(folderPath, meta.id, dataTypes);
     for (const m of measurements) allMeasurements.push(m);
   }
 

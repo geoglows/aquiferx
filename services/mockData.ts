@@ -6,6 +6,8 @@ export const mockRegions: Region[] = [
     id: 'R1',
     name: 'Virgin River Basin',
     lengthUnit: 'ft',
+    singleUnit: false,
+    dataTypes: [{ code: 'wte', name: 'Water Table Elevation', unit: 'ft' }],
     bounds: [36.9, -113.6, 37.3, -113.3],
     geojson: {
       type: 'Feature',
@@ -47,15 +49,15 @@ export const mockWells: Well[] = [
 ];
 
 export const mockMeasurements: Measurement[] = [
-  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2003-02-24', wte: 2656.54, aquiferId: '14' },
-  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2004-02-25', wte: 2653.83, aquiferId: '14' },
-  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2005-02-24', wte: 2652.9, aquiferId: '14' },
-  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2006-02-24', wte: 2652.4, aquiferId: '14' },
-  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2007-02-23', wte: 2651.91, aquiferId: '14' },
-  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2008-02-20', wte: 2651.06, aquiferId: '14' },
-  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2009-02-24', wte: 2653.24, aquiferId: '14' },
-  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2010-02-23', wte: 2654.89, aquiferId: '14' },
-  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2011-02-23', wte: 2656.67, aquiferId: '14' },
-  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2012-02-27', wte: 2658, aquiferId: '14' },
-  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2013-02-27', wte: 2658.68, aquiferId: '14' },
+  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2003-02-24', value: 2656.54, dataType: 'wte', aquiferId: '14' },
+  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2004-02-25', value: 2653.83, dataType: 'wte', aquiferId: '14' },
+  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2005-02-24', value: 2652.9, dataType: 'wte', aquiferId: '14' },
+  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2006-02-24', value: 2652.4, dataType: 'wte', aquiferId: '14' },
+  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2007-02-23', value: 2651.91, dataType: 'wte', aquiferId: '14' },
+  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2008-02-20', value: 2651.06, dataType: 'wte', aquiferId: '14' },
+  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2009-02-24', value: 2653.24, dataType: 'wte', aquiferId: '14' },
+  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2010-02-23', value: 2654.89, dataType: 'wte', aquiferId: '14' },
+  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2011-02-23', value: 2656.67, dataType: 'wte', aquiferId: '14' },
+  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2012-02-27', value: 2658, dataType: 'wte', aquiferId: '14' },
+  { wellId: '370037113281401', wellName: '(C-43-14)31bab- 1', date: '2013-02-27', value: 2658.68, dataType: 'wte', aquiferId: '14' },
 ];

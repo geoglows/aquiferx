@@ -1,0 +1,13 @@
+{
+  "id": "utah",
+  "name": "Utah",
+  "lengthUnit": "ft",
+  "singleUnit": false,
+  "dataTypes": [
+    {
+      "code": "wte",
+      "name": "Water Table Elevation",
+      "unit": "ft"
+    }
+  ]
+}

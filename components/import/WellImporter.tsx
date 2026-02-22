@@ -1,0 +1,569 @@
+import React, { useState, useEffect } from 'react';
+import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload } from 'lucide-react';
+import { processUploadedFile, UploadedFile, saveFiles, deleteFile, isInUS, assignWellToAquifer, parseCSV } from '../../services/importUtils';
+import { fetchUSGSWells } from '../../services/usgsApi';
+import ColumnMapperModal from './ColumnMapperModal';
+import ConfirmDialog from './ConfirmDialog';
+
+interface WellImporterProps {
+  regionId: string;
+  regionName: string;
+  lengthUnit: 'ft' | 'm';
+  singleUnit: boolean;
+  regionBounds: [number, number, number, number]; // [minLat, minLng, maxLat, maxLng]
+  aquiferCount: number;
+  existingWellCount: number;
+  onComplete: () => void;
+  onClose: () => void;
+}
+
+type ImportMode = 'append' | 'replace';
+type DataSource = 'upload' | 'usgs';
+type AquiferAssignment = 'single' | 'csv-field' | 'by-location';
+
+const WellImporter: React.FC<WellImporterProps> = ({
+  regionId, regionName, lengthUnit, singleUnit, regionBounds, aquiferCount, existingWellCount, onComplete, onClose
+}) => {
+  const [dataSource, setDataSource] = useState<DataSource>('upload');
+  const [file, setFile] = useState<UploadedFile | null>(null);
+  const [showMapper, setShowMapper] = useState(false);
+  const [importMode, setImportMode] = useState<ImportMode>(existingWellCount > 0 ? 'append' : 'replace');
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [showReplaceConfirm, setShowReplaceConfirm] = useState(false);
+
+  // Aquifer assignment
+  const [aquiferAssignment, setAquiferAssignment] = useState<AquiferAssignment>(
+    singleUnit ? 'single' : 'csv-field'
+  );
+  const [selectedAquiferId, setSelectedAquiferId] = useState('');
+  const [aquiferList, setAquiferList] = useState<{ id: string; name: string }[]>([]);
+  const [aquifersGeojson, setAquifersGeojson] = useState<any>(null);
+
+  // GSE interpolation
+  const [gseValues, setGseValues] = useState<Map<string, number>>(new Map());
+  const [gseInterpolated, setGseInterpolated] = useState(false);
+  const [gseProgress, setGseProgress] = useState({ current: 0, total: 0 });
+  const [gseSource, setGseSource] = useState('');
+  const [gseIsRunning, setGseIsRunning] = useState(false);
+
+  // USGS download
+  const [usgsWells, setUsgsWells] = useState<any[] | null>(null);
+  const [usgsProgress, setUsgsProgress] = useState({ count: 0, done: false });
+  const [usgsIsLoading, setUsgsIsLoading] = useState(false);
+
+  // Check if region overlaps US for USGS option
+  const regionOverlapsUS = isInUS(
+    (regionBounds[0] + regionBounds[2]) / 2,
+    (regionBounds[1] + regionBounds[3]) / 2
+  );
+
+  // Load aquifer list for assignment
+  useEffect(() => {
+    if (singleUnit) return;
+    (async () => {
+      try {
+        const res = await fetch(`/data/${regionId}/aquifers.geojson`);
+        if (res.ok) {
+          const gj = await res.json();
+          setAquifersGeojson(gj);
+          const features = gj.type === 'FeatureCollection' ? gj.features : [gj];
+          const list = features.map((f: any) => ({
+            id: String(f.properties?.aquifer_id || ''),
+            name: f.properties?.aquifer_name || ''
+          }));
+          setAquiferList(list);
+          if (list.length === 1) {
+            setAquiferAssignment('single');
+            setSelectedAquiferId(list[0].id);
+          }
+        }
+      } catch {}
+    })();
+  }, [regionId, singleUnit]);
+
+  const fieldDefs = [
+    { key: 'well_id', label: 'Well ID', required: true },
+    { key: 'well_name', label: 'Well Name', required: false },
+    { key: 'lat', label: 'Latitude', required: true },
+    { key: 'long', label: 'Longitude', required: true },
+    { key: 'gse', label: 'Ground Surface Elevation', required: false },
+    ...(!singleUnit && aquiferAssignment === 'csv-field'
+      ? [{ key: 'aquifer_id', label: 'Aquifer ID', required: false }] : []),
+  ];
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    try {
+      const uploaded = await processUploadedFile(f, 'wells');
+      setFile(uploaded);
+      setShowMapper(true);
+      setGseValues(new Map());
+      setGseInterpolated(false);
+      setUsgsWells(null);
+    } catch (err) {
+      setError(`Failed to process: ${err}`);
+    }
+  };
+
+  const updateMapping = (key: string, value: string) => {
+    if (!file) return;
+    setFile({ ...file, mapping: { ...file.mapping, [key]: value } });
+  };
+
+  // USGS well download
+  const handleUSGSDownload = async () => {
+    setUsgsIsLoading(true);
+    setError('');
+    setUsgsProgress({ count: 0, done: false });
+    try {
+      // Convert bounds to USGS bbox format: [minLng, minLat, maxLng, maxLat]
+      const bbox: [number, number, number, number] = [
+        regionBounds[1], regionBounds[0], regionBounds[3], regionBounds[2]
+      ];
+      const wells = await fetchUSGSWells(bbox, (count) => {
+        setUsgsProgress({ count, done: false });
+      });
+
+      // Filter to aquifer boundaries if we have them using point-in-polygon
+      let filtered = wells;
+      if (aquifersGeojson) {
+        filtered = wells.filter(w => assignWellToAquifer(w.lat, w.lng, aquifersGeojson) !== null);
+      }
+
+      setUsgsWells(filtered);
+      setUsgsProgress({ count: filtered.length, done: true });
+
+      // Convert to UploadedFile format for the save flow
+      const rows = filtered.map(w => ({
+        well_id: w.siteId,
+        well_name: w.siteName,
+        lat: String(w.lat),
+        long: String(w.lng),
+        gse: w.gse ? String(lengthUnit === 'ft' ? Math.round(w.gse * 3.28084 * 100) / 100 : Math.round(w.gse * 100) / 100) : '',
+      }));
+      const columns = ['well_id', 'well_name', 'lat', 'long', 'gse'];
+      setFile({
+        name: 'USGS Wells',
+        data: rows,
+        columns,
+        mapping: { well_id: 'well_id', well_name: 'well_name', lat: 'lat', long: 'long', gse: 'gse' },
+        type: 'csv'
+      });
+    } catch (err) {
+      setError(`USGS download failed: ${err}`);
+    }
+    setUsgsIsLoading(false);
+  };
+
+  const needsGseInterpolation = file !== null && !file.mapping['gse'] && dataSource === 'upload';
+
+  const interpolateGSE = async () => {
+    if (!file) return;
+    setGseIsRunning(true);
+    setGseValues(new Map());
+
+    const wellIdCol = file.mapping['well_id'];
+    const latCol = file.mapping['lat'];
+    const longCol = file.mapping['long'];
+    const wells = (file.data as Record<string, string>[])
+      .filter(w => w[wellIdCol] && w[latCol] && w[longCol])
+      .map(w => ({ id: w[wellIdCol], lat: parseFloat(w[latCol]), lng: parseFloat(w[longCol]) }));
+
+    setGseProgress({ current: 0, total: wells.length });
+    const allInUS = wells.every(w => isInUS(w.lat, w.lng));
+    const results = new Map<string, number>();
+
+    try {
+      if (allInUS) {
+        setGseSource('USGS 3DEP (~10m resolution)');
+        let completed = 0;
+        const queue = [...wells];
+        const fetchOne = async () => {
+          while (queue.length > 0) {
+            const well = queue.shift()!;
+            try {
+              const url = `https://epqs.nationalmap.gov/v1/json?x=${well.lng}&y=${well.lat}&units=Meters&wkid=4326`;
+              const res = await fetch(url);
+              if (res.ok) {
+                const data = await res.json();
+                const elevMeters = parseFloat(data.value);
+                if (!isNaN(elevMeters) && elevMeters > -100) {
+                  const elev = lengthUnit === 'ft' ? Math.round(elevMeters * 3.28084 * 100) / 100 : Math.round(elevMeters * 100) / 100;
+                  results.set(well.id, elev);
+                }
+              }
+            } catch {}
+            completed++;
+            setGseProgress({ current: completed, total: wells.length });
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(5, wells.length) }, () => fetchOne()));
+      } else {
+        setGseSource('Open-Meteo Copernicus DEM (~90m resolution)');
+        let completed = 0;
+        for (let i = 0; i < wells.length; i += 100) {
+          const batch = wells.slice(i, i + 100);
+          try {
+            const lats = batch.map(w => w.lat).join(',');
+            const lngs = batch.map(w => w.lng).join(',');
+            const res = await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`);
+            if (res.ok) {
+              const data = await res.json();
+              batch.forEach((well, idx) => {
+                const elevMeters = data.elevation[idx];
+                if (elevMeters !== undefined && !isNaN(elevMeters) && elevMeters > -1000) {
+                  const elev = lengthUnit === 'ft' ? Math.round(elevMeters * 3.28084 * 100) / 100 : Math.round(elevMeters * 100) / 100;
+                  results.set(well.id, elev);
+                }
+              });
+            }
+          } catch {}
+          completed += batch.length;
+          setGseProgress({ current: completed, total: wells.length });
+        }
+      }
+      setGseValues(results);
+      setGseInterpolated(true);
+    } catch (err) {
+      setError(`GSE interpolation failed: ${err}`);
+    }
+    setGseIsRunning(false);
+  };
+
+  const resolveAquiferId = (row: Record<string, string>): string => {
+    if (singleUnit) return '0';
+    switch (aquiferAssignment) {
+      case 'single':
+        return selectedAquiferId;
+      case 'csv-field': {
+        const col = file?.mapping['aquifer_id'];
+        return col ? row[col] || '' : '';
+      }
+      case 'by-location': {
+        const latCol = file?.mapping['lat'] || '';
+        const longCol = file?.mapping['long'] || '';
+        const lat = parseFloat(row[latCol]);
+        const lng = parseFloat(row[longCol]);
+        if (!isNaN(lat) && !isNaN(lng) && aquifersGeojson) {
+          return assignWellToAquifer(lat, lng, aquifersGeojson) || '';
+        }
+        return '';
+      }
+      default: return '';
+    }
+  };
+
+  const doSave = async () => {
+    if (!file) return;
+    setIsSaving(true);
+    setError('');
+    try {
+      const rows = file.data as Record<string, string>[];
+      const wellIdCol = file.mapping['well_id'];
+      const wellNameCol = file.mapping['well_name'];
+      const latCol = file.mapping['lat'];
+      const longCol = file.mapping['long'];
+      const gseCol = file.mapping['gse'];
+
+      const processedWells = rows.map(w => ({
+        well_id: w[wellIdCol] || '',
+        well_name: wellNameCol ? w[wellNameCol] || '' : '',
+        lat: w[latCol] || '',
+        long: w[longCol] || '',
+        gse: gseCol ? w[gseCol] || '' : (gseValues.get(w[wellIdCol])?.toString() ?? ''),
+        aquifer_id: resolveAquiferId(w)
+      })).filter(w => w.well_id && w.lat && w.long);
+
+      if (importMode === 'append' && existingWellCount > 0) {
+        // Load existing wells, skip duplicates
+        let existingRows: Record<string, string>[] = [];
+        try {
+          const res = await fetch(`/data/${regionId}/wells.csv`);
+          if (res.ok) {
+            const text = await res.text();
+            const parsed = parseCSV(text);
+            existingRows = parsed.rows;
+          }
+        } catch {}
+
+        const existingIds = new Set(existingRows.map(r => r.well_id));
+        const toAdd = processedWells.filter(w => !existingIds.has(w.well_id));
+
+        // Merge: keep existing + add new
+        const allWells = [
+          ...existingRows.map(r => `${r.well_id},"${r.well_name || ''}",${r.lat},${r.long},${r.gse || ''},${r.aquifer_id || ''}`),
+          ...toAdd.map(w => `${w.well_id},"${w.well_name}",${w.lat},${w.long},${w.gse},${w.aquifer_id}`)
+        ];
+        const csv = 'well_id,well_name,lat,long,gse,aquifer_id\n' + allWells.join('\n');
+        await saveFiles([{ path: `${regionId}/wells.csv`, content: csv }]);
+      } else {
+        // Replace: delete measurements then write
+        if (importMode === 'replace' && existingWellCount > 0) {
+          try {
+            const metaRes = await fetch(`/data/${regionId}/region.json`);
+            if (metaRes.ok) {
+              const meta = await metaRes.json();
+              for (const dt of meta.dataTypes || []) {
+                try { await deleteFile(`${regionId}/data_${dt.code}.csv`); } catch {}
+              }
+            }
+          } catch {}
+        }
+
+        const csv = 'well_id,well_name,lat,long,gse,aquifer_id\n' +
+          processedWells.map(w => `${w.well_id},"${w.well_name}",${w.lat},${w.long},${w.gse},${w.aquifer_id}`).join('\n');
+        await saveFiles([{ path: `${regionId}/wells.csv`, content: csv }]);
+      }
+      onComplete();
+    } catch (err) {
+      setError(`Failed to save: ${err}`);
+    }
+    setIsSaving(false);
+  };
+
+  const handleSave = () => {
+    if (importMode === 'replace' && existingWellCount > 0) {
+      setShowReplaceConfirm(true);
+    } else {
+      doSave();
+    }
+  };
+
+  const isReady = file && file.mapping['well_id'] && file.mapping['lat'] && file.mapping['long'] &&
+    (!needsGseInterpolation || gseInterpolated) &&
+    (singleUnit || aquiferAssignment !== 'single' || selectedAquiferId);
+
+  return (
+    <div className="fixed inset-0 z-[105] flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-bold text-slate-800">Add Wells</h2>
+            <p className="text-sm text-slate-500">{regionName}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+        </div>
+
+        {/* Data source selector */}
+        {regionOverlapsUS && (
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-slate-700 mb-2">Data Source</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setDataSource('upload'); setFile(null); setUsgsWells(null); }}
+                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                  dataSource === 'upload' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                <Upload size={14} /> Upload CSV
+              </button>
+              <button
+                onClick={() => { setDataSource('usgs'); setFile(null); }}
+                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                  dataSource === 'usgs' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                <Download size={14} /> USGS Download
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Import mode */}
+        {existingWellCount > 0 && (
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-slate-700 mb-2">Import Mode</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setImportMode('append')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                  importMode === 'append' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                Append
+              </button>
+              <button
+                onClick={() => setImportMode('replace')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                  importMode === 'replace' ? 'bg-red-600 text-white border-red-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                Replace All
+              </button>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              {importMode === 'append'
+                ? 'New wells will be added. Duplicates (by ID) are skipped.'
+                : 'All existing wells and measurements will be deleted first.'}
+            </p>
+            {importMode === 'replace' && (
+              <div className="flex items-start gap-2 mt-2 p-2 bg-red-50 border border-red-200 rounded-lg">
+                <AlertTriangle size={14} className="text-red-500 mt-0.5 shrink-0" />
+                <p className="text-xs text-red-700">This will also delete all measurement data for this region.</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Aquifer assignment (not for singleUnit) */}
+        {!singleUnit && aquiferList.length > 0 && dataSource === 'upload' && (
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-slate-700 mb-2">Aquifer Assignment</label>
+            <div className="space-y-2">
+              {aquiferList.length === 1 ? (
+                <div className="text-sm text-slate-600 p-2 bg-slate-50 rounded-lg">
+                  All wells assigned to: <span className="font-medium">{aquiferList[0].name || aquiferList[0].id}</span>
+                </div>
+              ) : (
+                <>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="aq-assign" checked={aquiferAssignment === 'csv-field'}
+                      onChange={() => setAquiferAssignment('csv-field')} className="text-blue-600" />
+                    <span className="text-sm text-slate-700">Use aquifer_id column from CSV</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="aq-assign" checked={aquiferAssignment === 'single'}
+                      onChange={() => setAquiferAssignment('single')} className="text-blue-600" />
+                    <span className="text-sm text-slate-700">Assign all to one aquifer</span>
+                  </label>
+                  {aquiferAssignment === 'single' && (
+                    <select value={selectedAquiferId} onChange={e => setSelectedAquiferId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm ml-6">
+                      <option value="">-- Select Aquifer --</option>
+                      {aquiferList.map(a => (
+                        <option key={a.id} value={a.id}>{a.name || a.id}</option>
+                      ))}
+                    </select>
+                  )}
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="aq-assign" checked={aquiferAssignment === 'by-location'}
+                      onChange={() => setAquiferAssignment('by-location')} className="text-blue-600" />
+                    <span className="text-sm text-slate-700">Assign by well location (point-in-polygon)</span>
+                  </label>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Upload flow */}
+        {dataSource === 'upload' && (
+          <>
+            <p className="text-sm text-slate-500 mb-4">Upload a CSV file with well locations.</p>
+            <label className="block mb-4">
+              <input type="file" accept=".csv,.txt" onChange={handleUpload}
+                className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+              />
+            </label>
+          </>
+        )}
+
+        {/* USGS download flow */}
+        {dataSource === 'usgs' && !usgsWells && (
+          <div className="mb-4">
+            <p className="text-sm text-slate-500 mb-3">
+              Download groundwater monitoring wells from USGS within this region's bounding box.
+            </p>
+            <button
+              onClick={handleUSGSDownload}
+              disabled={usgsIsLoading}
+              className="w-full px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {usgsIsLoading ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  Downloading... ({usgsProgress.count} wells found)
+                </>
+              ) : (
+                <>
+                  <Download size={14} /> Download USGS Wells
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* File / USGS result display */}
+        {file && (
+          <div className="mb-4">
+            <div className="flex items-center gap-2 text-sm text-green-700 mb-2">
+              <CheckCircle2 size={16} />
+              {dataSource === 'usgs'
+                ? `${(file.data as any[]).length} USGS wells loaded`
+                : `${file.name} (${(file.data as any[]).length} rows)`}
+            </div>
+            {dataSource === 'upload' && (
+              <button onClick={() => setShowMapper(true)} className="text-xs text-blue-600 hover:text-blue-800 font-medium">
+                Edit Column Mapping
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* GSE interpolation */}
+        {needsGseInterpolation && file && (
+          <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg mb-4">
+            <p className="text-sm text-amber-800 mb-3">
+              No GSE column mapped. Ground Surface Elevation will be estimated from a DEM.
+            </p>
+            {gseSource && <p className="text-xs text-slate-600 mb-2">Source: {gseSource}</p>}
+            {!gseIsRunning && !gseInterpolated && (
+              <button onClick={interpolateGSE} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
+                Start GSE Interpolation
+              </button>
+            )}
+            {gseIsRunning && (
+              <div className="flex items-center gap-2 text-sm text-slate-600">
+                <Loader2 size={14} className="animate-spin" />
+                Fetching: {gseProgress.current} / {gseProgress.total}
+              </div>
+            )}
+            {gseInterpolated && (
+              <div className="flex items-center gap-2 text-sm text-green-700">
+                <CheckCircle2 size={16} /> GSE interpolated for {gseValues.size} wells
+              </div>
+            )}
+          </div>
+        )}
+
+        {error && <p className="text-sm text-red-600 mb-4">{error}</p>}
+
+        <div className="flex justify-end">
+          <button
+            onClick={handleSave}
+            disabled={!isReady || isSaving}
+            className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+          >
+            {isSaving && <Loader2 size={14} className="animate-spin" />}
+            {isSaving ? 'Saving...' : 'Save Wells'}
+          </button>
+        </div>
+      </div>
+
+      {showMapper && file && (
+        <ColumnMapperModal
+          file={file}
+          fieldDefinitions={fieldDefs}
+          onUpdateMapping={updateMapping}
+          onClose={() => setShowMapper(false)}
+          title="Map Well Columns"
+        />
+      )}
+
+      {showReplaceConfirm && (
+        <ConfirmDialog
+          title="Replace All Wells?"
+          message={`This will delete all ${existingWellCount} existing well(s) and all measurement data. This cannot be undone.`}
+          confirmLabel="Replace All"
+          variant="danger"
+          onConfirm={() => { setShowReplaceConfirm(false); doSave(); }}
+          onCancel={() => setShowReplaceConfirm(false)}
+        />
+      )}
+    </div>
+  );
+};
+
+export default WellImporter;

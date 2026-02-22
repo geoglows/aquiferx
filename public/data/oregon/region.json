@@ -1,0 +1,13 @@
+{
+  "id": "oregon",
+  "name": "Oregon - Klamath Basin",
+  "lengthUnit": "ft",
+  "singleUnit": false,
+  "dataTypes": [
+    {
+      "code": "wte",
+      "name": "Water Table Elevation",
+      "unit": "ft"
+    }
+  ]
+}

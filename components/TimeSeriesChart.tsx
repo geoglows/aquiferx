@@ -3,7 +3,7 @@ import React, { useMemo, useState, useEffect, useRef } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceLine
 } from 'recharts';
-import { Measurement, Well } from '../types';
+import { Measurement, Well, DataType } from '../types';
 import { interpolatePCHIP } from '../utils/interpolation';
 
 const SERIES_COLORS = [
@@ -17,14 +17,15 @@ interface TimeSeriesChartProps {
   measurements: Measurement[];
   selectedWells: Well[];
   showGSE: boolean;
-  onEditMeasurement?: (wellId: string, date: number, newWte: number) => void;
+  dataType: DataType;
+  onEditMeasurement?: (wellId: string, date: number, newValue: number) => void;
   onDeleteMeasurement?: (wellId: string, date: number) => void;
 }
 
 interface SelectedPoint {
   wellId: string;
   date: number;
-  wte: number;
+  value: number;
 }
 
 interface DotPosition extends SelectedPoint {
@@ -34,12 +35,12 @@ interface DotPosition extends SelectedPoint {
 
 const HIT_RADIUS = 15;
 
-const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selectedWells, showGSE, onEditMeasurement, onDeleteMeasurement }) => {
+const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selectedWells, showGSE, dataType, onEditMeasurement, onDeleteMeasurement }) => {
   const [selectedPoint, setSelectedPoint] = useState<SelectedPoint | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [editModal, setEditModal] = useState(false);
   const [deleteModal, setDeleteModal] = useState(false);
-  const [editWte, setEditWte] = useState('');
+  const [editValue, setEditValue] = useState('');
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const dotPositionsRef = useRef<DotPosition[]>([]);
@@ -82,7 +83,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
       if (sorted.length === 0) continue;
 
       const xValues = sorted.map(m => new Date(m.date).getTime());
-      const yValues = sorted.map(m => m.wte);
+      const yValues = sorted.map(m => m.value);
       const actualSet = new Set(xValues);
       const interpMap = new Map<number, number>();
 
@@ -125,7 +126,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
         if (series) {
           const val = series.interpMap.get(t);
           if (val !== undefined) {
-            point[`wte_${wellId}`] = val;
+            point[`val_${wellId}`] = val;
           }
           if (series.actualSet.has(t)) {
             point[`dot_${wellId}`] = val;
@@ -156,6 +157,8 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     wellNameMap.set(w.id, w.name);
   }
 
+  const yAxisLabel = `${dataType.name} (${dataType.unit})`;
+
   const yDomain = useMemo(() => {
     if (!showGSE) return ['auto', 'auto'] as const;
     const gseValues = selectedWells
@@ -163,18 +166,18 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
       .filter(v => v != null && !isNaN(v));
     if (gseValues.length === 0) return ['auto', 'auto'] as const;
 
-    const allWte: number[] = [];
+    const allValues: number[] = [];
     for (const point of chartData) {
       for (const key of Object.keys(point)) {
-        if (key.startsWith('wte_') && point[key] != null) {
-          allWte.push(point[key] as number);
+        if (key.startsWith('val_') && point[key] != null) {
+          allValues.push(point[key] as number);
         }
       }
     }
-    if (allWte.length === 0) return ['auto', 'auto'] as const;
+    if (allValues.length === 0) return ['auto', 'auto'] as const;
 
-    const dataMin = Math.min(...allWte);
-    const dataMax = Math.max(...allWte, ...gseValues);
+    const dataMin = Math.min(...allValues);
+    const dataMax = Math.max(...allValues, ...gseValues);
     const padding = (dataMax - dataMin) * 0.05 || 1;
     return [dataMin - padding, dataMax + padding];
   }, [showGSE, selectedWells, chartData]);
@@ -207,7 +210,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     if (contextMenu || editModal || deleteModal) return;
     const dot = findNearestDot(e.clientX, e.clientY);
     if (dot) {
-      setSelectedPoint({ wellId: dot.wellId, date: dot.date, wte: dot.wte });
+      setSelectedPoint({ wellId: dot.wellId, date: dot.date, value: dot.value });
     } else {
       setSelectedPoint(null);
     }
@@ -218,7 +221,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     const dot = findNearestDot(e.clientX, e.clientY);
     if (dot) {
       e.preventDefault();
-      setSelectedPoint({ wellId: dot.wellId, date: dot.date, wte: dot.wte });
+      setSelectedPoint({ wellId: dot.wellId, date: dot.date, value: dot.value });
       setContextMenu({ x: e.clientX, y: e.clientY });
     }
   };
@@ -233,7 +236,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
 
   const handleSaveEdit = () => {
     if (!selectedPoint || !onEditMeasurement) return;
-    const val = parseFloat(editWte);
+    const val = parseFloat(editValue);
     if (isNaN(val)) return;
     onEditMeasurement(selectedPoint.wellId, selectedPoint.date, val);
     setEditModal(false);
@@ -273,17 +276,18 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
             fontSize={11}
             tick={{ fill: '#334155' }}
             tickFormatter={(val) => val.toLocaleString()}
+            label={{ value: yAxisLabel, angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: '#64748b', fontSize: 11 } }}
           />
           <Tooltip
             content={({ label, payload }) => {
               if (!payload || payload.length === 0 || label == null) return null;
-              const entries = (payload as any[]).filter(p => p.dataKey?.startsWith('wte_'));
+              const entries = (payload as any[]).filter(p => p.dataKey?.startsWith('val_'));
               if (entries.length === 0) return null;
               return (
                 <div className="bg-white rounded-lg shadow-md px-2.5 py-1.5 text-xs border border-slate-200">
                   <div className="text-slate-500">{new Date(label as number).toLocaleDateString()}</div>
                   {entries.map((entry: any) => {
-                    const wellId = entry.dataKey.replace('wte_', '');
+                    const wellId = entry.dataKey.replace('val_', '');
                     return (
                       <div key={entry.dataKey} className="flex items-center gap-1.5 text-slate-700">
                         <span className="w-1.5 h-1.5 rounded-full inline-block flex-shrink-0" style={{ backgroundColor: entry.color }} />
@@ -301,7 +305,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
           {selectedWells.length > 1 && (
             <Legend
               formatter={(value: string) => {
-                const wellId = value.replace(/^wte_/, '');
+                const wellId = value.replace(/^val_/, '');
                 return wellNameMap.get(wellId) || wellId;
               }}
             />
@@ -314,7 +318,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
                 {/* Interpolated curve */}
                 <Line
                   type="linear"
-                  dataKey={`wte_${wellId}`}
+                  dataKey={`val_${wellId}`}
                   stroke={color}
                   strokeWidth={2}
                   dot={false}
@@ -322,7 +326,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
                   isAnimationActive={!isMulti}
                   animationDuration={400}
                   activeDot={{ r: 6, strokeWidth: 0, fill: color }}
-                  name={`wte_${wellId}`}
+                  name={`val_${wellId}`}
                 />
                 {/* Actual measurement dots */}
                 <Line
@@ -338,7 +342,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
                     if (payload[`dot_${wellId}`] === undefined) return <React.Fragment key={`empty-${wellId}-${payload.date}`} />;
 
                     // Record pixel position for hit-testing
-                    dotPositionsRef.current.push({ cx, cy, wellId, date: payload.date, wte: payload[`dot_${wellId}`] });
+                    dotPositionsRef.current.push({ cx, cy, wellId, date: payload.date, value: payload[`dot_${wellId}`] });
 
                     const isSelected = selectedPoint?.wellId === wellId && selectedPoint?.date === payload.date;
                     return (
@@ -361,7 +365,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
               </React.Fragment>
             );
           })}
-          {showGSE && selectedWells.map((well) => {
+          {showGSE && dataType.code === 'wte' && selectedWells.map((well) => {
             if (well.gse == null || isNaN(well.gse)) return null;
             return (
               <ReferenceLine
@@ -401,7 +405,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
             <button
               className="w-full px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-blue-50 hover:text-blue-700 transition-colors"
               onClick={() => {
-                setEditWte(selectedPoint.wte.toString());
+                setEditValue(selectedPoint.value.toString());
                 setEditModal(true);
                 setContextMenu(null);
               }}
@@ -434,12 +438,12 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
                 <span className="text-xs text-slate-700">{new Date(selectedPoint.date).toLocaleDateString()}</span>
               </div>
               <div className="flex items-center justify-between gap-3">
-                <span className="text-xs text-slate-500">WTE</span>
+                <span className="text-xs text-slate-500">{dataType.name}</span>
                 <input
                   type="number"
                   step="any"
-                  value={editWte}
-                  onChange={(e) => setEditWte(e.target.value)}
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
                   className="w-32 border border-slate-300 rounded px-2 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-transparent"
                   autoFocus
                   onKeyDown={(e) => {
@@ -457,7 +461,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
               </button>
               <button
                 className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors disabled:opacity-50"
-                disabled={isNaN(parseFloat(editWte))}
+                disabled={isNaN(parseFloat(editValue))}
                 onClick={handleSaveEdit}
               >
                 Save
