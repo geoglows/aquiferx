@@ -51,6 +51,7 @@ interface MapViewProps {
   selectedAquifer: Aquifer | null;
   selectedWells: Well[];
   selectedDataType?: string;
+  wellColors?: Map<string, string> | null;
   onRegionClick: (r: Region) => void;
   onAquiferClick: (a: Aquifer) => void;
   onWellClick: (w: Well, shiftKey: boolean) => void;
@@ -66,6 +67,7 @@ const MapView: React.FC<MapViewProps> = ({
   selectedAquifer,
   selectedWells,
   selectedDataType = 'wte',
+  wellColors,
   onRegionClick,
   onAquiferClick,
   onWellClick,
@@ -241,7 +243,7 @@ const MapView: React.FC<MapViewProps> = ({
         const hasEnoughData = measurementCount >= 2;
         const marker = L.circleMarker([w.lat, w.lng], {
           radius: 6,
-          fillColor: hasEnoughData ? '#3b82f6' : '#ef4444',
+          fillColor: wellColors?.get(w.id) || (hasEnoughData ? '#3b82f6' : '#ef4444'),
           color: '#ffffff',
           weight: 2,
           opacity: 1,
@@ -264,7 +266,7 @@ const MapView: React.FC<MapViewProps> = ({
       mapRef.current.flyToBounds(aBounds, { padding: [40, 40], duration: 1 });
     }
     visibleWellsRef.current = visible;
-  }, [wells, selectedAquifer, wellMeasurementCounts, minObs]);
+  }, [wells, selectedAquifer, wellMeasurementCounts, minObs, wellColors]);
 
   // Update marker styles when selection changes — no clearing/recreation
   useEffect(() => {
@@ -425,7 +427,7 @@ const MapView: React.FC<MapViewProps> = ({
       )}
 
       {/* Map Options Panel */}
-      <div className="absolute bottom-6 left-3 z-[1000] flex flex-col gap-1.5 bg-white rounded shadow-md border border-slate-300 px-2 py-1.5">
+      <div className="absolute bottom-6 left-3 z-[90] flex flex-col gap-1.5 bg-white rounded shadow-md border border-slate-300 px-2 py-1.5">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1">
             <label htmlFor="min-obs" className="text-xs font-medium text-slate-600 whitespace-nowrap">Min obs</label>
@@ -470,7 +472,7 @@ const MapView: React.FC<MapViewProps> = ({
       </div>
 
       {/* Basemap Gallery */}
-      <div className="absolute top-3 right-3 z-[1000]">
+      <div className="absolute top-3 right-3 z-[90]">
         {!isBasemapMenuOpen ? (
           /* Collapsed - just the icon button */
           <button

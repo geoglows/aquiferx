@@ -13,11 +13,24 @@ const SERIES_COLORS = [
 
 const GSE_COLOR = '#8B4513';
 
+const TREND_THRESHOLDS_FT = { extreme: 2.0, moderate: 0.5 };
+const TREND_THRESHOLDS_M = { extreme: 0.6, moderate: 0.15 };
+
+function slopeToColor(slope: number, thresholds: { extreme: number; moderate: number }): string {
+  if (slope < -thresholds.extreme) return '#CD233F';
+  if (slope < -thresholds.moderate) return '#FFA885';
+  if (slope <= thresholds.moderate) return '#E7E2BC';
+  if (slope <= thresholds.extreme) return '#8ECEEE';
+  return '#2C7DCD';
+}
+
 interface TimeSeriesChartProps {
   measurements: Measurement[];
   selectedWells: Well[];
   showGSE: boolean;
+  showTrendLine: boolean;
   dataType: DataType;
+  lengthUnit?: 'ft' | 'm';
   onEditMeasurement?: (wellId: string, date: number, newValue: number) => void;
   onDeleteMeasurement?: (wellId: string, date: number) => void;
 }
@@ -35,7 +48,7 @@ interface DotPosition extends SelectedPoint {
 
 const HIT_RADIUS = 15;
 
-const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selectedWells, showGSE, dataType, onEditMeasurement, onDeleteMeasurement }) => {
+const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selectedWells, showGSE, showTrendLine, dataType, lengthUnit = 'ft', onEditMeasurement, onDeleteMeasurement }) => {
   const [selectedPoint, setSelectedPoint] = useState<SelectedPoint | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [editModal, setEditModal] = useState(false);
@@ -139,6 +152,90 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     return { chartData: data, wellIds: orderedWellIds };
   }, [measurements, selectedWells]);
 
+  // Compute linear regression trend lines per well (requires >= 3 measurements)
+  const trendData = useMemo(() => {
+    if (!showTrendLine || measurements.length === 0 || selectedWells.length === 0) return null;
+
+    const byWell = new Map<string, { x: number; y: number }[]>();
+    for (const m of measurements) {
+      const t = new Date(m.date).getTime();
+      if (isNaN(t)) continue;
+      if (!byWell.has(m.wellId)) byWell.set(m.wellId, []);
+      byWell.get(m.wellId)!.push({ x: t, y: m.value });
+    }
+
+    const MS_PER_YEAR = 365.25 * 86400000;
+    const lines = new Map<string, { startDate: number; startVal: number; endDate: number; endVal: number; slopePerYear: number }>();
+
+    for (const [wellId, points] of byWell) {
+      if (points.length < 3) continue;
+
+      // Linear regression: y = mx + b
+      const n = points.length;
+      let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+      for (const p of points) {
+        sumX += p.x;
+        sumY += p.y;
+        sumXY += p.x * p.y;
+        sumXX += p.x * p.x;
+      }
+      const denom = n * sumXX - sumX * sumX;
+      if (denom === 0) continue;
+
+      const m = (n * sumXY - sumX * sumY) / denom;
+      const b = (sumY - m * sumX) / n;
+
+      const xs = points.map(p => p.x).sort((a, b) => a - b);
+      const startDate = xs[0];
+      const endDate = xs[xs.length - 1];
+      lines.set(wellId, {
+        startDate,
+        startVal: m * startDate + b,
+        endDate,
+        endVal: m * endDate + b,
+        slopePerYear: m * MS_PER_YEAR,
+      });
+    }
+
+    if (lines.size === 0) return null;
+    return lines;
+  }, [showTrendLine, measurements, selectedWells]);
+
+  // Merge trend line endpoints into chart data
+  const finalChartData = useMemo(() => {
+    if (!trendData) return chartData;
+
+    // Collect all trend timestamps that might not exist in chartData
+    const timestamps = new Set<number>();
+    for (const { startDate, endDate } of trendData.values()) {
+      timestamps.add(startDate);
+      timestamps.add(endDate);
+    }
+
+    // Index existing chart data by timestamp
+    const byTime = new Map<number, Record<string, any>>();
+    for (const point of chartData) {
+      byTime.set(point.date as number, { ...point });
+    }
+
+    // Ensure trend endpoints exist
+    for (const t of timestamps) {
+      if (!byTime.has(t)) {
+        byTime.set(t, { date: t });
+      }
+    }
+
+    // Inject trend values
+    for (const [wellId, line] of trendData) {
+      const startPoint = byTime.get(line.startDate);
+      const endPoint = byTime.get(line.endDate);
+      if (startPoint) startPoint[`trend_${wellId}`] = line.startVal;
+      if (endPoint) endPoint[`trend_${wellId}`] = line.endVal;
+    }
+
+    return Array.from(byTime.values()).sort((a, b) => (a.date as number) - (b.date as number));
+  }, [chartData, trendData]);
+
   if (measurements.length === 0) {
     return (
       <div className="h-full flex items-center justify-center bg-slate-50 text-slate-400 text-sm italic">
@@ -167,9 +264,9 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     if (gseValues.length === 0) return ['auto', 'auto'] as const;
 
     const allValues: number[] = [];
-    for (const point of chartData) {
+    for (const point of finalChartData) {
       for (const key of Object.keys(point)) {
-        if (key.startsWith('val_') && point[key] != null) {
+        if ((key.startsWith('val_') || key.startsWith('trend_')) && point[key] != null) {
           allValues.push(point[key] as number);
         }
       }
@@ -180,7 +277,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     const dataMax = Math.max(...allValues, ...gseValues);
     const padding = (dataMax - dataMin) * 0.05 || 1;
     return [dataMin - padding, dataMax + padding];
-  }, [showGSE, selectedWells, chartData]);
+  }, [showGSE, selectedWells, finalChartData]);
 
   // --- Dot hit-testing ---
   // Clear positions for this render cycle; dot render functions repopulate it
@@ -259,7 +356,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
       onMouseMove={handleWrapperMouseMove}
     >
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+        <LineChart data={finalChartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" />
           <XAxis
             dataKey="date"
@@ -380,6 +477,27 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
                   fill: GSE_COLOR,
                   fontSize: 11,
                 }}
+              />
+            );
+          })}
+          {showTrendLine && trendData && wellIds.map((wellId) => {
+            const line = trendData.get(wellId);
+            if (!line) return null;
+            const thresholds = lengthUnit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT;
+            const color = slopeToColor(line.slopePerYear, thresholds);
+            return (
+              <Line
+                key={`trend_${wellId}`}
+                type="linear"
+                dataKey={`trend_${wellId}`}
+                stroke={color}
+                strokeWidth={1.5}
+                strokeDasharray="8 4"
+                dot={false}
+                connectNulls
+                isAnimationActive={false}
+                legendType="none"
+                name={`trend_${wellId}`}
               />
             );
           })}

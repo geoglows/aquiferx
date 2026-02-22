@@ -10,6 +10,21 @@ import ImportDataHub from './components/import/ImportDataHub';
 import DataEditor from './components/DataEditor';
 import JSZip from 'jszip';
 
+const TREND_THRESHOLDS_FT = { extreme: 2.0, moderate: 0.5 };
+const TREND_THRESHOLDS_M = { extreme: 0.6, moderate: 0.15 };
+
+type TrendThresholds = { extreme: number; moderate: number };
+
+const TREND_CATEGORIES: { label: string; color: string; test: (s: number, t: TrendThresholds) => boolean }[] = [
+  { label: 'Extreme Decline', color: '#CD233F', test: (s, t) => s < -t.extreme },
+  { label: 'Decline', color: '#FFA885', test: (s, t) => s < -t.moderate },
+  { label: 'Static', color: '#E7E2BC', test: (s, t) => s <= t.moderate },
+  { label: 'Increase', color: '#8ECEEE', test: (s, t) => s <= t.extreme },
+  { label: 'Extreme Increase', color: '#2C7DCD', test: () => true },
+];
+
+const INSUFFICIENT_COLOR = '#1E293B';
+
 const App: React.FC = () => {
   const [regions, setRegions] = useState<Region[]>([]);
   const [aquifers, setAquifers] = useState<Aquifer[]>([]);
@@ -24,12 +39,81 @@ const App: React.FC = () => {
   const [isDataManagerOpen, setIsDataManagerOpen] = useState(false);
   const [isDataEditorOpen, setIsDataEditorOpen] = useState(false);
   const [showGSE, setShowGSE] = useState(false);
+  const [showTrendLine, setShowTrendLine] = useState(false);
+  const [trendColors, setTrendColors] = useState<Map<string, string> | null>(null);
+  const [showTrends, setShowTrends] = useState(false);
   const [selectedDataType, setSelectedDataType] = useState<string>('wte');
 
   // Reset selectedDataType when region changes
   useEffect(() => {
     setSelectedDataType('wte');
   }, [selectedRegion?.id]);
+
+  // Clear trend analysis when context changes
+  useEffect(() => {
+    setTrendColors(null);
+    setShowTrends(false);
+  }, [selectedAquifer, selectedDataType]);
+
+  const analyzeTrends = () => {
+    if (showTrends) {
+      setTrendColors(null);
+      setShowTrends(false);
+      return;
+    }
+    if (!selectedRegion || !selectedAquifer) return;
+
+    const thresholds = selectedRegion.lengthUnit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT;
+    const wellIds = new Set<string>(filteredWells.map(w => w.id));
+    const byWell = new Map<string, Measurement[]>();
+    for (const m of measurements) {
+      if (m.dataType === selectedDataType && wellIds.has(m.wellId)) {
+        const arr = byWell.get(m.wellId);
+        if (arr) arr.push(m);
+        else byWell.set(m.wellId, [m]);
+      }
+    }
+
+    const colors = new Map<string, string>();
+    const MS_PER_YEAR = 365.25 * 86400000;
+
+    for (const wId of wellIds) {
+      const wMeas = byWell.get(wId);
+      if (!wMeas || wMeas.length < 3) {
+        colors.set(wId, INSUFFICIENT_COLOR);
+        continue;
+      }
+      // Linear regression: x = fractional years, y = value
+      let n = 0, sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+      for (const m of wMeas) {
+        const x = new Date(m.date).getTime() / MS_PER_YEAR;
+        const y = m.value;
+        n++;
+        sumX += x;
+        sumY += y;
+        sumXY += x * y;
+        sumX2 += x * x;
+      }
+      const denom = n * sumX2 - sumX * sumX;
+      if (denom === 0) {
+        colors.set(wId, INSUFFICIENT_COLOR);
+        continue;
+      }
+      const slope = (n * sumXY - sumX * sumY) / denom;
+
+      let color = INSUFFICIENT_COLOR;
+      for (const cat of TREND_CATEGORIES) {
+        if (cat.test(slope, thresholds)) {
+          color = cat.color;
+          break;
+        }
+      }
+      colors.set(wId, color);
+    }
+
+    setTrendColors(colors);
+    setShowTrends(true);
+  };
 
   // Load data on mount
   useEffect(() => {
@@ -569,6 +653,19 @@ const App: React.FC = () => {
                 ))}
               </select>
             )}
+            {selectedAquifer && (
+              <button
+                onClick={analyzeTrends}
+                className={`flex items-center space-x-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                  showTrends
+                    ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+                    : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+                }`}
+              >
+                <Activity size={16} />
+                <span>Analyze Trends</span>
+              </button>
+            )}
             <button
               onClick={() => setIsDataManagerOpen(true)}
               className="flex items-center space-x-2 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-md text-sm font-medium hover:bg-blue-100 transition-colors"
@@ -591,6 +688,7 @@ const App: React.FC = () => {
               selectedAquifer={selectedAquifer}
               selectedWells={selectedWells}
               selectedDataType={selectedDataType}
+              wellColors={showTrends ? trendColors : null}
               onRegionClick={(r) => {
                 setSelectedRegion(r);
                 setSelectedAquifer(null);
@@ -600,6 +698,28 @@ const App: React.FC = () => {
               onWellClick={handleWellClick}
               onWellBoxSelect={handleWellBoxSelect}
             />
+            {showTrends && trendColors && (
+              <div className="absolute top-3 left-3 z-[90] bg-white rounded-lg shadow-lg border border-slate-200 p-3" style={{ width: '180px' }}>
+                <div className="text-xs font-semibold text-slate-700 mb-2">
+                  Trend ({selectedRegion?.lengthUnit === 'm' ? 'm' : 'ft'}/yr)
+                </div>
+                {[...TREND_CATEGORIES].reverse().map(cat => {
+                  const count = Array.from(trendColors.values()).filter(c => c === cat.color).length;
+                  return (
+                    <div key={cat.label} className="flex items-center gap-2 py-0.5">
+                      <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: cat.color }} />
+                      <span className="text-xs text-slate-600">{cat.label} ({count})</span>
+                    </div>
+                  );
+                })}
+                <div className="flex items-center gap-2 py-0.5">
+                  <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: INSUFFICIENT_COLOR }} />
+                  <span className="text-xs text-slate-600">
+                    Insufficient data ({Array.from(trendColors.values()).filter(c => c === INSUFFICIENT_COLOR).length})
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Time Series Section */}
@@ -629,6 +749,15 @@ const App: React.FC = () => {
                         GSE
                       </label>
                     )}
+                    <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={showTrendLine}
+                        onChange={(e) => setShowTrendLine(e.target.checked)}
+                        className="accent-blue-500"
+                      />
+                      Trend Line
+                    </label>
                     <button
                       onClick={() => setIsDataEditorOpen(true)}
                       disabled={selectedWells.length !== 1}
@@ -657,7 +786,9 @@ const App: React.FC = () => {
                     measurements={selectedWellMeasurements}
                     selectedWells={selectedWells}
                     showGSE={showGSE && activeDataType.code === 'wte'}
+                    showTrendLine={showTrendLine}
                     dataType={activeDataType}
+                    lengthUnit={selectedRegion?.lengthUnit || 'ft'}
                     onEditMeasurement={handleChartEditMeasurement}
                     onDeleteMeasurement={handleChartDeleteMeasurement}
                   />
