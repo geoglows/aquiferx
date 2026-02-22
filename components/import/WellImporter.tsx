@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload } from 'lucide-react';
+import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload, RefreshCw } from 'lucide-react';
 import { processUploadedFile, UploadedFile, saveFiles, deleteFile, isInUS, assignWellToAquifer, parseCSV } from '../../services/importUtils';
 import { fetchUSGSWells } from '../../services/usgsApi';
 import ColumnMapperModal from './ColumnMapperModal';
@@ -52,11 +52,35 @@ const WellImporter: React.FC<WellImporterProps> = ({
   const [usgsProgress, setUsgsProgress] = useState({ count: 0, done: false });
   const [usgsIsLoading, setUsgsIsLoading] = useState(false);
 
+  // USGS well refresh
+  const [existingUsgsIds, setExistingUsgsIds] = useState<Set<string>>(new Set());
+  const [hasExistingUsgsWells, setHasExistingUsgsWells] = useState(false);
+  const [refreshSummary, setRefreshSummary] = useState<{ newCount: number; existingCount: number } | null>(null);
+  const [usgsRefreshLoading, setUsgsRefreshLoading] = useState(false);
+
   // Check if region overlaps US for USGS option
   const regionOverlapsUS = isInUS(
     (regionBounds[0] + regionBounds[2]) / 2,
     (regionBounds[1] + regionBounds[3]) / 2
   );
+
+  // Load existing USGS well IDs for refresh feature
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`/data/${regionId}/wells.csv`);
+        if (res.ok) {
+          const text = await res.text();
+          const { rows } = parseCSV(text);
+          const usgsIds = new Set(
+            rows.map(r => r.well_id).filter(id => id && id.startsWith('USGS-'))
+          );
+          setExistingUsgsIds(usgsIds);
+          setHasExistingUsgsWells(usgsIds.size > 0);
+        }
+      } catch {}
+    })();
+  }, [regionId]);
 
   // Load aquifer list for assignment
   useEffect(() => {
@@ -126,35 +150,102 @@ const WellImporter: React.FC<WellImporterProps> = ({
         setUsgsProgress({ count, done: false });
       });
 
-      // Filter to aquifer boundaries if we have them using point-in-polygon
-      let filtered = wells;
+      // Filter to aquifer boundaries and capture aquifer_id via point-in-polygon
+      let wellsWithAquifer: { well: typeof wells[0]; aquiferId: string }[];
       if (aquifersGeojson) {
-        filtered = wells.filter(w => assignWellToAquifer(w.lat, w.lng, aquifersGeojson) !== null);
+        wellsWithAquifer = [];
+        for (const w of wells) {
+          const aqId = assignWellToAquifer(w.lat, w.lng, aquifersGeojson);
+          if (aqId !== null) wellsWithAquifer.push({ well: w, aquiferId: aqId });
+        }
+      } else {
+        wellsWithAquifer = wells.map(w => ({ well: w, aquiferId: singleUnit ? '0' : '' }));
       }
 
-      setUsgsWells(filtered);
-      setUsgsProgress({ count: filtered.length, done: true });
+      setUsgsWells(wellsWithAquifer.map(x => x.well));
+      setUsgsProgress({ count: wellsWithAquifer.length, done: true });
 
       // Convert to UploadedFile format for the save flow
-      const rows = filtered.map(w => ({
+      const rows = wellsWithAquifer.map(({ well: w, aquiferId }) => ({
         well_id: w.siteId,
         well_name: w.siteName,
         lat: String(w.lat),
         long: String(w.lng),
         gse: w.gse ? String(lengthUnit === 'ft' ? Math.round(w.gse * 3.28084 * 100) / 100 : Math.round(w.gse * 100) / 100) : '',
+        aquifer_id: aquiferId,
       }));
-      const columns = ['well_id', 'well_name', 'lat', 'long', 'gse'];
+      const columns = ['well_id', 'well_name', 'lat', 'long', 'gse', 'aquifer_id'];
       setFile({
         name: 'USGS Wells',
         data: rows,
         columns,
-        mapping: { well_id: 'well_id', well_name: 'well_name', lat: 'lat', long: 'long', gse: 'gse' },
+        mapping: { well_id: 'well_id', well_name: 'well_name', lat: 'lat', long: 'long', gse: 'gse', aquifer_id: 'aquifer_id' },
         type: 'csv'
       });
     } catch (err) {
       setError(`USGS download failed: ${err}`);
     }
     setUsgsIsLoading(false);
+  };
+
+  // USGS well refresh — diff against existing wells, show only new ones
+  const handleUSGSRefresh = async () => {
+    setUsgsRefreshLoading(true);
+    setError('');
+    setRefreshSummary(null);
+    try {
+      const bbox: [number, number, number, number] = [
+        regionBounds[1], regionBounds[0], regionBounds[3], regionBounds[2]
+      ];
+      const wells = await fetchUSGSWells(bbox, (count) => {
+        setUsgsProgress({ count, done: false });
+      });
+
+      // Filter to aquifer boundaries and capture aquifer_id
+      let wellsWithAquifer: { well: typeof wells[0]; aquiferId: string }[];
+      if (aquifersGeojson) {
+        wellsWithAquifer = [];
+        for (const w of wells) {
+          const aqId = assignWellToAquifer(w.lat, w.lng, aquifersGeojson);
+          if (aqId !== null) wellsWithAquifer.push({ well: w, aquiferId: aqId });
+        }
+      } else {
+        wellsWithAquifer = wells.map(w => ({ well: w, aquiferId: singleUnit ? '0' : '' }));
+      }
+
+      // Diff against existing USGS wells
+      const newWells = wellsWithAquifer.filter(x => !existingUsgsIds.has(x.well.siteId));
+      const existingCount = wellsWithAquifer.length - newWells.length;
+
+      setRefreshSummary({ newCount: newWells.length, existingCount });
+      setUsgsProgress({ count: wellsWithAquifer.length, done: true });
+
+      if (newWells.length > 0) {
+        // Populate file with only new wells, force append
+        const rows = newWells.map(({ well: w, aquiferId }) => ({
+          well_id: w.siteId,
+          well_name: w.siteName,
+          lat: String(w.lat),
+          long: String(w.lng),
+          gse: w.gse ? String(lengthUnit === 'ft' ? Math.round(w.gse * 3.28084 * 100) / 100 : Math.round(w.gse * 100) / 100) : '',
+          aquifer_id: aquiferId,
+        }));
+        const columns = ['well_id', 'well_name', 'lat', 'long', 'gse', 'aquifer_id'];
+        setFile({
+          name: 'USGS Wells (New)',
+          data: rows,
+          columns,
+          mapping: { well_id: 'well_id', well_name: 'well_name', lat: 'lat', long: 'long', gse: 'gse', aquifer_id: 'aquifer_id' },
+          type: 'csv'
+        });
+        setImportMode('append');
+      } else {
+        setFile(null);
+      }
+    } catch (err) {
+      setError(`USGS refresh failed: ${err}`);
+    }
+    setUsgsRefreshLoading(false);
   };
 
   const needsGseInterpolation = file !== null && !file.mapping['gse'] && dataSource === 'upload';
@@ -461,27 +552,54 @@ const WellImporter: React.FC<WellImporterProps> = ({
         )}
 
         {/* USGS download flow */}
-        {dataSource === 'usgs' && !usgsWells && (
+        {dataSource === 'usgs' && !file && (
           <div className="mb-4">
             <p className="text-sm text-slate-500 mb-3">
               Download groundwater monitoring wells from USGS within this region's bounding box.
             </p>
-            <button
-              onClick={handleUSGSDownload}
-              disabled={usgsIsLoading}
-              className="w-full px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              {usgsIsLoading ? (
-                <>
-                  <Loader2 size={14} className="animate-spin" />
-                  Downloading... ({usgsProgress.count} wells found)
-                </>
-              ) : (
-                <>
-                  <Download size={14} /> Download USGS Wells
-                </>
+            <div className="flex gap-2">
+              <button
+                onClick={handleUSGSDownload}
+                disabled={usgsIsLoading || usgsRefreshLoading}
+                className={`${hasExistingUsgsWells ? 'flex-1' : 'w-full'} px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2`}
+              >
+                {usgsIsLoading ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    Downloading... ({usgsProgress.count} found)
+                  </>
+                ) : (
+                  <>
+                    <Download size={14} /> Download All
+                  </>
+                )}
+              </button>
+              {hasExistingUsgsWells && (
+                <button
+                  onClick={handleUSGSRefresh}
+                  disabled={usgsIsLoading || usgsRefreshLoading}
+                  className="flex-1 px-4 py-2.5 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {usgsRefreshLoading ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" />
+                      Checking... ({usgsProgress.count} found)
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw size={14} /> Refresh
+                    </>
+                  )}
+                </button>
               )}
-            </button>
+            </div>
+            {refreshSummary && (
+              <div className={`mt-3 p-3 rounded-lg text-sm ${refreshSummary.newCount > 0 ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' : 'bg-slate-50 border border-slate-200 text-slate-700'}`}>
+                {refreshSummary.newCount > 0
+                  ? `Found ${refreshSummary.newCount} new well(s) (${refreshSummary.existingCount} already existed)`
+                  : `Your wells are up to date (${refreshSummary.existingCount} wells checked)`}
+              </div>
+            )}
           </div>
         )}
 

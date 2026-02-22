@@ -238,6 +238,39 @@ function addDetail(list: string[], detail: string) {
  * Fetch water level measurements for given well site IDs.
  * Uses parameter_code=72019 (depth to water level below land surface).
  */
+export interface USGSDataSpan {
+  minDate: string;     // YYYY-MM-DD
+  maxDate: string;     // YYYY-MM-DD
+  totalRecords: number;
+  wellCount: number;   // distinct site IDs
+}
+
+export function computeDataSpan(measurements: { siteId: string; date: string }[]): USGSDataSpan {
+  if (measurements.length === 0) {
+    return { minDate: '', maxDate: '', totalRecords: 0, wellCount: 0 };
+  }
+  const dates = measurements.map(m => m.date).sort();
+  const wells = new Set(measurements.map(m => m.siteId));
+  return {
+    minDate: dates[0],
+    maxDate: dates[dates.length - 1],
+    totalRecords: measurements.length,
+    wellCount: wells.size,
+  };
+}
+
+export function filterByDateRange(
+  measurements: USGSMeasurement[],
+  startDate: string | null,
+  endDate: string | null
+): USGSMeasurement[] {
+  return measurements.filter(m => {
+    if (startDate && m.date < startDate) return false;
+    if (endDate && m.date > endDate) return false;
+    return true;
+  });
+}
+
 export async function fetchUSGSMeasurements(
   wellSiteIds: string[],
   onProgress?: (completed: number, total: number) => void

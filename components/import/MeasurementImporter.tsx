@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload } from 'lucide-react';
+import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload, Calendar } from 'lucide-react';
 import { processUploadedFile, UploadedFile, saveFiles, parseDate, detectDateFormat, parseCSV, isInUS } from '../../services/importUtils';
-import { fetchUSGSMeasurements, validateUSGSMeasurements, USGSDataQualityReport } from '../../services/usgsApi';
+import { fetchUSGSMeasurements, validateUSGSMeasurements, USGSDataQualityReport, USGSMeasurement, USGSDataSpan, computeDataSpan, filterByDateRange } from '../../services/usgsApi';
 import ColumnMapperModal from './ColumnMapperModal';
 import ConfirmDialog from './ConfirmDialog';
 import { DataType } from '../../types';
@@ -19,6 +19,7 @@ interface MeasurementImporterProps {
 
 type ImportMode = 'append' | 'replace';
 type DataSource = 'upload' | 'usgs';
+type USGSMode = 'fresh' | 'quick-refresh' | 'full-refresh';
 type AquiferAssignment = 'from-wells' | 'single' | 'csv-field';
 
 const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
@@ -49,9 +50,16 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
   const [wellAquiferMap, setWellAquiferMap] = useState<Record<string, string>>({});
 
   // USGS download
+  const [usgsMode, setUsgsMode] = useState<USGSMode>('fresh');
   const [usgsIsLoading, setUsgsIsLoading] = useState(false);
   const [usgsProgress, setUsgsProgress] = useState({ completed: 0, total: 0, done: false });
   const [qualityReport, setQualityReport] = useState<USGSDataQualityReport | null>(null);
+  const [dataSpan, setDataSpan] = useState<USGSDataSpan | null>(null);
+  const [trimStartDate, setTrimStartDate] = useState('');
+  const [trimEndDate, setTrimEndDate] = useState('');
+  const [isTrimmed, setIsTrimmed] = useState(false);
+  const [quickRefreshCutoff, setQuickRefreshCutoff] = useState('');
+  const [rawUSGSMeasurements, setRawUSGSMeasurements] = useState<USGSMeasurement[]>([]);
 
   const regionOverlapsUS = isInUS(
     (regionBounds[0] + regionBounds[2]) / 2,
@@ -156,10 +164,40 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     setFile({ ...file, mapping: { ...file.mapping, [key]: value } });
   };
 
-  // USGS measurement download
+  // Build an UploadedFile from validated USGS measurements
+  const buildUSGSFile = (measurements: USGSMeasurement[], label: string) => {
+    const rows = measurements.map(m => {
+      const gse = wellGseMap[m.siteId] || 0;
+      const wteValue = gse > 0 ? Math.round((gse - Math.abs(m.value)) * 100) / 100 : m.value;
+      return {
+        well_id: m.siteId,
+        date: m.date,
+        value: String(wteValue),
+        aquifer_id: singleUnit ? '0' : (wellAquiferMap[m.siteId] || '')
+      };
+    });
+    setFile({
+      name: label,
+      data: rows,
+      columns: ['well_id', 'date', 'value', 'aquifer_id'],
+      mapping: { well_id: 'well_id', date: 'date', value: 'value', aquifer_id: 'aquifer_id' },
+      type: 'csv'
+    });
+    const span = computeDataSpan(measurements);
+    setDataSpan(span);
+    setTrimStartDate(span.minDate);
+    setTrimEndDate(span.maxDate);
+    setIsTrimmed(false);
+  };
+
+  // USGS measurement download — shared across all three modes
   const handleUSGSDownload = async () => {
     setUsgsIsLoading(true);
     setError('');
+    setFile(null);
+    setDataSpan(null);
+    setIsTrimmed(false);
+    setQuickRefreshCutoff('');
     setUsgsProgress({ completed: 0, total: 0, done: false });
     try {
       // Get well IDs from wells.csv
@@ -184,26 +222,33 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       // Validate and clean data
       const { measurements, report } = validateUSGSMeasurements(rawMeasurements);
       setQualityReport(report);
+      setRawUSGSMeasurements(measurements);
 
-      // Convert depth below land surface to WTE using GSE
-      const rows = measurements.map(m => {
-        const gse = wellGseMap[m.siteId] || 0;
-        const wteValue = gse > 0 ? Math.round((gse - Math.abs(m.value)) * 100) / 100 : m.value;
-        return {
-          well_id: m.siteId,
-          date: m.date,
-          value: String(wteValue),
-          aquifer_id: singleUnit ? '0' : (wellAquiferMap[m.siteId] || '')
-        };
-      });
+      // Mode-specific post-processing
+      let filtered = measurements;
 
-      setFile({
-        name: 'USGS Measurements',
-        data: rows,
-        columns: ['well_id', 'date', 'value', 'aquifer_id'],
-        mapping: { well_id: 'well_id', date: 'date', value: 'value', aquifer_id: 'aquifer_id' },
-        type: 'csv'
-      });
+      if (usgsMode === 'quick-refresh') {
+        // Find max existing date for USGS wells
+        try {
+          const dataRes = await fetch(`/data/${regionId}/data_wte.csv`);
+          if (dataRes.ok) {
+            const dataText = await dataRes.text();
+            const { rows: dataRows } = parseCSV(dataText);
+            const usgsDateSet = new Set(usgsSiteIds);
+            const usgsRows = dataRows.filter(r => usgsDateSet.has(r.well_id));
+            if (usgsRows.length > 0) {
+              const dates = usgsRows.map(r => r.date).filter(Boolean).sort();
+              const cutoff = dates[dates.length - 1];
+              setQuickRefreshCutoff(cutoff);
+              filtered = measurements.filter(m => m.date > cutoff);
+            }
+          }
+        } catch {}
+      }
+      // full-refresh: no filtering — all records go to merge at save time
+      // fresh: no filtering
+
+      buildUSGSFile(filtered, usgsMode === 'fresh' ? 'USGS Measurements' : `USGS ${usgsMode === 'quick-refresh' ? 'Quick' : 'Full'} Refresh`);
       setSelectedTypes(['wte']);
       setIsMultiType(false);
       setUsgsProgress({ completed: usgsSiteIds.length, total: usgsSiteIds.length, done: true });
@@ -211,6 +256,23 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       setError(`USGS download failed: ${err}`);
     }
     setUsgsIsLoading(false);
+  };
+
+  // Apply date range trim to USGS data
+  const handleTrim = () => {
+    if (rawUSGSMeasurements.length === 0) return;
+    let filtered = rawUSGSMeasurements;
+
+    // Re-apply mode filter first (quick-refresh cutoff)
+    if (usgsMode === 'quick-refresh' && quickRefreshCutoff) {
+      filtered = filtered.filter(m => m.date > quickRefreshCutoff);
+    }
+
+    // Then apply date range
+    filtered = filterByDateRange(filtered, trimStartDate || null, trimEndDate || null);
+
+    buildUSGSFile(filtered, 'USGS Measurements (Trimmed)');
+    setIsTrimmed(true);
   };
 
   const resolveAquiferId = (row: Record<string, string>): string => {
@@ -306,7 +368,17 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
             };
           });
 
-        if (importMode === 'append') {
+        // Merge/overwrite logic depends on source and mode
+        if (dataSource === 'usgs') {
+          if (usgsMode === 'fresh' && importMode === 'replace') {
+            // Overwrite — no merge needed
+          } else if (usgsMode === 'full-refresh') {
+            processed = await mergeWithExistingFullRefresh(typeCode, processed);
+          } else {
+            // fresh+append, quick-refresh: standard merge (skip dupes)
+            processed = await mergeWithExisting(typeCode, processed);
+          }
+        } else if (importMode === 'append') {
           processed = await mergeWithExisting(typeCode, processed);
         }
 
@@ -344,6 +416,48 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
           })),
           ...toAdd
         ];
+      }
+    } catch {}
+    return newRows;
+  };
+
+  const mergeWithExistingFullRefresh = async (
+    typeCode: string,
+    newRows: { well_id: string; date: string; value: string; aquifer_id: string }[]
+  ) => {
+    try {
+      const res = await fetch(`/data/${regionId}/data_${typeCode}.csv`);
+      if (res.ok) {
+        const text = await res.text();
+        const { rows: existingRows } = parseCSV(text);
+
+        // Build lookup from new data for fast matching
+        const newLookup = new Map<string, { value: string; aquifer_id: string }>();
+        for (const r of newRows) {
+          newLookup.set(`${r.well_id}|${r.date}`, { value: r.value, aquifer_id: r.aquifer_id });
+        }
+
+        // Update existing rows if matching key found in new data
+        const usedKeys = new Set<string>();
+        const merged = existingRows.map(r => {
+          const key = `${r.well_id}|${r.date}`;
+          const update = newLookup.get(key);
+          if (update) {
+            usedKeys.add(key);
+            return { well_id: r.well_id, date: r.date, value: update.value, aquifer_id: r.aquifer_id || update.aquifer_id };
+          }
+          return { well_id: r.well_id, date: r.date, value: r.value, aquifer_id: r.aquifer_id || '' };
+        });
+
+        // Append new rows not already in existing data (backfills)
+        for (const r of newRows) {
+          const key = `${r.well_id}|${r.date}`;
+          if (!usedKeys.has(key)) {
+            merged.push(r);
+          }
+        }
+
+        return merged;
       }
     } catch {}
     return newRows;
@@ -471,8 +585,8 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
           </div>
         )}
 
-        {/* Import mode */}
-        {hasExistingData && dataSource === 'upload' && (
+        {/* Import mode — show for upload, and for USGS fresh mode */}
+        {hasExistingData && (dataSource === 'upload' || (dataSource === 'usgs' && usgsMode === 'fresh')) && (
           <div className="mb-4">
             <label className="block text-sm font-medium text-slate-700 mb-2">Import Mode</label>
             <div className="flex gap-2">
@@ -550,12 +664,39 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
           </>
         )}
 
-        {/* USGS download flow */}
+        {/* USGS mode selector */}
         {dataSource === 'usgs' && !file && (
           <div className="mb-4">
             <p className="text-sm text-slate-500 mb-3">
               Download water level measurements from USGS for wells with USGS site IDs. Depth values will be converted to water table elevation using GSE.
             </p>
+            <label className="block text-sm font-medium text-slate-700 mb-2">Download Mode</label>
+            <div className="space-y-2 mb-4">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input type="radio" name="usgs-mode" checked={usgsMode === 'fresh'}
+                  onChange={() => setUsgsMode('fresh')} className="text-blue-600 mt-0.5" />
+                <div>
+                  <span className="text-sm text-slate-700 font-medium">Fresh Download</span>
+                  <p className="text-xs text-slate-500">Fetch all measurements. Choose append or replace.</p>
+                </div>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input type="radio" name="usgs-mode" checked={usgsMode === 'quick-refresh'}
+                  onChange={() => setUsgsMode('quick-refresh')} className="text-blue-600 mt-0.5" />
+                <div>
+                  <span className="text-sm text-slate-700 font-medium">Quick Refresh</span>
+                  <p className="text-xs text-slate-500">Fetch all, keep only records newer than latest existing date. Always appends.</p>
+                </div>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input type="radio" name="usgs-mode" checked={usgsMode === 'full-refresh'}
+                  onChange={() => setUsgsMode('full-refresh')} className="text-blue-600 mt-0.5" />
+                <div>
+                  <span className="text-sm text-slate-700 font-medium">Full Refresh</span>
+                  <p className="text-xs text-slate-500">Fetch all, merge/deduplicate with existing data. Catches backfills. Always appends.</p>
+                </div>
+              </label>
+            </div>
             <button
               onClick={handleUSGSDownload}
               disabled={usgsIsLoading}
@@ -587,6 +728,41 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
               <button onClick={() => setShowMapper(true)} className="text-xs text-blue-600 hover:text-blue-800 font-medium">
                 Edit Column Mapping
               </button>
+            )}
+          </div>
+        )}
+
+        {/* Data Span Preview + Date Trimmer */}
+        {dataSpan && dataSource === 'usgs' && file && (
+          <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="flex items-center gap-2 mb-2">
+              <Calendar size={14} className="text-blue-600" />
+              <span className="text-sm font-medium text-blue-800">Data Range</span>
+            </div>
+            <p className="text-sm text-slate-700 mb-1">
+              {dataSpan.minDate} to {dataSpan.maxDate} — {dataSpan.totalRecords.toLocaleString()} measurements across {dataSpan.wellCount} wells
+            </p>
+            {usgsMode === 'quick-refresh' && quickRefreshCutoff && (
+              <p className="text-xs text-amber-700 mb-2">Cutoff: showing only records after {quickRefreshCutoff}</p>
+            )}
+            <div className="flex items-end gap-2 mt-2">
+              <div className="flex-1">
+                <label className="block text-xs text-slate-500 mb-1">Start Date</label>
+                <input type="date" value={trimStartDate} onChange={e => setTrimStartDate(e.target.value)}
+                  className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm" />
+              </div>
+              <div className="flex-1">
+                <label className="block text-xs text-slate-500 mb-1">End Date</label>
+                <input type="date" value={trimEndDate} onChange={e => setTrimEndDate(e.target.value)}
+                  className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm" />
+              </div>
+              <button onClick={handleTrim}
+                className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">
+                Trim
+              </button>
+            </div>
+            {isTrimmed && (
+              <p className="text-xs text-green-700 mt-2">Trimmed to {(file.data as any[]).length.toLocaleString()} measurements</p>
             )}
           </div>
         )}
