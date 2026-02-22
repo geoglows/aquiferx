@@ -244,13 +244,14 @@ const MapView: React.FC<MapViewProps> = ({
         if (measurementCount < minObs) return;
         visible.push(w);
         const hasEnoughData = measurementCount >= 2;
+        const trendColor = wellColors?.get(w.id);
         const marker = L.circleMarker([w.lat, w.lng], {
           radius: 6,
-          fillColor: wellColors?.get(w.id) || (hasEnoughData ? '#3b82f6' : '#ef4444'),
-          color: '#ffffff',
+          fillColor: trendColor || (hasEnoughData ? '#3b82f6' : '#ef4444'),
+          color: trendColor ? '#000000' : '#ffffff',
           weight: 2,
           opacity: 1,
-          fillOpacity: 0.8
+          fillOpacity: 0.9
         });
         marker.bindTooltip(`Well: ${w.name}<br/>ID: ${w.id}${w.gse ? `<br/>GSE: ${w.gse}` : ''}<br/>Observations: ${measurementCount}`, { direction: 'top' });
         marker.on('click', (e) => {
@@ -276,13 +277,14 @@ const MapView: React.FC<MapViewProps> = ({
     const selectedIds = new Set(selectedWells.map(w => w.id));
     wellMarkerMapRef.current.forEach((marker, wellId) => {
       const isSelected = selectedIds.has(wellId);
+      const hasTrend = wellColors?.has(wellId);
       marker.setStyle({
         radius: isSelected ? 8 : 6,
-        color: isSelected ? '#f59e0b' : '#ffffff',
+        color: isSelected ? '#f59e0b' : hasTrend ? '#000000' : '#ffffff',
         weight: isSelected ? 3 : 2,
       });
     });
-  }, [selectedWells]);
+  }, [selectedWells, wellColors]);
 
   // Well labels
   useEffect(() => {

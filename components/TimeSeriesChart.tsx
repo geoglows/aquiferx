@@ -13,16 +13,6 @@ const SERIES_COLORS = [
 
 const GSE_COLOR = '#8B4513';
 
-const TREND_THRESHOLDS_FT = { extreme: 2.0, moderate: 0.5 };
-const TREND_THRESHOLDS_M = { extreme: 0.6, moderate: 0.15 };
-
-function slopeToColor(slope: number, thresholds: { extreme: number; moderate: number }): string {
-  if (slope < -thresholds.extreme) return '#CD233F';
-  if (slope < -thresholds.moderate) return '#FFA885';
-  if (slope <= thresholds.moderate) return '#E7E2BC';
-  if (slope <= thresholds.extreme) return '#8ECEEE';
-  return '#2C7DCD';
-}
 
 interface TimeSeriesChartProps {
   measurements: Measurement[];
@@ -483,8 +473,14 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
           {showTrendLine && trendData && wellIds.map((wellId) => {
             const line = trendData.get(wellId);
             if (!line) return null;
-            const thresholds = lengthUnit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT;
-            const color = slopeToColor(line.slopePerYear, thresholds);
+            const thresholds = lengthUnit === 'm' ? { extreme: 0.6, moderate: 0.15 } : { extreme: 2.0, moderate: 0.5 };
+            const slope = line.slopePerYear;
+            let color: string;
+            if (slope < -thresholds.extreme) color = '#DC2626';
+            else if (slope < -thresholds.moderate) color = '#FB923C';
+            else if (slope <= thresholds.moderate) color = '#CA8A04';
+            else if (slope <= thresholds.extreme) color = '#38BDF8';
+            else color = '#2563EB';
             return (
               <Line
                 key={`trend_${wellId}`}

@@ -18,11 +18,11 @@ const AQUIFER_TREND_THRESHOLDS_M = { extreme: 0.3, moderate: 0.075 };
 type TrendThresholds = { extreme: number; moderate: number };
 
 const TREND_CATEGORIES: { label: string; color: string; test: (s: number, t: TrendThresholds) => boolean }[] = [
-  { label: 'Extreme Decline', color: '#CD233F', test: (s, t) => s < -t.extreme },
-  { label: 'Decline', color: '#FFA885', test: (s, t) => s < -t.moderate },
-  { label: 'Static', color: '#E7E2BC', test: (s, t) => s <= t.moderate },
-  { label: 'Increase', color: '#8ECEEE', test: (s, t) => s <= t.extreme },
-  { label: 'Extreme Increase', color: '#2C7DCD', test: () => true },
+  { label: 'Extreme Decline', color: '#DC2626', test: (s, t) => s < -t.extreme },
+  { label: 'Decline', color: '#FB923C', test: (s, t) => s < -t.moderate },
+  { label: 'Static', color: '#FACC15', test: (s, t) => s <= t.moderate },
+  { label: 'Increase', color: '#38BDF8', test: (s, t) => s <= t.extreme },
+  { label: 'Extreme Increase', color: '#2563EB', test: () => true },
 ];
 
 const INSUFFICIENT_COLOR = '#1E293B';
@@ -98,76 +98,52 @@ const App: React.FC = () => {
     if (!selectedRegion) return;
     setShowTrendLine(true);
 
-    if (selectedAquifer) {
-      // WELL-LEVEL MODE
-      const thresholds = selectedRegion.lengthUnit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT;
-      const wellIds = new Set<string>(filteredWells.map(w => w.id));
-      const byWell = new Map<string, Measurement[]>();
-      for (const m of measurements) {
-        if (m.dataType === selectedDataType && wellIds.has(m.wellId)) {
-          const arr = byWell.get(m.wellId);
-          if (arr) arr.push(m);
-          else byWell.set(m.wellId, [m]);
-        }
+    // Compute both well-level and aquifer-level trends for the entire region
+    const regionWells = wells.filter(w => w.regionId === selectedRegion.id);
+
+    // Group measurements by wellId for this data type
+    const byWell = new Map<string, Measurement[]>();
+    for (const m of measurements) {
+      if (m.dataType === selectedDataType) {
+        const arr = byWell.get(m.wellId);
+        if (arr) arr.push(m);
+        else byWell.set(m.wellId, [m]);
       }
-
-      const colors = new Map<string, string>();
-      for (const wId of wellIds) {
-        colors.set(wId, classifySlope(computeSlope(byWell.get(wId) || []), thresholds));
-      }
-
-      setTrendColors(colors);
-      setAquiferTrendColors(null);
-      setShowTrends(true);
-    } else {
-      // AQUIFER-LEVEL MODE
-      const thresholds = selectedRegion.lengthUnit === 'm' ? AQUIFER_TREND_THRESHOLDS_M : AQUIFER_TREND_THRESHOLDS_FT;
-      const regionWells = wells.filter(w => w.regionId === selectedRegion.id);
-
-      // Group wells by aquiferId
-      const wellsByAquifer = new Map<string, Well[]>();
-      for (const w of regionWells) {
-        const arr = wellsByAquifer.get(w.aquiferId);
-        if (arr) arr.push(w);
-        else wellsByAquifer.set(w.aquiferId, [w]);
-      }
-
-      // Group measurements by wellId for this data type
-      const byWell = new Map<string, Measurement[]>();
-      for (const m of measurements) {
-        if (m.dataType === selectedDataType) {
-          const arr = byWell.get(m.wellId);
-          if (arr) arr.push(m);
-          else byWell.set(m.wellId, [m]);
-        }
-      }
-
-      const colors = new Map<string, string>();
-      for (const a of filteredAquifers) {
-        const aqWells = wellsByAquifer.get(a.id) || [];
-        const slopes: number[] = [];
-        for (const w of aqWells) {
-          const s = computeSlope(byWell.get(w.id) || []);
-          if (s !== null) slopes.push(s);
-        }
-        if (slopes.length === 0) {
-          colors.set(a.id, INSUFFICIENT_COLOR);
-        } else {
-          colors.set(a.id, classifySlope(median(slopes), thresholds));
-        }
-      }
-
-      // Also compute per-well colors so they're ready when drilling into an aquifer
-      const wellThresholds = selectedRegion.lengthUnit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT;
-      const wellColors = new Map<string, string>();
-      for (const w of regionWells) {
-        wellColors.set(w.id, classifySlope(computeSlope(byWell.get(w.id) || []), wellThresholds));
-      }
-
-      setAquiferTrendColors(colors);
-      setTrendColors(wellColors);
-      setShowTrends(true);
     }
+
+    // Per-well colors
+    const wellThresholds = selectedRegion.lengthUnit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT;
+    const wellColorMap = new Map<string, string>();
+    for (const w of regionWells) {
+      wellColorMap.set(w.id, classifySlope(computeSlope(byWell.get(w.id) || []), wellThresholds));
+    }
+
+    // Per-aquifer colors (median of well slopes)
+    const aqThresholds = selectedRegion.lengthUnit === 'm' ? AQUIFER_TREND_THRESHOLDS_M : AQUIFER_TREND_THRESHOLDS_FT;
+    const wellsByAquifer = new Map<string, Well[]>();
+    for (const w of regionWells) {
+      const arr = wellsByAquifer.get(w.aquiferId);
+      if (arr) arr.push(w);
+      else wellsByAquifer.set(w.aquiferId, [w]);
+    }
+    const aqColorMap = new Map<string, string>();
+    for (const a of filteredAquifers) {
+      const aqWells = wellsByAquifer.get(a.id) || [];
+      const slopes: number[] = [];
+      for (const w of aqWells) {
+        const s = computeSlope(byWell.get(w.id) || []);
+        if (s !== null) slopes.push(s);
+      }
+      if (slopes.length === 0) {
+        aqColorMap.set(a.id, INSUFFICIENT_COLOR);
+      } else {
+        aqColorMap.set(a.id, classifySlope(median(slopes), aqThresholds));
+      }
+    }
+
+    setTrendColors(wellColorMap);
+    setAquiferTrendColors(aqColorMap);
+    setShowTrends(true);
   };
 
   // Load data on mount
