@@ -491,7 +491,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
                 type="linear"
                 dataKey={`trend_${wellId}`}
                 stroke={color}
-                strokeWidth={1.5}
+                strokeWidth={3}
                 strokeDasharray="8 4"
                 dot={false}
                 connectNulls

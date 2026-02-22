@@ -12,6 +12,8 @@ import JSZip from 'jszip';
 
 const TREND_THRESHOLDS_FT = { extreme: 2.0, moderate: 0.5 };
 const TREND_THRESHOLDS_M = { extreme: 0.6, moderate: 0.15 };
+const AQUIFER_TREND_THRESHOLDS_FT = { extreme: 1.0, moderate: 0.25 };
+const AQUIFER_TREND_THRESHOLDS_M = { extreme: 0.3, moderate: 0.075 };
 
 type TrendThresholds = { extreme: number; moderate: number };
 
@@ -24,6 +26,34 @@ const TREND_CATEGORIES: { label: string; color: string; test: (s: number, t: Tre
 ];
 
 const INSUFFICIENT_COLOR = '#1E293B';
+const MS_PER_YEAR = 365.25 * 86400000;
+
+function computeSlope(meas: Measurement[]): number | null {
+  if (meas.length < 3) return null;
+  let n = 0, sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (const m of meas) {
+    const x = new Date(m.date).getTime() / MS_PER_YEAR;
+    const y = m.value;
+    n++; sumX += x; sumY += y; sumXY += x * y; sumX2 += x * x;
+  }
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return null;
+  return (n * sumXY - sumX * sumY) / denom;
+}
+
+function classifySlope(slope: number | null, thresholds: TrendThresholds): string {
+  if (slope === null) return INSUFFICIENT_COLOR;
+  for (const cat of TREND_CATEGORIES) {
+    if (cat.test(slope, thresholds)) return cat.color;
+  }
+  return INSUFFICIENT_COLOR;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
 
 const App: React.FC = () => {
   const [regions, setRegions] = useState<Region[]>([]);
@@ -41,6 +71,7 @@ const App: React.FC = () => {
   const [showGSE, setShowGSE] = useState(false);
   const [showTrendLine, setShowTrendLine] = useState(false);
   const [trendColors, setTrendColors] = useState<Map<string, string> | null>(null);
+  const [aquiferTrendColors, setAquiferTrendColors] = useState<Map<string, string> | null>(null);
   const [showTrends, setShowTrends] = useState(false);
   const [selectedDataType, setSelectedDataType] = useState<string>('wte');
 
@@ -49,70 +80,94 @@ const App: React.FC = () => {
     setSelectedDataType('wte');
   }, [selectedRegion?.id]);
 
-  // Clear trend analysis when context changes
+  // Clear trend analysis when region or data type changes
   useEffect(() => {
     setTrendColors(null);
+    setAquiferTrendColors(null);
     setShowTrends(false);
-  }, [selectedAquifer, selectedDataType]);
+  }, [selectedRegion?.id, selectedDataType]);
 
   const analyzeTrends = () => {
     if (showTrends) {
       setTrendColors(null);
+      setAquiferTrendColors(null);
       setShowTrends(false);
+      setShowTrendLine(false);
       return;
     }
-    if (!selectedRegion || !selectedAquifer) return;
+    if (!selectedRegion) return;
+    setShowTrendLine(true);
 
-    const thresholds = selectedRegion.lengthUnit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT;
-    const wellIds = new Set<string>(filteredWells.map(w => w.id));
-    const byWell = new Map<string, Measurement[]>();
-    for (const m of measurements) {
-      if (m.dataType === selectedDataType && wellIds.has(m.wellId)) {
-        const arr = byWell.get(m.wellId);
-        if (arr) arr.push(m);
-        else byWell.set(m.wellId, [m]);
-      }
-    }
-
-    const colors = new Map<string, string>();
-    const MS_PER_YEAR = 365.25 * 86400000;
-
-    for (const wId of wellIds) {
-      const wMeas = byWell.get(wId);
-      if (!wMeas || wMeas.length < 3) {
-        colors.set(wId, INSUFFICIENT_COLOR);
-        continue;
-      }
-      // Linear regression: x = fractional years, y = value
-      let n = 0, sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-      for (const m of wMeas) {
-        const x = new Date(m.date).getTime() / MS_PER_YEAR;
-        const y = m.value;
-        n++;
-        sumX += x;
-        sumY += y;
-        sumXY += x * y;
-        sumX2 += x * x;
-      }
-      const denom = n * sumX2 - sumX * sumX;
-      if (denom === 0) {
-        colors.set(wId, INSUFFICIENT_COLOR);
-        continue;
-      }
-      const slope = (n * sumXY - sumX * sumY) / denom;
-
-      let color = INSUFFICIENT_COLOR;
-      for (const cat of TREND_CATEGORIES) {
-        if (cat.test(slope, thresholds)) {
-          color = cat.color;
-          break;
+    if (selectedAquifer) {
+      // WELL-LEVEL MODE
+      const thresholds = selectedRegion.lengthUnit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT;
+      const wellIds = new Set<string>(filteredWells.map(w => w.id));
+      const byWell = new Map<string, Measurement[]>();
+      for (const m of measurements) {
+        if (m.dataType === selectedDataType && wellIds.has(m.wellId)) {
+          const arr = byWell.get(m.wellId);
+          if (arr) arr.push(m);
+          else byWell.set(m.wellId, [m]);
         }
       }
-      colors.set(wId, color);
-    }
 
-    setTrendColors(colors);
-    setShowTrends(true);
+      const colors = new Map<string, string>();
+      for (const wId of wellIds) {
+        colors.set(wId, classifySlope(computeSlope(byWell.get(wId) || []), thresholds));
+      }
+
+      setTrendColors(colors);
+      setAquiferTrendColors(null);
+      setShowTrends(true);
+    } else {
+      // AQUIFER-LEVEL MODE
+      const thresholds = selectedRegion.lengthUnit === 'm' ? AQUIFER_TREND_THRESHOLDS_M : AQUIFER_TREND_THRESHOLDS_FT;
+      const regionWells = wells.filter(w => w.regionId === selectedRegion.id);
+
+      // Group wells by aquiferId
+      const wellsByAquifer = new Map<string, Well[]>();
+      for (const w of regionWells) {
+        const arr = wellsByAquifer.get(w.aquiferId);
+        if (arr) arr.push(w);
+        else wellsByAquifer.set(w.aquiferId, [w]);
+      }
+
+      // Group measurements by wellId for this data type
+      const byWell = new Map<string, Measurement[]>();
+      for (const m of measurements) {
+        if (m.dataType === selectedDataType) {
+          const arr = byWell.get(m.wellId);
+          if (arr) arr.push(m);
+          else byWell.set(m.wellId, [m]);
+        }
+      }
+
+      const colors = new Map<string, string>();
+      for (const a of filteredAquifers) {
+        const aqWells = wellsByAquifer.get(a.id) || [];
+        const slopes: number[] = [];
+        for (const w of aqWells) {
+          const s = computeSlope(byWell.get(w.id) || []);
+          if (s !== null) slopes.push(s);
+        }
+        if (slopes.length === 0) {
+          colors.set(a.id, INSUFFICIENT_COLOR);
+        } else {
+          colors.set(a.id, classifySlope(median(slopes), thresholds));
+        }
+      }
+
+      // Also compute per-well colors so they're ready when drilling into an aquifer
+      const wellThresholds = selectedRegion.lengthUnit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT;
+      const wellColors = new Map<string, string>();
+      for (const w of regionWells) {
+        wellColors.set(w.id, classifySlope(computeSlope(byWell.get(w.id) || []), wellThresholds));
+      }
+
+      setAquiferTrendColors(colors);
+      setTrendColors(wellColors);
+      setShowTrends(true);
+    }
   };
 
   // Load data on mount
@@ -653,7 +708,7 @@ const App: React.FC = () => {
                 ))}
               </select>
             )}
-            {selectedAquifer && (
+            {selectedRegion && (
               <button
                 onClick={analyzeTrends}
                 className={`flex items-center space-x-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
@@ -689,6 +744,7 @@ const App: React.FC = () => {
               selectedWells={selectedWells}
               selectedDataType={selectedDataType}
               wellColors={showTrends ? trendColors : null}
+              aquiferColors={showTrends && !selectedAquifer ? aquiferTrendColors : null}
               onRegionClick={(r) => {
                 setSelectedRegion(r);
                 setSelectedAquifer(null);
@@ -698,28 +754,39 @@ const App: React.FC = () => {
               onWellClick={handleWellClick}
               onWellBoxSelect={handleWellBoxSelect}
             />
-            {showTrends && trendColors && (
-              <div className="absolute top-3 left-3 z-[90] bg-white rounded-lg shadow-lg border border-slate-200 p-3" style={{ width: '180px' }}>
-                <div className="text-xs font-semibold text-slate-700 mb-2">
-                  Trend ({selectedRegion?.lengthUnit === 'm' ? 'm' : 'ft'}/yr)
+            {showTrends && (trendColors || aquiferTrendColors) && (() => {
+              const isAquiferMode = !selectedAquifer && aquiferTrendColors !== null;
+              const activeColors = isAquiferMode ? aquiferTrendColors! : trendColors!;
+              const unit = selectedRegion?.lengthUnit === 'm' ? 'm' : 'ft';
+              const thresholds = isAquiferMode
+                ? (unit === 'm' ? AQUIFER_TREND_THRESHOLDS_M : AQUIFER_TREND_THRESHOLDS_FT)
+                : (unit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT);
+              return (
+                <div className="absolute top-3 left-3 z-[90] bg-white rounded-lg shadow-lg border border-slate-200 p-3" style={{ width: '210px' }}>
+                  <div className="text-xs font-semibold text-slate-700 mb-0.5">
+                    {isAquiferMode ? 'Aquifer Trend (median)' : 'Well Trend'} ({unit}/yr)
+                  </div>
+                  <div className="text-[10px] text-slate-400 mb-2">
+                    {thresholds.moderate} / {thresholds.extreme} {unit}/yr
+                  </div>
+                  {[...TREND_CATEGORIES].reverse().map(cat => {
+                    const count = Array.from(activeColors.values()).filter(c => c === cat.color).length;
+                    return (
+                      <div key={cat.label} className="flex items-center gap-2 py-0.5">
+                        <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: cat.color }} />
+                        <span className="text-xs text-slate-600">{cat.label} ({count})</span>
+                      </div>
+                    );
+                  })}
+                  <div className="flex items-center gap-2 py-0.5">
+                    <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: INSUFFICIENT_COLOR }} />
+                    <span className="text-xs text-slate-600">
+                      Insufficient data ({Array.from(activeColors.values()).filter(c => c === INSUFFICIENT_COLOR).length})
+                    </span>
+                  </div>
                 </div>
-                {[...TREND_CATEGORIES].reverse().map(cat => {
-                  const count = Array.from(trendColors.values()).filter(c => c === cat.color).length;
-                  return (
-                    <div key={cat.label} className="flex items-center gap-2 py-0.5">
-                      <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: cat.color }} />
-                      <span className="text-xs text-slate-600">{cat.label} ({count})</span>
-                    </div>
-                  );
-                })}
-                <div className="flex items-center gap-2 py-0.5">
-                  <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: INSUFFICIENT_COLOR }} />
-                  <span className="text-xs text-slate-600">
-                    Insufficient data ({Array.from(trendColors.values()).filter(c => c === INSUFFICIENT_COLOR).length})
-                  </span>
-                </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
 
           {/* Time Series Section */}

@@ -52,6 +52,7 @@ interface MapViewProps {
   selectedWells: Well[];
   selectedDataType?: string;
   wellColors?: Map<string, string> | null;
+  aquiferColors?: Map<string, string> | null;
   onRegionClick: (r: Region) => void;
   onAquiferClick: (a: Aquifer) => void;
   onWellClick: (w: Well, shiftKey: boolean) => void;
@@ -68,6 +69,7 @@ const MapView: React.FC<MapViewProps> = ({
   selectedWells,
   selectedDataType = 'wte',
   wellColors,
+  aquiferColors,
   onRegionClick,
   onAquiferClick,
   onWellClick,
@@ -181,12 +183,13 @@ const MapView: React.FC<MapViewProps> = ({
     if (selectedRegion) {
       aquifers.forEach(a => {
         const isSelected = selectedAquifer?.id === a.id;
+        const trendColor = aquiferColors?.get(a.id);
         const layer = L.geoJSON(a.geojson, {
           style: {
-            color: isSelected ? '#6366f1' : '#475569',
-            weight: isSelected ? 5 : 2,
-            fillOpacity: isSelected ? 0 : 0.15,
-            fillColor: '#64748b'
+            color: isSelected ? '#6366f1' : trendColor ? '#000000' : '#475569',
+            weight: isSelected ? 5 : trendColor ? 3 : 2,
+            fillOpacity: isSelected ? 0 : trendColor ? 0.45 : 0.15,
+            fillColor: trendColor || '#64748b'
           }
         });
         layer.on('click', () => onAquiferClick(a));
@@ -202,7 +205,7 @@ const MapView: React.FC<MapViewProps> = ({
         mapRef.current.flyToBounds(rBounds, { padding: [40, 40] });
       }
     }
-  }, [aquifers, selectedRegion, selectedAquifer]);
+  }, [aquifers, selectedRegion, selectedAquifer, aquiferColors]);
 
   // Aquifer name labels (separate from polygons so font size changes don't rebuild polygons)
   useEffect(() => {
