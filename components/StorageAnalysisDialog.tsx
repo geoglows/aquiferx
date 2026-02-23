@@ -200,10 +200,14 @@ const PchipPreviewCanvas: React.FC<{
   }, [wellSeries, startTs, endTs]);
 
   useEffect(() => {
-    draw();
+    // Defer initial draw so the modal has finished layout
+    const raf = requestAnimationFrame(() => draw());
     const handleResize = () => draw();
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', handleResize);
+    };
   }, [draw]);
 
   return (
@@ -224,10 +228,12 @@ const StorageAnalysisDialog: React.FC<StorageAnalysisDialogProps> = ({
 
   // Options state
   const [title, setTitle] = useState('');
-  const [resolution, setResolution] = useState(100);
+  const [resolution, setResolution] = useState(50);
   const [storageCoeff, setStorageCoeff] = useState(0.15);
   const [interval, setInterval] = useState<'3months' | '6months' | '1year'>('1year');
   const [volumeUnit, setVolumeUnit] = useState(region.lengthUnit === 'ft' ? 'acre-ft' : 'MCM');
+  const [minObs, setMinObs] = useState(5);
+  const [minSpanYears, setMinSpanYears] = useState(5);
 
   // Build well ID set for fast lookup
   const wellIdSet = useMemo(() => new Set(wells.map(w => w.id)), [wells]);
@@ -328,6 +334,7 @@ const StorageAnalysisDialog: React.FC<StorageAnalysisDialogProps> = ({
     const params: StorageAnalysisParams = {
       startDate, endDate, resolution, storageCoefficient: storageCoeff,
       interval, volumeUnit, title,
+      minObservations: minObs, minTimeSpanYears: minSpanYears,
     };
 
     try {
@@ -362,7 +369,7 @@ const StorageAnalysisDialog: React.FC<StorageAnalysisDialogProps> = ({
   const startTs = startDate ? new Date(startDate).getTime() : undefined;
   const endTs = endDate ? new Date(endDate).getTime() : undefined;
 
-  // Count wells with >= 2 measurements (usable for PCHIP)
+  // Count wells with >= 2 measurements (usable for PCHIP preview)
   const usableWellCount = useMemo(() => {
     const counts = new Map<string, number>();
     for (const m of wteMeasurements) {
@@ -372,6 +379,31 @@ const StorageAnalysisDialog: React.FC<StorageAnalysisDialogProps> = ({
     for (const c of counts.values()) if (c >= 2) count++;
     return count;
   }, [wteMeasurements]);
+
+  // Well qualification based on minObs and minSpanYears
+  const { qualifiedWellCount, omittedWellCount } = useMemo(() => {
+    const MS_PER_YEAR = 365.25 * 86400000;
+    const byWell = new Map<string, number[]>();
+    for (const m of wteMeasurements) {
+      const t = new Date(m.date).getTime();
+      if (!isNaN(t)) {
+        if (!byWell.has(m.wellId)) byWell.set(m.wellId, []);
+        byWell.get(m.wellId)!.push(t);
+      }
+    }
+    let qualified = 0, omitted = 0;
+    for (const [, times] of byWell) {
+      if (times.length < 2) { omitted++; continue; } // need >= 2 for PCHIP
+      const obsCount = times.length;
+      const span = (Math.max(...times) - Math.min(...times)) / MS_PER_YEAR;
+      if (obsCount >= minObs && span >= minSpanYears) {
+        qualified++;
+      } else {
+        omitted++;
+      }
+    }
+    return { qualifiedWellCount: qualified, omittedWellCount: omitted };
+  }, [wteMeasurements, minObs, minSpanYears]);
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40">
@@ -459,7 +491,7 @@ const StorageAnalysisDialog: React.FC<StorageAnalysisDialogProps> = ({
                     className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Resolution (grid width)</label>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Resolution (columns)</label>
                   <input type="number" value={resolution} min={10} max={500} step={10}
                     onChange={e => setResolution(Math.max(10, parseInt(e.target.value) || 100))}
                     className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
@@ -469,6 +501,26 @@ const StorageAnalysisDialog: React.FC<StorageAnalysisDialogProps> = ({
                   <input type="number" value={storageCoeff} min={0.001} max={1} step={0.01}
                     onChange={e => setStorageCoeff(parseFloat(e.target.value) || 0.15)}
                     className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Min Observations / Well</label>
+                  <input type="number" value={minObs} min={2} max={100} step={1}
+                    onChange={e => setMinObs(Math.max(2, parseInt(e.target.value) || 5))}
+                    className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Min Time Span / Well (years)</label>
+                  <input type="number" value={minSpanYears} min={0} max={50} step={1}
+                    onChange={e => setMinSpanYears(Math.max(0, parseFloat(e.target.value) || 5))}
+                    className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
+                </div>
+                <div className="col-span-2">
+                  <div className="flex items-center gap-3 text-xs">
+                    <span className="text-emerald-600 font-medium">{qualifiedWellCount} wells qualify</span>
+                    {omittedWellCount > 0 && (
+                      <span className="text-slate-400">{omittedWellCount} omitted</span>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1">Interval</label>

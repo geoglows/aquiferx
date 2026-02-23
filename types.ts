@@ -66,6 +66,8 @@ export interface StorageAnalysisParams {
   interval: '3months' | '6months' | '1year';
   volumeUnit: string;
   title: string;
+  minObservations: number;
+  minTimeSpanYears: number;
 }
 
 export interface StorageGrid {

@@ -1,7 +1,7 @@
 import { Aquifer, Region, Well, Measurement, StorageAnalysisParams, StorageAnalysisResult, StorageGrid, StorageFrame } from '../types';
 import { isPointInGeoJSON, cellAreaM2 } from '../utils/geo';
 import { interpolatePCHIP } from '../utils/interpolation';
-import { krigGrid } from './kriging';
+import { krigGrid, estimateVariogramParams } from './kriging';
 
 // Generate interval dates between start and end (inclusive) as ISO strings
 function generateIntervalDates(startDate: string, endDate: string, interval: '3months' | '6months' | '1year'): string[] {
@@ -56,9 +56,11 @@ export async function runStorageAnalysis(
   await yieldToUI();
 
   const [minLat, minLng, maxLat, maxLng] = aquifer.bounds;
-  const dx = (maxLng - minLng) / resolution;
-  const dy = dx; // square cells
   const nx = resolution;
+  const dx = (maxLng - minLng) / nx;
+  // Adjust dy so cells are square in real-world distance (1° lng is shorter than 1° lat)
+  const centerLat = (minLat + maxLat) / 2;
+  const dy = dx * Math.cos(centerLat * Math.PI / 180);
   const ny = Math.max(1, Math.ceil((maxLat - minLat) / dy));
 
   // Build grid cell centers and mask
@@ -105,12 +107,16 @@ export async function runStorageAnalysis(
       .filter(m => !isNaN(new Date(m.date).getTime()))
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-    if (sorted.length < 2) continue;
+    // Filter by min observations and min time span
+    if (sorted.length < Math.max(2, params.minObservations)) continue;
 
     const xValues = sorted.map(m => new Date(m.date).getTime());
     const yValues = sorted.map(m => m.value);
     const minT = xValues[0];
     const maxT = xValues[xValues.length - 1];
+
+    const timeSpanYears = (maxT - minT) / (365.25 * 24 * 60 * 60 * 1000);
+    if (timeSpanYears < params.minTimeSpanYears) continue;
 
     // Only interpolate within the well's data range (no extrapolation)
     const interpValues: (number | null)[] = intervalTimestamps.map(t => {
@@ -139,7 +145,27 @@ export async function runStorageAnalysis(
     wellInterp.set(wellId, { well, values: interpValues });
   }
 
-  // Step 4: Krig per timestep
+  console.log(`[StorageAnalysis] ${wellInterp.size}/${wellIds.length} wells qualified (minObs=${params.minObservations}, minSpan=${params.minTimeSpanYears}yr)`);
+
+  // Step 4: Compute a single variogram from all wells' mean PCHIP values
+  // This ensures consistent spatial correlation structure across all timesteps
+  const allWellLats: number[] = [];
+  const allWellLngs: number[] = [];
+  const allWellMeanValues: number[] = [];
+
+  for (const [, { well, values }] of wellInterp) {
+    const validValues = values.filter((v): v is number => v !== null);
+    if (validValues.length > 0) {
+      allWellLats.push(well.lat);
+      allWellLngs.push(well.lng);
+      allWellMeanValues.push(validValues.reduce((a, b) => a + b, 0) / validValues.length);
+    }
+  }
+
+  const variogramParams = estimateVariogramParams(allWellLats, allWellLngs, allWellMeanValues);
+  console.log(`[StorageAnalysis] Using single variogram for all ${intervalDates.length} timesteps, ${allWellLats.length} wells total`);
+
+  // Step 5: Krig per timestep using the shared variogram
   const frames: StorageFrame[] = [];
 
   for (let ti = 0; ti < intervalDates.length; ti++) {
@@ -160,9 +186,11 @@ export async function runStorageAnalysis(
       }
     }
 
+    console.log(`[StorageAnalysis] Timestep ${intervalDates[ti]}: ${activeValues.length} wells, values [${Math.min(...activeValues).toFixed(1)}, ${Math.max(...activeValues).toFixed(1)}]`);
+
     let gridValues: (number | null)[];
     if (activeValues.length >= 2) {
-      gridValues = krigGrid(activeLats, activeLngs, activeValues, gridLats, gridLngs, mask);
+      gridValues = krigGrid(activeLats, activeLngs, activeValues, gridLats, gridLngs, mask, variogramParams);
     } else if (activeValues.length === 1) {
       // Single well: constant value for all masked cells
       gridValues = mask.map(m => m === 1 ? activeValues[0] : null);
