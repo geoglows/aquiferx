@@ -439,10 +439,10 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
                         )}
                         <circle
                           cx={cx} cy={cy}
-                          r={isMulti ? 3 : 4}
+                          r={isMulti ? 2.5 : 3}
                           fill={color}
-                          stroke={isMulti ? "transparent" : "#fff"}
-                          strokeWidth={isMulti ? 0 : 2}
+                          stroke="transparent"
+                          strokeWidth={0}
                         />
                       </g>
                     );

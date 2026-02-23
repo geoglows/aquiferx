@@ -176,7 +176,7 @@ async function loadGeoJSON(path: string): Promise<any> {
 // Load region manifest via API
 async function loadRegionManifest(): Promise<RegionMeta[]> {
   try {
-    const response = await fetch('/api/regions');
+    const response = await freshFetch('/api/regions');
     if (response.ok) {
       return await response.json();
     }

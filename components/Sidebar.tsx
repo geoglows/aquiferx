@@ -10,6 +10,8 @@ interface SidebarProps {
   aquifers: Aquifer[];
   selectedAquifer: Aquifer | null;
   setSelectedAquifer: (a: Aquifer | null) => void;
+  visibleRegionIds: Set<string>;
+  onToggleRegionVisibility: (id: string) => void;
   openDataManager: () => void;
   onEditRegion: (id: string, newName: string, lengthUnit: 'ft' | 'm', singleUnit?: boolean) => void;
   onDownloadRegion: (id: string) => void;
@@ -25,6 +27,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   aquifers,
   selectedAquifer,
   setSelectedAquifer,
+  visibleRegionIds,
+  onToggleRegionVisibility,
   onEditRegion,
   onDownloadRegion,
   onDeleteRegion,
@@ -173,8 +177,14 @@ const Sidebar: React.FC<SidebarProps> = ({
                         : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'
                     }`}
                   >
-                    <div className="flex items-center space-x-3 min-w-0 flex-1">
-                      <Box size={14} className={`flex-shrink-0 ${isSelected ? 'text-blue-100' : 'text-slate-300'}`} />
+                    <div className="flex items-center space-x-2 min-w-0 flex-1">
+                      <input
+                        type="checkbox"
+                        checked={visibleRegionIds.has(r.id)}
+                        onClick={e => e.stopPropagation()}
+                        onChange={() => onToggleRegionVisibility(r.id)}
+                        className="flex-shrink-0 w-3.5 h-3.5 rounded accent-blue-600 cursor-pointer"
+                      />
                       <span className="font-medium truncate">{r.name}</span>
                     </div>
                     <div className="flex items-center space-x-1 flex-shrink-0">

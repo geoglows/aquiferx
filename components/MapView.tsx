@@ -94,6 +94,8 @@ const MapView: React.FC<MapViewProps> = ({
   const aquiferLabelLayerRef = useRef<L.FeatureGroup | null>(null);
 
   const visibleWellsRef = useRef<Well[]>([]);
+  const prevSelectedAquiferIdRef = useRef<string | null>(null);
+  const prevSelectedRegionIdRef = useRef<string | null>(null);
   const onWellBoxSelectRef = useRef(onWellBoxSelect);
   onWellBoxSelectRef.current = onWellBoxSelect;
 
@@ -163,9 +165,15 @@ const MapView: React.FC<MapViewProps> = ({
           weight: isSelected ? 3 : 1,
           fillOpacity: isSelected ? 0.05 : 0.1,
           fillColor: '#2563eb'
-        }
+        },
+        // When a region is selected, make all region polygons non-interactive so
+        // clicks pass through to the map (wells handle their own clicks,
+        // map background click clears well selection)
+        interactive: !selectedRegion
       });
-      layer.on('click', () => onRegionClick(r));
+      if (!selectedRegion) {
+        layer.on('click', () => onRegionClick(r));
+      }
       regionLayerRef.current?.addLayer(layer);
     });
 
@@ -196,14 +204,20 @@ const MapView: React.FC<MapViewProps> = ({
         aquiferLayerRef.current?.addLayer(layer);
       });
 
-      if (!selectedAquifer && aquifers.length > 0) {
-        const bounds = aquiferLayerRef.current.getBounds();
-        if (bounds.isValid()) mapRef.current.flyToBounds(bounds, { padding: [40, 40], duration: 1.5 });
-      } else if (!selectedAquifer) {
-        // Fallback zoom to region
-        const rBounds = L.latLngBounds([selectedRegion.bounds[0], selectedRegion.bounds[1]], [selectedRegion.bounds[2], selectedRegion.bounds[3]]);
-        mapRef.current.flyToBounds(rBounds, { padding: [40, 40] });
+      const regionChanged = selectedRegion.id !== prevSelectedRegionIdRef.current;
+      if (regionChanged && !selectedAquifer) {
+        if (aquifers.length > 0) {
+          const bounds = aquiferLayerRef.current.getBounds();
+          if (bounds.isValid()) mapRef.current.flyToBounds(bounds, { padding: [40, 40], duration: 1.5 });
+        } else {
+          // Fallback zoom to region
+          const rBounds = L.latLngBounds([selectedRegion.bounds[0], selectedRegion.bounds[1]], [selectedRegion.bounds[2], selectedRegion.bounds[3]]);
+          mapRef.current.flyToBounds(rBounds, { padding: [40, 40] });
+        }
       }
+      prevSelectedRegionIdRef.current = selectedRegion.id;
+    } else {
+      prevSelectedRegionIdRef.current = null;
     }
   }, [aquifers, selectedRegion, selectedAquifer, aquiferColors]);
 
@@ -247,12 +261,12 @@ const MapView: React.FC<MapViewProps> = ({
         // Color by measurement count: 0=red, 1=gray, 2+=blue
         const defaultColor = measurementCount === 0 ? '#ef4444'
           : measurementCount === 1 ? '#6b7280'
-          : '#3b82f6';
+          : '#0000ff';
         const marker = L.circleMarker([w.lat, w.lng], {
           radius: 6,
           fillColor: trendColor || defaultColor,
           color: trendColor ? '#000000' : '#ffffff',
-          weight: 2,
+          weight: 1,
           opacity: 1,
           fillOpacity: 0.9
         });
@@ -266,11 +280,17 @@ const MapView: React.FC<MapViewProps> = ({
         wellMarkerMapRef.current.set(w.id, marker);
       });
 
-      const aBounds = L.latLngBounds(
-        [selectedAquifer.bounds[0], selectedAquifer.bounds[1]],
-        [selectedAquifer.bounds[2], selectedAquifer.bounds[3]]
-      );
-      mapRef.current.flyToBounds(aBounds, { padding: [40, 40], duration: 1 });
+      const aquiferChanged = selectedAquifer.id !== prevSelectedAquiferIdRef.current;
+      if (aquiferChanged) {
+        const aBounds = L.latLngBounds(
+          [selectedAquifer.bounds[0], selectedAquifer.bounds[1]],
+          [selectedAquifer.bounds[2], selectedAquifer.bounds[3]]
+        );
+        mapRef.current.flyToBounds(aBounds, { padding: [40, 40], duration: 1 });
+      }
+      prevSelectedAquiferIdRef.current = selectedAquifer.id;
+    } else {
+      prevSelectedAquiferIdRef.current = null;
     }
     visibleWellsRef.current = visible;
   }, [wells, selectedAquifer, wellMeasurementCounts, minObs, wellColors]);
@@ -284,7 +304,7 @@ const MapView: React.FC<MapViewProps> = ({
       marker.setStyle({
         radius: isSelected ? 8 : 6,
         color: isSelected ? '#f59e0b' : hasTrend ? '#000000' : '#ffffff',
-        weight: isSelected ? 3 : 2,
+        weight: isSelected ? 2 : 1,
       });
     });
   }, [selectedWells, wellColors]);

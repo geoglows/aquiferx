@@ -74,6 +74,27 @@ const App: React.FC = () => {
   const [aquiferTrendColors, setAquiferTrendColors] = useState<Map<string, string> | null>(null);
   const [showTrends, setShowTrends] = useState(false);
   const [selectedDataType, setSelectedDataType] = useState<string>('wte');
+  const [visibleRegionIds, setVisibleRegionIds] = useState<Set<string>>(new Set());
+
+  // Keep visibleRegionIds in sync when regions load/change
+  useEffect(() => {
+    setVisibleRegionIds(prev => {
+      const updated = new Set(prev);
+      for (const r of regions) {
+        if (!prev.has(r.id)) updated.add(r.id);
+      }
+      return updated.size !== prev.size ? updated : prev;
+    });
+  }, [regions]);
+
+  const toggleRegionVisibility = (id: string) => {
+    setVisibleRegionIds(prev => {
+      const updated = new Set(prev);
+      if (updated.has(id)) updated.delete(id);
+      else updated.add(id);
+      return updated;
+    });
+  };
 
   // Reset selectedDataType when region changes
   useEffect(() => {
@@ -613,6 +634,8 @@ const App: React.FC = () => {
           setSelectedAquifer(a);
           setSelectedWells([]);
         }}
+        visibleRegionIds={visibleRegionIds}
+        onToggleRegionVisibility={toggleRegionVisibility}
         openDataManager={() => setIsDataManagerOpen(true)}
         onEditRegion={handleEditRegion}
         onDownloadRegion={handleDownloadRegion}
@@ -711,7 +734,7 @@ const App: React.FC = () => {
         <div className="flex-1 flex flex-col min-h-0">
           <div className="flex-1 relative">
             <MapView
-              regions={regions}
+              regions={regions.filter(r => visibleRegionIds.has(r.id))}
               aquifers={filteredAquifers}
               wells={filteredWells}
               measurements={measurements}
