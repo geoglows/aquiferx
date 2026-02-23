@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, CheckCircle2, Loader2, AlertTriangle } from 'lucide-react';
-import { processUploadedFile, UploadedFile, saveFiles, deleteFile } from '../../services/importUtils';
+import { processUploadedFile, UploadedFile, saveFiles, deleteFile, freshFetch } from '../../services/importUtils';
 import ColumnMapperModal from './ColumnMapperModal';
 import ConfirmDialog from './ConfirmDialog';
 
@@ -68,7 +68,7 @@ const AquiferImporter: React.FC<AquiferImporterProps> = ({
         try { await deleteFile(`${regionId}/wells.csv`); } catch {}
         // Delete all data_*.csv files by fetching region.json for data types
         try {
-          const metaRes = await fetch(`/data/${regionId}/region.json`);
+          const metaRes = await freshFetch(`/data/${regionId}/region.json`);
           if (metaRes.ok) {
             const meta = await metaRes.json();
             for (const dt of meta.dataTypes || []) {
@@ -85,7 +85,7 @@ const AquiferImporter: React.FC<AquiferImporterProps> = ({
         // Append: load existing, skip duplicates
         let existingFeatures: any[] = [];
         try {
-          const aqRes = await fetch(`/data/${regionId}/aquifers.geojson`);
+          const aqRes = await freshFetch(`/data/${regionId}/aquifers.geojson`);
           if (aqRes.ok) {
             const gj = await aqRes.json();
             existingFeatures = gj.type === 'FeatureCollection' ? gj.features : [gj];

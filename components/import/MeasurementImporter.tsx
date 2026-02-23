@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload, Calendar } from 'lucide-react';
-import { processUploadedFile, UploadedFile, saveFiles, parseDate, detectDateFormat, parseCSV, isInUS } from '../../services/importUtils';
+import { processUploadedFile, UploadedFile, saveFiles, parseDate, detectDateFormat, parseCSV, isInUS, freshFetch } from '../../services/importUtils';
 import { fetchUSGSMeasurements, validateUSGSMeasurements, USGSDataQualityReport, USGSMeasurement, USGSDataSpan, computeDataSpan, filterByDateRange, getUSGSApiKey, setUSGSApiKey } from '../../services/usgsApi';
 import ColumnMapperModal from './ColumnMapperModal';
 import ConfirmDialog from './ConfirmDialog';
@@ -77,7 +77,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       // Load aquifers
       if (!singleUnit) {
         try {
-          const res = await fetch(`/data/${regionId}/aquifers.geojson`);
+          const res = await freshFetch(`/data/${regionId}/aquifers.geojson`);
           if (res.ok) {
             const gj = await res.json();
             const features = gj.type === 'FeatureCollection' ? gj.features : [gj];
@@ -91,7 +91,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
 
       // Load wells for aquifer lookup and GSE
       try {
-        const res = await fetch(`/data/${regionId}/wells.csv`);
+        const res = await freshFetch(`/data/${regionId}/wells.csv`);
         if (res.ok) {
           const text = await res.text();
           const { rows } = parseCSV(text);
@@ -118,7 +118,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       const counts: Record<string, number> = {};
       for (const dt of dataTypes) {
         try {
-          const res = await fetch(`/data/${regionId}/data_${dt.code}.csv`);
+          const res = await freshFetch(`/data/${regionId}/data_${dt.code}.csv`);
           if (res.ok) {
             const text = await res.text();
             counts[dt.code] = Math.max(0, text.split('\n').filter(l => l.trim()).length - 1);
@@ -206,7 +206,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     setUsgsProgress({ completed: 0, total: 0, done: false });
     try {
       // Get well IDs from wells.csv
-      const wellRes = await fetch(`/data/${regionId}/wells.csv`);
+      const wellRes = await freshFetch(`/data/${regionId}/wells.csv`);
       if (!wellRes.ok) throw new Error('No wells found. Import wells first.');
       const wellText = await wellRes.text();
       const { rows: wellRows } = parseCSV(wellText);
@@ -237,7 +237,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       if (usgsMode === 'quick-refresh') {
         // Find max existing date for USGS wells
         try {
-          const dataRes = await fetch(`/data/${regionId}/data_wte.csv`);
+          const dataRes = await freshFetch(`/data/${regionId}/data_wte.csv`);
           if (dataRes.ok) {
             const dataText = await dataRes.text();
             const { rows: dataRows } = parseCSV(dataText);
@@ -305,9 +305,15 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     setIsSaving(true);
     setError('');
     try {
-      const rows = file.data as Record<string, string>[];
+      const allRows = file.data as Record<string, string>[];
       const wellIdCol = file.mapping['well_id'];
       const dateCol = file.mapping['date'];
+
+      // Filter out measurements for wells not in wells.csv
+      const knownWellIds = new Set(Object.keys(wellAquiferMap));
+      const rows = knownWellIds.size > 0
+        ? allRows.filter(r => knownWellIds.has(r[wellIdCol]))
+        : allRows;
 
       if (isMultiType && selectedTypes.length > 1) {
         // Multi-type: one value column per type
@@ -406,7 +412,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     newRows: { well_id: string; date: string; value: string; aquifer_id: string }[]
   ) => {
     try {
-      const res = await fetch(`/data/${regionId}/data_${typeCode}.csv`);
+      const res = await freshFetch(`/data/${regionId}/data_${typeCode}.csv`);
       if (res.ok) {
         const text = await res.text();
         const { rows: existingRows } = parseCSV(text);
@@ -434,7 +440,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     newRows: { well_id: string; date: string; value: string; aquifer_id: string }[]
   ) => {
     try {
-      const res = await fetch(`/data/${regionId}/data_${typeCode}.csv`);
+      const res = await freshFetch(`/data/${regionId}/data_${typeCode}.csv`);
       if (res.ok) {
         const text = await res.text();
         const { rows: existingRows } = parseCSV(text);
@@ -485,10 +491,45 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     );
   };
 
+  // Compute unmatched well info
+  const unmatchedInfo = useMemo(() => {
+    if (!file) return null;
+    const rows = file.data as Record<string, string>[];
+    const wellIdCol = file.mapping['well_id'];
+    if (!wellIdCol || rows.length === 0) return null;
+
+    const knownWellIds = new Set(Object.keys(wellAquiferMap));
+    if (knownWellIds.size === 0) return null;
+
+    const unmatchedWellIds = new Set<string>();
+    let unmatchedCount = 0;
+    let matchedCount = 0;
+
+    for (const row of rows) {
+      const wellId = row[wellIdCol];
+      if (!wellId) continue;
+      if (knownWellIds.has(wellId)) {
+        matchedCount++;
+      } else {
+        unmatchedWellIds.add(wellId);
+        unmatchedCount++;
+      }
+    }
+
+    if (unmatchedCount === 0) return null;
+
+    return {
+      unmatchedWellIds: Array.from(unmatchedWellIds),
+      unmatchedCount,
+      matchedCount,
+    };
+  }, [file, wellAquiferMap]);
+
   const isReady = file && file.mapping['well_id'] && file.mapping['date'] &&
     (isMultiType ? selectedTypes.every(code => typeColumnMapping[code]) : file.mapping['value']) &&
     selectedTypes.length > 0 &&
-    (singleUnit || aquiferAssignment !== 'single' || selectedAquiferId);
+    (singleUnit || aquiferAssignment !== 'single' || selectedAquiferId) &&
+    (!unmatchedInfo || unmatchedInfo.matchedCount > 0);
 
   return (
     <div className="fixed inset-0 z-[105] flex items-center justify-center bg-black/40" onClick={onClose}>
@@ -784,6 +825,29 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
               <button onClick={() => setShowMapper(true)} className="text-xs text-blue-600 hover:text-blue-800 font-medium">
                 Edit Column Mapping
               </button>
+            )}
+            {unmatchedInfo && (
+              <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg mt-2">
+                <AlertTriangle size={14} className="text-amber-500 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-amber-800">
+                    {unmatchedInfo.unmatchedCount} measurement{unmatchedInfo.unmatchedCount !== 1 ? 's' : ''} from {unmatchedInfo.unmatchedWellIds.length} well{unmatchedInfo.unmatchedWellIds.length !== 1 ? 's' : ''} not found in wells.csv
+                  </p>
+                  <p className="text-xs text-amber-700 mt-1">
+                    Unmatched well IDs: {unmatchedInfo.unmatchedWellIds.slice(0, 5).join(', ')}
+                    {unmatchedInfo.unmatchedWellIds.length > 5 && ` and ${unmatchedInfo.unmatchedWellIds.length - 5} more`}
+                  </p>
+                  {unmatchedInfo.matchedCount > 0 ? (
+                    <p className="text-xs text-green-700 mt-1">
+                      {unmatchedInfo.matchedCount} matched measurement{unmatchedInfo.matchedCount !== 1 ? 's' : ''} will be imported.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-red-700 mt-1 font-medium">
+                      No measurements match existing wells. Import cannot proceed.
+                    </p>
+                  )}
+                </div>
+              </div>
             )}
           </div>
         )}

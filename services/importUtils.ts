@@ -2,6 +2,11 @@ import shp from 'shpjs';
 import JSZip from 'jszip';
 import { reprojectGeoJSON, reprojectFromWKT } from './reprojection';
 
+/** Fetch with cache-busting to avoid stale browser-cached data after writes */
+export function freshFetch(url: string): Promise<Response> {
+  return fetch(`${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}`);
+}
+
 export interface ColumnMapping {
   [targetColumn: string]: string;
 }

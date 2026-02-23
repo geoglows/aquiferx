@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload, RefreshCw } from 'lucide-react';
-import { processUploadedFile, UploadedFile, saveFiles, deleteFile, isInUS, assignWellToAquifer, parseCSV } from '../../services/importUtils';
+import { processUploadedFile, UploadedFile, saveFiles, deleteFile, isInUS, assignWellToAquifer, parseCSV, freshFetch } from '../../services/importUtils';
 import { fetchUSGSWells, getUSGSApiKey, setUSGSApiKey } from '../../services/usgsApi';
 import ColumnMapperModal from './ColumnMapperModal';
 import ConfirmDialog from './ConfirmDialog';
@@ -76,7 +76,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`/data/${regionId}/wells.csv`);
+        const res = await freshFetch(`/data/${regionId}/wells.csv`);
         if (res.ok) {
           const text = await res.text();
           const { rows } = parseCSV(text);
@@ -101,7 +101,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
     if (singleUnit) return;
     (async () => {
       try {
-        const res = await fetch(`/data/${regionId}/aquifers.geojson`);
+        const res = await freshFetch(`/data/${regionId}/aquifers.geojson`);
         if (res.ok) {
           const gj = await res.json();
           setAquifersGeojson(gj);
@@ -457,7 +457,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
         // Aquifer-scoped: always merge with other aquifers' wells
         let existingRows: Record<string, string>[] = [];
         try {
-          const res = await fetch(`/data/${regionId}/wells.csv`);
+          const res = await freshFetch(`/data/${regionId}/wells.csv`);
           if (res.ok) {
             existingRows = parseCSV((await res.text())).rows;
           }
@@ -485,7 +485,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
         // Load existing wells, skip duplicates
         let existingRows: Record<string, string>[] = [];
         try {
-          const res = await fetch(`/data/${regionId}/wells.csv`);
+          const res = await freshFetch(`/data/${regionId}/wells.csv`);
           if (res.ok) {
             existingRows = parseCSV((await res.text())).rows;
           }
@@ -505,7 +505,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
         // Region-wide replace: delete measurements then write
         if (importMode === 'replace' && existingWellCount > 0) {
           try {
-            const metaRes = await fetch(`/data/${regionId}/region.json`);
+            const metaRes = await freshFetch(`/data/${regionId}/region.json`);
             if (metaRes.ok) {
               const meta = await metaRes.json();
               for (const dt of meta.dataTypes || []) {

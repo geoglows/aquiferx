@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, MapPin, Layers, Navigation, BarChart3, Plus, Settings } from 'lucide-react';
 import { RegionMeta, DataType } from '../../types';
+import { freshFetch } from '../../services/importUtils';
 import RegionImporter from './RegionImporter';
 import AquiferImporter from './AquiferImporter';
 import WellImporter from './WellImporter';
@@ -37,7 +38,7 @@ async function fetchRegionList(): Promise<RegionInfo[]> {
 
     // Load region bounds from geojson
     try {
-      const gjRes = await fetch(`/data/${meta.id}/region.geojson`);
+      const gjRes = await freshFetch(`/data/${meta.id}/region.geojson`);
       if (gjRes.ok) {
         const gj = await gjRes.json();
         const features = gj.type === 'FeatureCollection' ? gj.features : [gj];
@@ -60,7 +61,7 @@ async function fetchRegionList(): Promise<RegionInfo[]> {
 
     // Count aquifers
     try {
-      const aqRes = await fetch(`/data/${meta.id}/aquifers.geojson`);
+      const aqRes = await freshFetch(`/data/${meta.id}/aquifers.geojson`);
       if (aqRes.ok) {
         const gj = await aqRes.json();
         const features = gj.type === 'FeatureCollection' ? gj.features : [gj];
@@ -71,7 +72,7 @@ async function fetchRegionList(): Promise<RegionInfo[]> {
 
     // Count wells
     try {
-      const wRes = await fetch(`/data/${meta.id}/wells.csv`);
+      const wRes = await freshFetch(`/data/${meta.id}/wells.csv`);
       if (wRes.ok) {
         const text = await wRes.text();
         info.wellCount = Math.max(0, text.split('\n').filter(l => l.trim()).length - 1);
@@ -81,7 +82,7 @@ async function fetchRegionList(): Promise<RegionInfo[]> {
     // Count measurements per data type
     for (const dt of meta.dataTypes || []) {
       try {
-        const mRes = await fetch(`/data/${meta.id}/data_${dt.code}.csv`);
+        const mRes = await freshFetch(`/data/${meta.id}/data_${dt.code}.csv`);
         if (mRes.ok) {
           const text = await mRes.text();
           info.measurementCounts[dt.code] = Math.max(0, text.split('\n').filter(l => l.trim()).length - 1);

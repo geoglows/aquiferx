@@ -730,6 +730,25 @@ const App: React.FC = () => {
               onWellClick={handleWellClick}
               onWellBoxSelect={handleWellBoxSelect}
             />
+            {/* Well legend — shown when aquifer selected and trends not active */}
+            {selectedAquifer && !(showTrends && (trendColors || aquiferTrendColors)) && (
+              <div className="absolute top-3 left-3 z-[90] bg-white rounded-lg shadow-lg border border-slate-200 p-3" style={{ width: '180px' }}>
+                <div className="text-xs font-semibold text-slate-700 mb-2">Wells</div>
+                <div className="flex items-center gap-2 py-0.5">
+                  <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#3b82f6' }} />
+                  <span className="text-xs text-slate-600">2+ observations</span>
+                </div>
+                <div className="flex items-center gap-2 py-0.5">
+                  <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#6b7280' }} />
+                  <span className="text-xs text-slate-600">1 observation</span>
+                </div>
+                <div className="flex items-center gap-2 py-0.5">
+                  <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#ef4444' }} />
+                  <span className="text-xs text-slate-600">No data</span>
+                </div>
+              </div>
+            )}
+            {/* Trend legend */}
             {showTrends && (trendColors || aquiferTrendColors) && (() => {
               const isAquiferMode = !selectedAquifer && aquiferTrendColors !== null;
               const activeColors = isAquiferMode ? aquiferTrendColors! : trendColors!;

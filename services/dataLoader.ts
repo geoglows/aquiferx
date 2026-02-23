@@ -1,6 +1,7 @@
 import shp from 'shpjs';
 import polylabel from 'polylabel';
 import { Region, Aquifer, Well, Measurement, RegionMeta } from '../types';
+import { freshFetch } from './importUtils';
 
 interface DataFolder {
   name: string;
@@ -199,7 +200,7 @@ export async function loadAquifers(regionId: string, regionPath: string, wells: 
   }
 
   try {
-    const response = await fetch(`${regionPath}/aquifers.geojson`);
+    const response = await freshFetch(`${regionPath}/aquifers.geojson`);
     if (response.ok) {
       const geojson = await response.json();
       const featureCollection = geojson.type === 'FeatureCollection'
@@ -290,7 +291,7 @@ export async function loadWells(regionPath: string, regionId: string): Promise<W
   const wells: Well[] = [];
 
   try {
-    const response = await fetch(`${regionPath}/wells.csv`);
+    const response = await freshFetch(`${regionPath}/wells.csv`);
     if (!response.ok) return wells;
 
     const text = await response.text();
@@ -332,7 +333,7 @@ export async function loadMeasurements(regionPath: string, regionId: string, dat
 
   for (const dt of dataTypes) {
     try {
-      const response = await fetch(`${regionPath}/data_${dt.code}.csv`);
+      const response = await freshFetch(`${regionPath}/data_${dt.code}.csv`);
       if (!response.ok) continue;
 
       const text = await response.text();
@@ -384,7 +385,7 @@ export async function loadAllData(): Promise<{
 
     // Load region boundary from region.geojson
     try {
-      const response = await fetch(`${folderPath}/region.geojson`);
+      const response = await freshFetch(`${folderPath}/region.geojson`);
       if (response.ok) {
         const geojson = await response.json();
         const bounds = calculateBounds(geojson);

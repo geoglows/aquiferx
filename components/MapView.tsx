@@ -99,7 +99,7 @@ const MapView: React.FC<MapViewProps> = ({
 
   const [currentBasemap, setCurrentBasemap] = useState<keyof typeof BASEMAPS>('OpenStreetMap');
   const [isBasemapMenuOpen, setIsBasemapMenuOpen] = useState(false);
-  const [minObs, setMinObs] = useState(1);
+  const [minObs, setMinObs] = useState(0);
   const [showAquiferNames, setShowAquiferNames] = useState(true);
   const [showWellIds, setShowWellIds] = useState(false);
   const [showWellNames, setShowWellNames] = useState(false);
@@ -243,11 +243,14 @@ const MapView: React.FC<MapViewProps> = ({
         const measurementCount = wellMeasurementCounts.get(w.id) || 0;
         if (measurementCount < minObs) return;
         visible.push(w);
-        const hasEnoughData = measurementCount >= 2;
         const trendColor = wellColors?.get(w.id);
+        // Color by measurement count: 0=red, 1=gray, 2+=blue
+        const defaultColor = measurementCount === 0 ? '#ef4444'
+          : measurementCount === 1 ? '#6b7280'
+          : '#3b82f6';
         const marker = L.circleMarker([w.lat, w.lng], {
           radius: 6,
-          fillColor: trendColor || (hasEnoughData ? '#3b82f6' : '#ef4444'),
+          fillColor: trendColor || defaultColor,
           color: trendColor ? '#000000' : '#ffffff',
           weight: 2,
           opacity: 1,
@@ -439,10 +442,10 @@ const MapView: React.FC<MapViewProps> = ({
             <input
               id="min-obs"
               type="number"
-              min={1}
+              min={0}
               step={1}
               value={minObs}
-              onChange={(e) => setMinObs(Math.max(1, parseInt(e.target.value) || 1))}
+              onChange={(e) => setMinObs(Math.max(0, parseInt(e.target.value) || 0))}
               className="w-14 text-xs text-center border border-slate-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
             />
           </div>
