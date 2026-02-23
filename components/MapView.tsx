@@ -4,6 +4,40 @@ import L from 'leaflet';
 import { Layers, ChevronRight } from 'lucide-react';
 import { Region, Aquifer, Well, Measurement } from '../types';
 
+// Ray-casting point-in-polygon test
+function pointInRing(x: number, y: number, ring: number[][]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = ring[j][0], yj = ring[j][1];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function isPointInGeoJSON(lat: number, lng: number, geojson: any): boolean {
+  const geometries: any[] = [];
+  if (geojson.type === 'FeatureCollection') {
+    for (const f of geojson.features) if (f.geometry) geometries.push(f.geometry);
+  } else if (geojson.type === 'Feature') {
+    if (geojson.geometry) geometries.push(geojson.geometry);
+  } else if (geojson.coordinates) {
+    geometries.push(geojson);
+  }
+  for (const geom of geometries) {
+    if (geom.type === 'Polygon') {
+      if (pointInRing(lng, lat, geom.coordinates[0])) return true;
+    } else if (geom.type === 'MultiPolygon') {
+      for (const poly of geom.coordinates) {
+        if (pointInRing(lng, lat, poly[0])) return true;
+      }
+    }
+  }
+  return false;
+}
+
 const BASEMAPS = {
   'OpenStreetMap': {
     url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -96,8 +130,21 @@ const MapView: React.FC<MapViewProps> = ({
   const visibleWellsRef = useRef<Well[]>([]);
   const prevSelectedAquiferIdRef = useRef<string | null>(null);
   const prevSelectedRegionIdRef = useRef<string | null>(null);
+  const wellJustClickedRef = useRef(false);
+  const aquifersRef = useRef(aquifers);
+  aquifersRef.current = aquifers;
+  const regionsRef = useRef(regions);
+  regionsRef.current = regions;
+  const selectedRegionRef = useRef(selectedRegion);
+  selectedRegionRef.current = selectedRegion;
+  const selectedAquiferRef = useRef(selectedAquifer);
+  selectedAquiferRef.current = selectedAquifer;
   const onWellBoxSelectRef = useRef(onWellBoxSelect);
   onWellBoxSelectRef.current = onWellBoxSelect;
+  const onRegionClickRef = useRef(onRegionClick);
+  onRegionClickRef.current = onRegionClick;
+  const onAquiferClickRef = useRef(onAquiferClick);
+  onAquiferClickRef.current = onAquiferClick;
 
   const [currentBasemap, setCurrentBasemap] = useState<keyof typeof BASEMAPS>('OpenStreetMap');
   const [isBasemapMenuOpen, setIsBasemapMenuOpen] = useState(false);
@@ -126,9 +173,66 @@ const MapView: React.FC<MapViewProps> = ({
       wellLayerRef.current = L.featureGroup().addTo(mapRef.current);
       wellLabelLayerRef.current = L.featureGroup().addTo(mapRef.current);
 
-      // Click on empty map space clears well selection
-      mapRef.current.on('click', () => {
-        onWellBoxSelectRef.current([]);
+      // Single native DOM click handler for all map background clicks.
+      // Well markers stop native propagation, so this only fires for non-well clicks.
+      const map = mapRef.current;
+      map.getContainer().addEventListener('click', (evt: MouseEvent) => {
+        if (wellJustClickedRef.current) return;
+        const latlng = map.mouseEventToLatLng(evt);
+        const { lat, lng } = latlng;
+        const curRegion = selectedRegionRef.current;
+        const curAquifer = selectedAquiferRef.current;
+
+        if (curAquifer && curRegion) {
+          // Aquifer is selected — determine what was clicked
+          let clickedAquifer: Aquifer | null = null;
+          for (const a of aquifersRef.current) {
+            if (isPointInGeoJSON(lat, lng, a.geojson)) { clickedAquifer = a; break; }
+          }
+          if (clickedAquifer) {
+            if (clickedAquifer.id !== curAquifer.id) {
+              onAquiferClickRef.current(clickedAquifer);
+            } else {
+              // Same aquifer — just clear wells
+              onWellBoxSelectRef.current([]);
+            }
+          } else if (isPointInGeoJSON(lat, lng, curRegion.geojson)) {
+            // Inside region but outside all aquifers → deselect aquifer
+            onRegionClickRef.current(curRegion);
+          } else {
+            // Check other regions
+            let clickedRegion: Region | null = null;
+            for (const r of regionsRef.current) {
+              if (r.id !== curRegion.id && isPointInGeoJSON(lat, lng, r.geojson)) { clickedRegion = r; break; }
+            }
+            if (clickedRegion) onRegionClickRef.current(clickedRegion);
+            else onWellBoxSelectRef.current([]);
+          }
+        } else if (curRegion) {
+          // Region selected, no aquifer — check for aquifer or other region click
+          let clickedAquifer: Aquifer | null = null;
+          for (const a of aquifersRef.current) {
+            if (isPointInGeoJSON(lat, lng, a.geojson)) { clickedAquifer = a; break; }
+          }
+          if (clickedAquifer) {
+            onAquiferClickRef.current(clickedAquifer);
+          } else {
+            let clickedRegion: Region | null = null;
+            for (const r of regionsRef.current) {
+              if (r.id !== curRegion.id && isPointInGeoJSON(lat, lng, r.geojson)) { clickedRegion = r; break; }
+            }
+            if (clickedRegion) onRegionClickRef.current(clickedRegion);
+            else onWellBoxSelectRef.current([]);
+          }
+        } else {
+          // No region selected — check for region click
+          let clickedRegion: Region | null = null;
+          for (const r of regionsRef.current) {
+            if (isPointInGeoJSON(lat, lng, r.geojson)) { clickedRegion = r; break; }
+          }
+          if (clickedRegion) onRegionClickRef.current(clickedRegion);
+          else onWellBoxSelectRef.current([]);
+        }
       });
     }
   }, []);
@@ -160,14 +264,14 @@ const MapView: React.FC<MapViewProps> = ({
     regions.forEach(r => {
       const isSelected = selectedRegion?.id === r.id;
       const layer = L.geoJSON(r.geojson, {
+        interactive: false,
         style: {
           color: isSelected ? '#2563eb' : '#94a3b8',
           weight: isSelected ? 3 : 1,
           fillOpacity: isSelected ? 0.05 : 0.1,
           fillColor: '#2563eb'
-        }
+        },
       });
-      layer.on('click', () => onRegionClick(r));
       regionLayerRef.current?.addLayer(layer);
     });
 
@@ -187,16 +291,13 @@ const MapView: React.FC<MapViewProps> = ({
         const isSelected = selectedAquifer?.id === a.id;
         const trendColor = aquiferColors?.get(a.id);
         const layer = L.geoJSON(a.geojson, {
+          interactive: false,
           style: {
             color: isSelected ? '#6366f1' : trendColor ? '#000000' : '#475569',
             weight: isSelected ? 5 : trendColor ? 3 : 2,
             fillOpacity: isSelected ? 0 : trendColor ? 0.45 : 0.15,
             fillColor: trendColor || '#64748b'
           }
-        });
-        layer.on('click', (e) => {
-          L.DomEvent.stopPropagation(e as any);
-          onAquiferClick(a);
         });
         aquiferLayerRef.current?.addLayer(layer);
       });
@@ -267,8 +368,13 @@ const MapView: React.FC<MapViewProps> = ({
         });
         marker.bindTooltip(`Well: ${w.name}<br/>ID: ${w.id}${w.gse ? `<br/>GSE: ${w.gse}` : ''}<br/>Observations: ${measurementCount}`, { direction: 'top' });
         marker.on('click', (e) => {
-          L.DomEvent.stopPropagation(e);
-          const shiftKey = (e as any).originalEvent?.shiftKey ?? false;
+          // Stop the native DOM event from reaching the map container
+          const ne = (e as any).originalEvent;
+          if (ne) ne.stopPropagation();
+          // Backup flag in case native stopPropagation doesn't prevent the container listener
+          wellJustClickedRef.current = true;
+          setTimeout(() => { wellJustClickedRef.current = false; }, 50);
+          const shiftKey = ne?.shiftKey ?? false;
           onWellClick(w, shiftKey);
         });
         wellLayerRef.current?.addLayer(marker);
