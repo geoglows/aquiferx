@@ -665,8 +665,13 @@ const App: React.FC = () => {
                 <ChevronRight size={14} className="text-slate-400" />
                 <button
                   onClick={() => {
-                    setSelectedAquifer(null);
-                    setSelectedWells([]);
+                    if (selectedRegion.singleUnit) {
+                      // Single-unit: just clear wells, keep aquifer auto-selected
+                      setSelectedWells([]);
+                    } else {
+                      setSelectedAquifer(null);
+                      setSelectedWells([]);
+                    }
                   }}
                   className="hover:text-blue-600 transition-colors"
                 >
@@ -674,7 +679,7 @@ const App: React.FC = () => {
                 </button>
               </>
             )}
-            {selectedAquifer && (
+            {selectedAquifer && !selectedRegion?.singleUnit && (
               <>
                 <ChevronRight size={14} className="text-slate-400" />
                 <button
@@ -745,9 +750,23 @@ const App: React.FC = () => {
               wellColors={showTrends ? trendColors : null}
               aquiferColors={showTrends && !selectedAquifer ? aquiferTrendColors : null}
               onRegionClick={(r) => {
+                if (selectedRegion?.id === r.id) {
+                  // Clicking the already-selected region: deselect aquifer (if any) or clear wells
+                  if (selectedAquifer && !r.singleUnit) {
+                    setSelectedAquifer(null);
+                  }
+                  setSelectedWells([]);
+                  return;
+                }
                 setSelectedRegion(r);
-                setSelectedAquifer(null);
                 setSelectedWells([]);
+                // For single-unit regions, auto-select the default aquifer
+                if (r.singleUnit) {
+                  const singleAquifer = aquifers.find(a => a.regionId === r.id);
+                  setSelectedAquifer(singleAquifer || null);
+                } else {
+                  setSelectedAquifer(null);
+                }
               }}
               onAquiferClick={setSelectedAquifer}
               onWellClick={handleWellClick}

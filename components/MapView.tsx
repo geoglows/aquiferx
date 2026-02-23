@@ -165,15 +165,9 @@ const MapView: React.FC<MapViewProps> = ({
           weight: isSelected ? 3 : 1,
           fillOpacity: isSelected ? 0.05 : 0.1,
           fillColor: '#2563eb'
-        },
-        // When a region is selected, make all region polygons non-interactive so
-        // clicks pass through to the map (wells handle their own clicks,
-        // map background click clears well selection)
-        interactive: !selectedRegion
+        }
       });
-      if (!selectedRegion) {
-        layer.on('click', () => onRegionClick(r));
-      }
+      layer.on('click', () => onRegionClick(r));
       regionLayerRef.current?.addLayer(layer);
     });
 
@@ -200,20 +194,21 @@ const MapView: React.FC<MapViewProps> = ({
             fillColor: trendColor || '#64748b'
           }
         });
-        layer.on('click', () => onAquiferClick(a));
+        layer.on('click', (e) => {
+          L.DomEvent.stopPropagation(e as any);
+          onAquiferClick(a);
+        });
         aquiferLayerRef.current?.addLayer(layer);
       });
 
       const regionChanged = selectedRegion.id !== prevSelectedRegionIdRef.current;
-      if (regionChanged && !selectedAquifer) {
-        if (aquifers.length > 0) {
-          const bounds = aquiferLayerRef.current.getBounds();
-          if (bounds.isValid()) mapRef.current.flyToBounds(bounds, { padding: [40, 40], duration: 1.5 });
-        } else {
-          // Fallback zoom to region
-          const rBounds = L.latLngBounds([selectedRegion.bounds[0], selectedRegion.bounds[1]], [selectedRegion.bounds[2], selectedRegion.bounds[3]]);
-          mapRef.current.flyToBounds(rBounds, { padding: [40, 40] });
-        }
+      const aquiferDeselected = !selectedAquifer && prevSelectedAquiferIdRef.current !== null;
+      if ((regionChanged || aquiferDeselected) && !selectedAquifer) {
+        const rBounds = L.latLngBounds(
+          [selectedRegion.bounds[0], selectedRegion.bounds[1]],
+          [selectedRegion.bounds[2], selectedRegion.bounds[3]]
+        );
+        mapRef.current.flyToBounds(rBounds, { padding: [40, 40], duration: 1.5 });
       }
       prevSelectedRegionIdRef.current = selectedRegion.id;
     } else {
