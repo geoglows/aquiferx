@@ -8,6 +8,11 @@
       "code": "wte",
       "name": "Water Table Elevation",
       "unit": "m"
+    },
+    {
+      "code": "tce",
+      "name": "Trichloroethane",
+      "unit": "PPM"
     }
   ]
 }
