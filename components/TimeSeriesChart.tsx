@@ -592,7 +592,11 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
           <XAxis
             dataKey="date"
             type="number"
-            domain={zoomLeft != null && zoomRight != null ? [zoomLeft, zoomRight] : ['auto', 'auto']}
+            domain={zoomLeft != null && zoomRight != null
+              ? [zoomLeft, zoomRight]
+              : finalChartData.length > 0
+                ? (() => { const range = (finalChartData[finalChartData.length - 1].date as number) - (finalChartData[0].date as number); const pad = range * 0.02; return [finalChartData[0].date as number - pad, finalChartData[finalChartData.length - 1].date as number + pad]; })()
+                : ['auto', 'auto']}
             allowDataOverflow={zoomLeft != null}
             tickFormatter={formatXAxis}
             stroke="#475569"
