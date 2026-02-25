@@ -101,6 +101,16 @@ export interface StorageAnalysisResult {
   createdAt: string;
 }
 
+export interface CrossSectionProfile {
+  start: { lat: number; lng: number };
+  end: { lat: number; lng: number };
+  totalLength: number;          // in region's length unit
+  distances: number[];          // sample distances along the line
+  profiles: (number | null)[][]; // profiles[frameIdx][sampleIdx]
+  frameDates: string[];         // mirrors frames[].date
+  elevationRange: [number, number]; // [min, max] across all frames
+}
+
 export interface StorageAnalysisMeta {
   title: string;
   code: string;

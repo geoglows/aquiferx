@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import L from 'leaflet';
 import { Play, Pause, X, ChevronDown } from 'lucide-react';
-import { StorageAnalysisResult } from '../types';
+import { StorageAnalysisResult, CrossSectionProfile } from '../types';
+import { sampleCrossSection } from '../utils/rasterSampling';
 
 // --- Color ramp system ---
 
@@ -207,10 +208,12 @@ interface StorageOverlayProps {
   map: L.Map;
   onClose: () => void;
   onFrameChange?: (date: string, dateTs: number) => void;
+  lengthUnit: 'ft' | 'm';
+  onCrossSectionChange?: (profile: CrossSectionProfile | null) => void;
 }
 
 const StorageOverlay: React.FC<StorageOverlayProps> = ({
-  analysis, map, onClose, onFrameChange
+  analysis, map, onClose, onFrameChange, lengthUnit, onCrossSectionChange
 }) => {
   const [frameIdx, setFrameIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -221,6 +224,12 @@ const StorageOverlay: React.FC<StorageOverlayProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const lastFrameTimeRef = useRef(0);
+  const [crossSectionMode, setCrossSectionMode] = useState(false);
+  const [crossSectionStart, setCrossSectionStart] = useState<L.LatLng | null>(null);
+  const [crossSectionEnd, setCrossSectionEnd] = useState<L.LatLng | null>(null);
+  const crossSectionLayerRef = useRef<L.LayerGroup | null>(null);
+  const rubberBandRef = useRef<L.Polyline | null>(null);
+  const startMarkerRef = useRef<L.CircleMarker | null>(null);
 
   const { grid, frames } = analysis;
   const { nx, ny, mask, minLng, minLat, dx, dy } = grid;
@@ -395,6 +404,142 @@ const StorageOverlay: React.FC<StorageOverlayProps> = ({
     }
   }, [currentDate, onFrameChange]);
 
+  const clearRubberBand = useCallback(() => {
+    if (rubberBandRef.current) { map.removeLayer(rubberBandRef.current); rubberBandRef.current = null; }
+    if (startMarkerRef.current) { map.removeLayer(startMarkerRef.current); startMarkerRef.current = null; }
+  }, [map]);
+
+  // Reset cross-section when analysis changes
+  useEffect(() => {
+    setCrossSectionMode(false);
+    setCrossSectionStart(null);
+    setCrossSectionEnd(null);
+    clearRubberBand();
+    if (crossSectionLayerRef.current) {
+      map.removeLayer(crossSectionLayerRef.current);
+      crossSectionLayerRef.current = null;
+    }
+    onCrossSectionChange?.(null);
+  }, [analysis, map]);
+
+  // Cleanup cross-section layers on unmount
+  useEffect(() => {
+    return () => {
+      if (rubberBandRef.current) { map.removeLayer(rubberBandRef.current); rubberBandRef.current = null; }
+      if (startMarkerRef.current) { map.removeLayer(startMarkerRef.current); startMarkerRef.current = null; }
+      if (crossSectionLayerRef.current) {
+        map.removeLayer(crossSectionLayerRef.current);
+        crossSectionLayerRef.current = null;
+      }
+    };
+  }, [map]);
+
+  // Draw cross-section line and labels when both points are set
+  useEffect(() => {
+    if (crossSectionLayerRef.current) {
+      map.removeLayer(crossSectionLayerRef.current);
+      crossSectionLayerRef.current = null;
+    }
+    if (!crossSectionStart || !crossSectionEnd) return;
+
+    const group = L.layerGroup().addTo(map);
+    crossSectionLayerRef.current = group;
+
+    // Cross-section line
+    const lineColor = '#1e5a8a';
+    L.polyline([crossSectionStart, crossSectionEnd], {
+      color: lineColor,
+      weight: 2.5,
+      interactive: false,
+    }).addTo(group);
+
+    // Perpendicular sight-direction arrows at each endpoint
+    const dlat = crossSectionEnd.lat - crossSectionStart.lat;
+    const dlng = crossSectionEnd.lng - crossSectionStart.lng;
+    const len = Math.sqrt(dlat * dlat + dlng * dlng);
+    if (len > 0) {
+      // Perpendicular direction (90° CCW = "left" of A→A' = sight direction)
+      const sLat = dlng / len;
+      const sLng = -dlat / len;
+      // Along-line direction for arrowhead wings
+      const wLat = dlat / len;
+      const wLng = dlng / len;
+      const stemLen = len * 0.07;
+      const headLen = stemLen * 0.35;
+      const headWidth = stemLen * 0.2;
+
+      for (const base of [crossSectionStart, crossSectionEnd]) {
+        const tip = L.latLng(base.lat + sLat * stemLen, base.lng + sLng * stemLen);
+        L.polyline([base, tip], { color: lineColor, weight: 2, interactive: false }).addTo(group);
+
+        const wingLeft = L.latLng(
+          tip.lat - sLat * headLen + wLat * headWidth,
+          tip.lng - sLng * headLen + wLng * headWidth
+        );
+        const wingRight = L.latLng(
+          tip.lat - sLat * headLen - wLat * headWidth,
+          tip.lng - sLng * headLen - wLng * headWidth
+        );
+        L.polygon([tip, wingLeft, wingRight], {
+          color: lineColor, fillColor: lineColor, fillOpacity: 1,
+          weight: 1, interactive: false,
+        }).addTo(group);
+      }
+
+      // "A" and "A'" labels
+      // iconAnchor = the pixel within the icon that sits on the marker latlng.
+      // So to push the label down-and-right of the point, we set the anchor
+      // to the top-right of the icon (the icon renders up-and-left of the point).
+      const labelStyle = 'font-weight:bold;font-size:17px;color:#1e5a8a;text-shadow:1px 1px 2px #fff,-1px 1px 2px #fff,1px -1px 2px #fff,-1px -1px 2px #fff';
+
+      // "A" — anchor top-right so label renders below-left of start point
+      L.marker(crossSectionStart, {
+        icon: L.divIcon({
+          html: `<div style="${labelStyle}">A</div>`,
+          className: '',
+          iconSize: [20, 22],
+          iconAnchor: [20, -4],
+        }),
+        interactive: false,
+      }).addTo(group);
+
+      // "A'" — anchor top-left so label renders below-right of end point
+      L.marker(crossSectionEnd, {
+        icon: L.divIcon({
+          html: `<div style="${labelStyle}">A'</div>`,
+          className: '',
+          iconSize: [24, 22],
+          iconAnchor: [-4, -4],
+        }),
+        interactive: false,
+      }).addTo(group);
+    }
+  }, [crossSectionStart, crossSectionEnd, map]);
+
+  // Handle cross-section completion — sample and notify parent
+  const handleCrossSectionComplete = useCallback((start: L.LatLng, end: L.LatLng) => {
+    const profile = sampleCrossSection(
+      { lat: start.lat, lng: start.lng },
+      { lat: end.lat, lng: end.lng },
+      grid,
+      frames,
+      lengthUnit
+    );
+    onCrossSectionChange?.(profile);
+  }, [grid, frames, lengthUnit, onCrossSectionChange]);
+
+  const handleClearCrossSection = useCallback(() => {
+    setCrossSectionStart(null);
+    setCrossSectionEnd(null);
+    if (crossSectionLayerRef.current) {
+      map.removeLayer(crossSectionLayerRef.current);
+      crossSectionLayerRef.current = null;
+    }
+    onCrossSectionChange?.(null);
+  }, [map, onCrossSectionChange]);
+
+  const hasCrossSection = crossSectionStart !== null && crossSectionEnd !== null;
+
   // Color scale legend
   const legendSteps = 5;
   const legendLabels = useMemo(() =>
@@ -439,50 +584,125 @@ const StorageOverlay: React.FC<StorageOverlayProps> = ({
         </button>
       </div>
 
-      {/* Color scale legend with ramp picker — top-right to avoid well legend */}
-      <div className="absolute top-3 right-3 z-[95] bg-white/95 backdrop-blur rounded-lg shadow-lg border border-slate-200 p-3">
-        <button
-          onClick={() => setShowRampPicker(!showRampPicker)}
-          className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 mb-2 hover:text-slate-900 transition-colors"
-        >
-          <span>WTE</span>
-          <ChevronDown size={12} className={`text-slate-400 transition-transform ${showRampPicker ? 'rotate-180' : ''}`} />
-        </button>
+      {/* Color legend + Cross Section button — top-right */}
+      <div className="absolute top-3 right-3 z-[95] flex flex-col items-end gap-2">
+        <div className="bg-white/95 backdrop-blur rounded-lg shadow-lg border border-slate-200 p-3">
+          <button
+            onClick={() => setShowRampPicker(!showRampPicker)}
+            className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 mb-2 hover:text-slate-900 transition-colors"
+          >
+            <span>WTE</span>
+            <ChevronDown size={12} className={`text-slate-400 transition-transform ${showRampPicker ? 'rotate-180' : ''}`} />
+          </button>
 
-        {showRampPicker && (
-          <div className="mb-3 space-y-1" style={{ width: '150px' }}>
-            {COLOR_RAMPS.map(ramp => (
-              <button
-                key={ramp.id}
-                onClick={() => { setSelectedRamp(ramp.id); setShowRampPicker(false); }}
-                className={`w-full flex items-center gap-2 px-1.5 py-1 rounded text-left transition-colors ${
-                  ramp.id === selectedRamp
-                    ? 'bg-slate-100 ring-1 ring-slate-300'
-                    : 'hover:bg-slate-50'
-                }`}
-              >
-                <div
-                  className="h-3 flex-1 rounded-sm border border-slate-200"
-                  style={{ background: rampGradientCSS(ramp.lut) }}
-                />
-                <span className="text-[10px] text-slate-600 w-[42px] text-right flex-shrink-0">{ramp.name}</span>
-              </button>
-            ))}
-          </div>
-        )}
+          {showRampPicker && (
+            <div className="mb-3 space-y-1" style={{ width: '150px' }}>
+              {COLOR_RAMPS.map(ramp => (
+                <button
+                  key={ramp.id}
+                  onClick={() => { setSelectedRamp(ramp.id); setShowRampPicker(false); }}
+                  className={`w-full flex items-center gap-2 px-1.5 py-1 rounded text-left transition-colors ${
+                    ramp.id === selectedRamp
+                      ? 'bg-slate-100 ring-1 ring-slate-300'
+                      : 'hover:bg-slate-50'
+                  }`}
+                >
+                  <div
+                    className="h-3 flex-1 rounded-sm border border-slate-200"
+                    style={{ background: rampGradientCSS(ramp.lut) }}
+                  />
+                  <span className="text-[10px] text-slate-600 w-[42px] text-right flex-shrink-0">{ramp.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
 
-        <div className="flex items-stretch gap-2">
-          <div
-            className="w-5 rounded-sm border border-slate-200"
-            style={{ height: '120px', background: verticalGradientCSS }}
-          />
-          <div className="flex flex-col justify-between" style={{ height: '120px' }}>
-            {legendLabels.map((val, i) => (
-              <span key={i} className="text-[11px] text-slate-600 leading-none">{val.toFixed(0)}</span>
-            ))}
+          <div className="flex items-stretch gap-2">
+            <div
+              className="w-5 rounded-sm border border-slate-200"
+              style={{ height: '120px', background: verticalGradientCSS }}
+            />
+            <div className="flex flex-col justify-between" style={{ height: '120px' }}>
+              {legendLabels.map((val, i) => (
+                <span key={i} className="text-[11px] text-slate-600 leading-none">{val.toFixed(0)}</span>
+              ))}
+            </div>
           </div>
         </div>
+
+        <button
+          onClick={() => {
+            if (hasCrossSection) {
+              handleClearCrossSection();
+            } else {
+              setCrossSectionMode(true);
+              setCrossSectionStart(null);
+              setCrossSectionEnd(null);
+            }
+          }}
+          className={`px-3 py-1.5 rounded-lg shadow-lg border text-xs font-medium transition-colors ${
+            hasCrossSection
+              ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'
+              : crossSectionMode
+                ? 'bg-blue-100 text-blue-800 border-blue-300'
+                : 'bg-white/95 backdrop-blur text-slate-700 border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          {hasCrossSection ? 'Clear' : 'Cross Section'}
+        </button>
       </div>
+
+      {/* Cross-section drawing overlay */}
+      {crossSectionMode && !hasCrossSection && (
+        <div
+          className="absolute inset-0 z-[500]"
+          style={{ cursor: 'crosshair' }}
+          onClick={(e) => {
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            const point = L.point(e.clientX - rect.left, e.clientY - rect.top);
+            const latlng = map.containerPointToLatLng(point);
+
+            if (!crossSectionStart) {
+              setCrossSectionStart(latlng);
+              // Show start marker
+              startMarkerRef.current = L.circleMarker(latlng, {
+                radius: 5, color: '#1e5a8a', fillColor: '#fff', fillOpacity: 1, weight: 2, interactive: false,
+              }).addTo(map);
+              // Init rubber band line
+              rubberBandRef.current = L.polyline([latlng, latlng], {
+                color: '#1e5a8a', weight: 2, dashArray: '6 4', interactive: false,
+              }).addTo(map);
+            } else {
+              clearRubberBand();
+              setCrossSectionEnd(latlng);
+              setCrossSectionMode(false);
+              handleCrossSectionComplete(crossSectionStart, latlng);
+            }
+          }}
+          onMouseMove={(e) => {
+            if (!crossSectionStart || !rubberBandRef.current) return;
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            const point = L.point(e.clientX - rect.left, e.clientY - rect.top);
+            const latlng = map.containerPointToLatLng(point);
+            rubberBandRef.current.setLatLngs([crossSectionStart, latlng]);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setCrossSectionMode(false);
+              setCrossSectionStart(null);
+              clearRubberBand();
+            }
+          }}
+          tabIndex={0}
+          ref={(el) => el?.focus()}
+        >
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-black/70 text-white px-4 py-2 rounded-lg text-sm pointer-events-none select-none">
+            {crossSectionStart
+              ? 'Click to set end point (Esc to cancel)'
+              : 'Click to set start point (Esc to cancel)'}
+          </div>
+        </div>
+      )}
 
     </>
   );

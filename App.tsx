@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Layers, Map as MapIcon, Database, ChevronRight, Activity, Upload, Loader2, Download, Table, BarChart3 } from 'lucide-react';
-import { Region, Aquifer, Well, Measurement, DataType, StorageAnalysisResult, StorageAnalysisMeta } from './types';
+import { Region, Aquifer, Well, Measurement, DataType, StorageAnalysisResult, StorageAnalysisMeta, CrossSectionProfile } from './types';
 import { loadAllData } from './services/dataLoader';
 import { freshFetch } from './services/importUtils';
 import MapView, { MapViewHandle } from './components/MapView';
@@ -11,6 +11,7 @@ import ImportDataHub from './components/import/ImportDataHub';
 import DataEditor from './components/DataEditor';
 import StorageAnalysisDialog from './components/StorageAnalysisDialog';
 import StorageOverlay from './components/StorageOverlay';
+import CrossSectionChart from './components/CrossSectionChart';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
 } from 'recharts';
@@ -89,7 +90,8 @@ const App: React.FC = () => {
   const [compareStorageResults, setCompareStorageResults] = useState<StorageAnalysisResult[]>([]);
   const [storageMeta, setStorageMeta] = useState<StorageAnalysisMeta[]>([]);
   const [loadingStorageCode, setLoadingStorageCode] = useState<string | null>(null);
-  const [activeTimeSeriesTab, setActiveTimeSeriesTab] = useState<'waterLevel' | 'storageChange'>('waterLevel');
+  const [crossSectionProfile, setCrossSectionProfile] = useState<CrossSectionProfile | null>(null);
+  const [activeTimeSeriesTab, setActiveTimeSeriesTab] = useState<'waterLevel' | 'storageChange' | 'crossSection'>('waterLevel');
   const [storageFrameDate, setStorageFrameDate] = useState<{ date: string; dateTs: number } | null>(null);
   const [chartHeight, setChartHeight] = useState(250);
   const isDraggingDividerRef = useRef(false);
@@ -169,9 +171,19 @@ const App: React.FC = () => {
     } else {
       setActiveTimeSeriesTab('waterLevel');
       setStorageFrameDate(null);
+      setCrossSectionProfile(null);
     }
     setCompareStorageResults([]);
   }, [storageResult]);
+
+  // Auto-switch to cross-section tab when profile is set
+  useEffect(() => {
+    if (crossSectionProfile) {
+      setActiveTimeSeriesTab('crossSection');
+    } else if (activeTimeSeriesTab === 'crossSection') {
+      setActiveTimeSeriesTab(storageResult ? 'storageChange' : 'waterLevel');
+    }
+  }, [crossSectionProfile]);
 
   // Compute the data time range (in years) for the selected region/data type
   const dataTimeRangeYears = useMemo(() => {
@@ -321,6 +333,10 @@ const App: React.FC = () => {
 
   const handleStorageFrameChange = useCallback((date: string, dateTs: number) => {
     setStorageFrameDate({ date, dateTs });
+  }, []);
+
+  const handleCrossSectionChange = useCallback((profile: CrossSectionProfile | null) => {
+    setCrossSectionProfile(profile);
   }, []);
 
   const handleUnloadStorage = () => {
@@ -1056,12 +1072,14 @@ const App: React.FC = () => {
                 map={mapViewRef.current.getMap()!}
                 onClose={() => setStorageResult(null)}
                 onFrameChange={handleStorageFrameChange}
+                lengthUnit={selectedRegion?.lengthUnit || 'ft'}
+                onCrossSectionChange={handleCrossSectionChange}
               />
             )}
           </div>
 
           {/* Drag handle + Time Series Section */}
-          {(selectedWells.length > 0 || storageResult) && (
+          {(selectedWells.length > 0 || storageResult || crossSectionProfile) && (
             <div
               onMouseDown={handleDividerMouseDown}
               className="h-1.5 bg-slate-200 hover:bg-blue-400 cursor-row-resize flex-shrink-0 transition-colors relative group"
@@ -1073,40 +1091,59 @@ const App: React.FC = () => {
           )}
           <div
             className={`border-t border-slate-200 bg-white flex-shrink-0 ${
-              (selectedWells.length > 0 || storageResult) ? '' : 'h-0 overflow-hidden'
+              (selectedWells.length > 0 || storageResult || crossSectionProfile) ? '' : 'h-0 overflow-hidden'
             }`}
-            style={(selectedWells.length > 0 || storageResult) ? { height: chartHeight } : undefined}
+            style={(selectedWells.length > 0 || storageResult || crossSectionProfile) ? { height: chartHeight } : undefined}
           >
-            {(selectedWells.length > 0 || storageResult) && (() => {
-              const showBothTabs = selectedWells.length > 0 && storageResult !== null;
-              const effectiveTab = showBothTabs ? activeTimeSeriesTab : (storageResult ? 'storageChange' : 'waterLevel');
+            {(selectedWells.length > 0 || storageResult || crossSectionProfile) && (() => {
+              // Build available tabs dynamically
+              const availableTabs: ('waterLevel' | 'storageChange' | 'crossSection')[] = [];
+              if (selectedWells.length > 0) availableTabs.push('waterLevel');
+              if (storageResult) availableTabs.push('storageChange');
+              if (crossSectionProfile) availableTabs.push('crossSection');
+              const showTabs = availableTabs.length > 1;
+              const effectiveTab = availableTabs.includes(activeTimeSeriesTab) ? activeTimeSeriesTab : availableTabs[0];
               return (
                 <div className="p-4 h-full flex flex-col">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center space-x-3">
-                      {showBothTabs && (
+                      {showTabs && (
                         <div className="flex bg-slate-100 rounded-md p-0.5">
-                          <button
-                            onClick={() => setActiveTimeSeriesTab('waterLevel')}
-                            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
-                              effectiveTab === 'waterLevel' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                            }`}
-                          >
-                            Water Level
-                          </button>
-                          <button
-                            onClick={() => setActiveTimeSeriesTab('storageChange')}
-                            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
-                              effectiveTab === 'storageChange' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                            }`}
-                          >
-                            Storage Change
-                          </button>
+                          {availableTabs.includes('waterLevel') && (
+                            <button
+                              onClick={() => setActiveTimeSeriesTab('waterLevel')}
+                              className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                                effectiveTab === 'waterLevel' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                              }`}
+                            >
+                              Water Level
+                            </button>
+                          )}
+                          {availableTabs.includes('storageChange') && (
+                            <button
+                              onClick={() => setActiveTimeSeriesTab('storageChange')}
+                              className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                                effectiveTab === 'storageChange' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                              }`}
+                            >
+                              Storage Change
+                            </button>
+                          )}
+                          {availableTabs.includes('crossSection') && (
+                            <button
+                              onClick={() => setActiveTimeSeriesTab('crossSection')}
+                              className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                                effectiveTab === 'crossSection' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                              }`}
+                            >
+                              Cross Section
+                            </button>
+                          )}
                         </div>
                       )}
                       {effectiveTab === 'waterLevel' ? (
                         <>
-                          {!showBothTabs && <Activity size={18} className="text-blue-500" />}
+                          {!showTabs && <Activity size={18} className="text-blue-500" />}
                           <h3 className="font-bold text-slate-800">
                             {activeDataType.name}: {
                               selectedWells.length <= 3
@@ -1115,15 +1152,24 @@ const App: React.FC = () => {
                             }
                           </h3>
                         </>
-                      ) : (
+                      ) : effectiveTab === 'storageChange' ? (
                         <>
-                          {!showBothTabs && <BarChart3 size={18} className="text-emerald-500" />}
+                          {!showTabs && <BarChart3 size={18} className="text-emerald-500" />}
                           <h3 className="font-bold text-slate-800">
                             {allStorageResults.length > 1 ? 'Storage Change Comparison' : `Storage Change: ${storageResult!.title}`}
                           </h3>
                           {allStorageResults.length === 1 && (
                             <span className="text-xs text-slate-400">({storageResult!.params.volumeUnit})</span>
                           )}
+                        </>
+                      ) : (
+                        <>
+                          <h3 className="font-bold text-slate-800">
+                            Cross Section A–A'
+                          </h3>
+                          <span className="text-xs text-slate-400">
+                            ({crossSectionProfile!.totalLength.toFixed(0)} {selectedRegion?.lengthUnit || 'ft'})
+                          </span>
                         </>
                       )}
                     </div>
@@ -1166,12 +1212,16 @@ const App: React.FC = () => {
                             Units: {activeDataType.unit === 'm' ? 'Meters' : activeDataType.unit === 'ft' ? 'Feet' : activeDataType.unit} ({activeDataType.code.toUpperCase()})
                           </div>
                         </>
-                      ) : (
+                      ) : effectiveTab === 'storageChange' ? (
                         <div className="text-[10px] text-slate-400">
                           {allStorageResults.length > 1
                             ? `${allStorageResults.length} analyses`
                             : <>Sc={storageResult!.params.storageCoefficient} &bull; {storageResult!.params.interval} &bull; res={storageResult!.params.resolution}</>
                           }
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-slate-400">
+                          {storageFrameDate?.date || ''}
                         </div>
                       )}
                     </div>
@@ -1200,6 +1250,12 @@ const App: React.FC = () => {
                         onDeleteMeasurement={handleChartDeleteMeasurement}
                         referenceDate={storageResult && storageFrameDate ? storageFrameDate.dateTs : undefined}
                         trendWindowStart={showTrends ? Date.now() - trendWindowYears * MS_PER_YEAR : undefined}
+                      />
+                    ) : effectiveTab === 'crossSection' && crossSectionProfile ? (
+                      <CrossSectionChart
+                        profile={crossSectionProfile}
+                        frameIdx={crossSectionProfile.frameDates.indexOf(storageFrameDate?.date || crossSectionProfile.frameDates[0])}
+                        lengthUnit={selectedRegion?.lengthUnit || 'ft'}
                       />
                     ) : storageResult && (
                       <ResponsiveContainer width="100%" height="100%">
