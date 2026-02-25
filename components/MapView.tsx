@@ -548,7 +548,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
       )}
 
       {/* Map Options Panel */}
-      <div className="absolute bottom-6 left-3 z-[90] flex flex-col gap-1.5 bg-white rounded shadow-md border border-slate-300 px-2 py-1.5">
+      <div className="absolute bottom-2 left-2 z-[90] flex flex-col gap-1.5 bg-white rounded-lg shadow-lg border border-slate-200 px-2 py-1.5">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1">
             <label htmlFor="min-obs" className="text-xs font-medium text-slate-600 whitespace-nowrap">Min obs</label>

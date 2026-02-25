@@ -81,6 +81,7 @@ const App: React.FC = () => {
   const [trendColors, setTrendColors] = useState<Map<string, string> | null>(null);
   const [aquiferTrendColors, setAquiferTrendColors] = useState<Map<string, string> | null>(null);
   const [showTrends, setShowTrends] = useState(false);
+  const [trendWindowYears, setTrendWindowYears] = useState(10);
   const [selectedDataType, setSelectedDataType] = useState<string>('wte');
   const [visibleRegionIds, setVisibleRegionIds] = useState<Set<string>>(new Set());
   const [storageDialogOpen, setStorageDialogOpen] = useState(false);
@@ -172,27 +173,37 @@ const App: React.FC = () => {
     setCompareStorageResults([]);
   }, [storageResult]);
 
-  const analyzeTrends = () => {
-    if (showTrends) {
-      setTrendColors(null);
-      setAquiferTrendColors(null);
-      setShowTrends(false);
-      setShowTrendLine(false);
-      return;
+  // Compute the data time range (in years) for the selected region/data type
+  const dataTimeRangeYears = useMemo(() => {
+    if (!selectedRegion) return 0;
+    let minT = Infinity, maxT = -Infinity;
+    for (const m of measurements) {
+      if (m.dataType !== selectedDataType) continue;
+      const t = new Date(m.date).getTime();
+      if (!isNaN(t)) { if (t < minT) minT = t; if (t > maxT) maxT = t; }
     }
-    if (!selectedRegion) return;
-    setShowTrendLine(true);
+    if (!isFinite(minT)) return 0;
+    return (maxT - minT) / MS_PER_YEAR;
+  }, [selectedRegion, measurements, selectedDataType]);
 
-    // Compute both well-level and aquifer-level trends for the entire region
+  const trendWindowMax = Math.max(5, Math.ceil(dataTimeRangeYears / 5) * 5);
+
+  const computeTrendColors = useCallback((windowYears: number) => {
+    if (!selectedRegion) return;
+
+    const cutoffTime = Date.now() - windowYears * MS_PER_YEAR;
     const regionWells = wells.filter(w => w.regionId === selectedRegion.id);
 
-    // Group measurements by wellId for this data type
+    // Group measurements by wellId for this data type, filtered by window
     const byWell = new Map<string, Measurement[]>();
     for (const m of measurements) {
       if (m.dataType === selectedDataType) {
-        const arr = byWell.get(m.wellId);
-        if (arr) arr.push(m);
-        else byWell.set(m.wellId, [m]);
+        const t = new Date(m.date).getTime();
+        if (!isNaN(t) && t >= cutoffTime) {
+          const arr = byWell.get(m.wellId);
+          if (arr) arr.push(m);
+          else byWell.set(m.wellId, [m]);
+        }
       }
     }
 
@@ -211,8 +222,9 @@ const App: React.FC = () => {
       if (arr) arr.push(w);
       else wellsByAquifer.set(w.aquiferId, [w]);
     }
+    const regionAquifers = aquifers.filter(a => a.regionId === selectedRegion.id);
     const aqColorMap = new Map<string, string>();
-    for (const a of filteredAquifers) {
+    for (const a of regionAquifers) {
       const aqWells = wellsByAquifer.get(a.id) || [];
       const slopes: number[] = [];
       for (const w of aqWells) {
@@ -228,7 +240,25 @@ const App: React.FC = () => {
 
     setTrendColors(wellColorMap);
     setAquiferTrendColors(aqColorMap);
+  }, [selectedRegion, wells, aquifers, measurements, selectedDataType]);
+
+  const analyzeTrends = () => {
+    if (showTrends) {
+      setTrendColors(null);
+      setAquiferTrendColors(null);
+      setShowTrends(false);
+      setShowTrendLine(false);
+      return;
+    }
+    if (!selectedRegion) return;
+    setShowTrendLine(true);
+    computeTrendColors(trendWindowYears);
     setShowTrends(true);
+  };
+
+  const handleTrendWindowChange = (newWindow: number) => {
+    setTrendWindowYears(newWindow);
+    computeTrendColors(newWindow);
   };
 
   // Load data on mount
@@ -880,17 +910,35 @@ const App: React.FC = () => {
               </select>
             )}
             {selectedRegion && (
-              <button
-                onClick={analyzeTrends}
-                className={`flex items-center space-x-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                  showTrends
-                    ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
-                    : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
-                }`}
-              >
-                <Activity size={16} />
-                <span>Analyze Trends</span>
-              </button>
+              <>
+                <button
+                  onClick={analyzeTrends}
+                  className={`flex items-center space-x-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    showTrends
+                      ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+                      : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+                  }`}
+                >
+                  <Activity size={16} />
+                  <span>Analyze Trends</span>
+                </button>
+                {showTrends && (
+                  <div className="flex items-center gap-1.5 text-xs text-slate-600">
+                    <span className="whitespace-nowrap">Window:</span>
+                    <button
+                      onClick={() => handleTrendWindowChange(Math.max(5, trendWindowYears - 5))}
+                      disabled={trendWindowYears <= 5}
+                      className="w-5 h-5 flex items-center justify-center rounded bg-slate-100 hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed font-bold text-slate-600"
+                    >&minus;</button>
+                    <span className="w-12 text-center font-medium">{trendWindowYears} yr</span>
+                    <button
+                      onClick={() => handleTrendWindowChange(Math.min(trendWindowMax, trendWindowYears + 5))}
+                      disabled={trendWindowYears >= trendWindowMax}
+                      className="w-5 h-5 flex items-center justify-center rounded bg-slate-100 hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed font-bold text-slate-600"
+                    >+</button>
+                  </div>
+                )}
+              </>
             )}
             {selectedAquifer && (
               <button
@@ -951,7 +999,7 @@ const App: React.FC = () => {
             />
             {/* Well legend — shown when aquifer selected and trends not active */}
             {selectedAquifer && !(showTrends && (trendColors || aquiferTrendColors)) && (
-              <div className="absolute top-3 left-3 z-[90] bg-white rounded-lg shadow-lg border border-slate-200 p-3" style={{ width: '180px' }}>
+              <div className="absolute top-2 left-2 z-[90] bg-white rounded-lg shadow-lg border border-slate-200 p-3" style={{ width: '180px' }}>
                 <div className="text-xs font-semibold text-slate-700 mb-2">Wells</div>
                 <div className="flex items-center gap-2 py-0.5">
                   <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#3b82f6' }} />
@@ -976,7 +1024,7 @@ const App: React.FC = () => {
                 ? (unit === 'm' ? AQUIFER_TREND_THRESHOLDS_M : AQUIFER_TREND_THRESHOLDS_FT)
                 : (unit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT);
               return (
-                <div className="absolute top-3 left-3 z-[90] bg-white rounded-lg shadow-lg border border-slate-200 p-3" style={{ width: '210px' }}>
+                <div className="absolute top-2 left-2 z-[90] bg-white rounded-lg shadow-lg border border-slate-200 p-3" style={{ width: '210px' }}>
                   <div className="text-xs font-semibold text-slate-700 mb-0.5">
                     {isAquiferMode ? 'Aquifer Trend (median)' : 'Well Trend'} ({unit}/yr)
                   </div>
@@ -1151,6 +1199,7 @@ const App: React.FC = () => {
                         onEditMeasurement={handleChartEditMeasurement}
                         onDeleteMeasurement={handleChartDeleteMeasurement}
                         referenceDate={storageResult && storageFrameDate ? storageFrameDate.dateTs : undefined}
+                        trendWindowStart={showTrends ? Date.now() - trendWindowYears * MS_PER_YEAR : undefined}
                       />
                     ) : storageResult && (
                       <ResponsiveContainer width="100%" height="100%">

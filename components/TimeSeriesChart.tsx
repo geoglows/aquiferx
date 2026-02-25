@@ -29,6 +29,7 @@ interface TimeSeriesChartProps {
   dataType: DataType;
   lengthUnit?: 'ft' | 'm';
   referenceDate?: number;
+  trendWindowStart?: number;
   onEditMeasurement?: (wellId: string, date: number, newValue: number) => void;
   onDeleteMeasurement?: (wellId: string, date: number) => void;
 }
@@ -46,7 +47,7 @@ interface DotPosition extends SelectedPoint {
 
 const HIT_RADIUS = 15;
 
-const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selectedWells, showGSE, showTrendLine, showMovingAvg, dataType, lengthUnit = 'ft', referenceDate, onEditMeasurement, onDeleteMeasurement }) => {
+const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selectedWells, showGSE, showTrendLine, showMovingAvg, dataType, lengthUnit = 'ft', referenceDate, trendWindowStart, onEditMeasurement, onDeleteMeasurement }) => {
   const [selectedPoint, setSelectedPoint] = useState<SelectedPoint | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [editModal, setEditModal] = useState(false);
@@ -158,6 +159,8 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     for (const m of measurements) {
       const t = new Date(m.date).getTime();
       if (isNaN(t)) continue;
+      // When trendWindowStart is set, only use points within the window for fitting
+      if (trendWindowStart !== undefined && t < trendWindowStart) continue;
       if (!byWell.has(m.wellId)) byWell.set(m.wellId, []);
       byWell.get(m.wellId)!.push({ x: t, y: m.value });
     }
@@ -197,7 +200,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
 
     if (lines.size === 0) return null;
     return lines;
-  }, [showTrendLine, measurements, selectedWells]);
+  }, [showTrendLine, measurements, selectedWells, trendWindowStart]);
 
   // Compute moving averages per well from the PCHIP-interpolated data
   const movingAvgData = useMemo(() => {
@@ -549,6 +552,30 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
               />
             );
           })}
+          {showMovingAvg && movingAvgData && wellIds.map((wellId) => {
+            if (!movingAvgData.has(wellId)) return null;
+            return MOVING_AVG_WINDOWS.map(({ months, label, color }) => {
+              const key = `ma${months}_${wellId}`;
+              return (
+                <Line
+                  key={key}
+                  type="monotone"
+                  dataKey={key}
+                  stroke={color}
+                  strokeWidth={2}
+                  strokeDasharray="6 3"
+                  dot={false}
+                  connectNulls
+                  isAnimationActive={false}
+                  legendType="plainline"
+                  name={wellIds.length > 1 ? `${label} (${wellNameMap.get(wellId)})` : label}
+                />
+              );
+            });
+          })}
+          {referenceDate != null && (
+            <ReferenceLine x={referenceDate} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={1.5} />
+          )}
           {showTrendLine && trendData && wellIds.map((wellId) => {
             const line = trendData.get(wellId);
             if (!line) return null;
@@ -576,30 +603,6 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
               />
             );
           })}
-          {showMovingAvg && movingAvgData && wellIds.map((wellId) => {
-            if (!movingAvgData.has(wellId)) return null;
-            return MOVING_AVG_WINDOWS.map(({ months, label, color }) => {
-              const key = `ma${months}_${wellId}`;
-              return (
-                <Line
-                  key={key}
-                  type="monotone"
-                  dataKey={key}
-                  stroke={color}
-                  strokeWidth={2}
-                  strokeDasharray="6 3"
-                  dot={false}
-                  connectNulls
-                  isAnimationActive={false}
-                  legendType="plainline"
-                  name={wellIds.length > 1 ? `${label} (${wellNameMap.get(wellId)})` : label}
-                />
-              );
-            });
-          })}
-          {referenceDate != null && (
-            <ReferenceLine x={referenceDate} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={1.5} />
-          )}
         </LineChart>
       </ResponsiveContainer>
 
