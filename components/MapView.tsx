@@ -106,6 +106,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
   const prevSelectedAquiferIdRef = useRef<string | null>(null);
   const prevSelectedRegionIdRef = useRef<string | null>(null);
   const wellJustClickedRef = useRef(false);
+  const mouseDownPosRef = useRef<{ x: number; y: number } | null>(null);
   const aquifersRef = useRef(aquifers);
   aquifersRef.current = aquifers;
   const regionsRef = useRef(regions);
@@ -149,11 +150,23 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
       wellLayerRef.current = L.featureGroup().addTo(mapRef.current);
       wellLabelLayerRef.current = L.featureGroup().addTo(mapRef.current);
 
+      // Track mousedown position to distinguish clicks from drags/pans
+      const map = mapRef.current;
+      map.getContainer().addEventListener('mousedown', (evt: MouseEvent) => {
+        mouseDownPosRef.current = { x: evt.clientX, y: evt.clientY };
+      });
+
       // Single native DOM click handler for all map background clicks.
       // Well markers stop native propagation, so this only fires for non-well clicks.
-      const map = mapRef.current;
       map.getContainer().addEventListener('click', (evt: MouseEvent) => {
         if (wellJustClickedRef.current) return;
+        // Ignore drag/pan gestures — only handle clicks where mouse barely moved
+        const down = mouseDownPosRef.current;
+        if (down) {
+          const dx = evt.clientX - down.x;
+          const dy = evt.clientY - down.y;
+          if (dx * dx + dy * dy > 25) return; // >5px movement = drag
+        }
         const latlng = map.mouseEventToLatLng(evt);
         const { lat, lng } = latlng;
         const curRegion = selectedRegionRef.current;

@@ -90,7 +90,39 @@ const App: React.FC = () => {
   const [loadingStorageCode, setLoadingStorageCode] = useState<string | null>(null);
   const [activeTimeSeriesTab, setActiveTimeSeriesTab] = useState<'waterLevel' | 'storageChange'>('waterLevel');
   const [storageFrameDate, setStorageFrameDate] = useState<{ date: string; dateTs: number } | null>(null);
+  const [chartHeight, setChartHeight] = useState(250);
+  const isDraggingDividerRef = useRef(false);
+  const dragStartYRef = useRef(0);
+  const dragStartHeightRef = useRef(0);
   const mapViewRef = useRef<MapViewHandle>(null);
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+
+  // Divider drag handlers for resizing the chart panel
+  const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDraggingDividerRef.current = true;
+    dragStartYRef.current = e.clientY;
+    dragStartHeightRef.current = chartHeight;
+  }, [chartHeight]);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingDividerRef.current) return;
+      const dy = dragStartYRef.current - e.clientY; // dragging up = positive = taller chart
+      const containerH = splitContainerRef.current?.clientHeight || 600;
+      const newHeight = Math.min(Math.max(100, dragStartHeightRef.current + dy), containerH - 100);
+      setChartHeight(newHeight);
+    };
+    const handleMouseUp = () => {
+      isDraggingDividerRef.current = false;
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   // Keep visibleRegionIds in sync when regions load/change
   useEffect(() => {
@@ -880,7 +912,7 @@ const App: React.FC = () => {
         </header>
 
         {/* Map and Chart Split View */}
-        <div className="flex-1 flex flex-col min-h-0">
+        <div ref={splitContainerRef} className="flex-1 flex flex-col min-h-0">
           <div className="flex-1 relative">
             <MapView
               ref={mapViewRef}
@@ -980,10 +1012,23 @@ const App: React.FC = () => {
             )}
           </div>
 
-          {/* Time Series Section */}
-          <div className={`transition-all duration-300 ease-in-out border-t border-slate-200 bg-white ${
-            (selectedWells.length > 0 || storageResult) ? 'h-1/3' : 'h-0 overflow-hidden'
-          }`}>
+          {/* Drag handle + Time Series Section */}
+          {(selectedWells.length > 0 || storageResult) && (
+            <div
+              onMouseDown={handleDividerMouseDown}
+              className="h-1.5 bg-slate-200 hover:bg-blue-400 cursor-row-resize flex-shrink-0 transition-colors relative group"
+            >
+              <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center">
+                <div className="w-8 h-0.5 rounded-full bg-slate-400 group-hover:bg-white transition-colors" />
+              </div>
+            </div>
+          )}
+          <div
+            className={`border-t border-slate-200 bg-white flex-shrink-0 ${
+              (selectedWells.length > 0 || storageResult) ? '' : 'h-0 overflow-hidden'
+            }`}
+            style={(selectedWells.length > 0 || storageResult) ? { height: chartHeight } : undefined}
+          >
             {(selectedWells.length > 0 || storageResult) && (() => {
               const showBothTabs = selectedWells.length > 0 && storageResult !== null;
               const effectiveTab = showBothTabs ? activeTimeSeriesTab : (storageResult ? 'storageChange' : 'waterLevel');
