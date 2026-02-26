@@ -101,6 +101,47 @@ export function interpolatePCHIP(x: number[], y: number[], targetX: number[]): n
 }
 
 /**
+ * Nadaraya-Watson kernel smoothing with PCHIP interpolation for output.
+ * Step 1: Gaussian kernel regression at each raw data point (statistically meaningful).
+ * Step 2: PCHIP interpolation of the smoothed anchors onto the output timestamps.
+ *
+ * @param xValues - sorted timestamps of raw measurements
+ * @param yValues - values at each measurement timestamp
+ * @param outputTs - timestamps at which to produce smoothed output
+ * @param smoothMonths - bandwidth in months (~95% of Gaussian weight falls within this window)
+ */
+export function kernelSmooth(
+  xValues: number[],
+  yValues: number[],
+  outputTs: number[],
+  smoothMonths: number
+): number[] {
+  const MS_PER_MONTH = 30.4375 * 24 * 60 * 60 * 1000;
+  const sigma = (smoothMonths * MS_PER_MONTH) / 4;
+
+  if (xValues.length < 2) {
+    return outputTs.map(() => (xValues.length === 1 ? yValues[0] : 0));
+  }
+
+  // Step 1: Nadaraya-Watson kernel regression at each raw measurement timestamp
+  const smoothedAtData: number[] = new Array(xValues.length);
+  for (let j = 0; j < xValues.length; j++) {
+    const t = xValues[j];
+    let sumW = 0, sumWY = 0;
+    for (let i = 0; i < xValues.length; i++) {
+      const d = (t - xValues[i]) / sigma;
+      const w = Math.exp(-0.5 * d * d);
+      sumW += w;
+      sumWY += w * yValues[i];
+    }
+    smoothedAtData[j] = sumWY / sumW;
+  }
+
+  // Step 2: PCHIP interpolation of smoothed anchor values onto output grid
+  return interpolatePCHIP(xValues, smoothedAtData, outputTs);
+}
+
+/**
  * Compute the one-sided derivative at an endpoint for PCHIP.
  * Uses the "not-a-knot" style endpoint condition from scipy.
  */

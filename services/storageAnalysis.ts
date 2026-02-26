@@ -1,6 +1,6 @@
 import { Aquifer, Region, Well, Measurement, StorageAnalysisParams, StorageAnalysisResult, StorageGrid, StorageFrame } from '../types';
 import { isPointInGeoJSON, cellAreaM2 } from '../utils/geo';
-import { interpolatePCHIP } from '../utils/interpolation';
+import { interpolatePCHIP, kernelSmooth } from '../utils/interpolation';
 import { krigGrid, estimateVariogramParams } from './kriging';
 
 // Generate interval dates between start and end (inclusive) as ISO strings
@@ -147,23 +147,10 @@ export async function runStorageAnalysis(
 
   console.log(`[StorageAnalysis] ${wellInterp.size}/${wellIds.length} wells qualified (minObs=${params.minObservations}, minSpan=${params.minTimeSpanYears}yr)`);
 
-  // Step 3b: Moving average smoothing (when selected)
+  // Step 3b: Kernel smoothing (when selected)
   if (params.smoothingMethod === 'moving-average') {
-    onProgress('Applying moving average smoothing...', 30);
+    onProgress('Applying kernel smoothing...', 30);
     await yieldToUI();
-
-    // Generate monthly timestamps spanning the full analysis range
-    const monthlyTimestamps: number[] = [];
-    const maStart = new Date(startDate);
-    const maEnd = new Date(endDate);
-    const maCursor = new Date(maStart);
-    while (maCursor <= maEnd) {
-      monthlyTimestamps.push(maCursor.getTime());
-      maCursor.setMonth(maCursor.getMonth() + 1);
-    }
-
-    const halfWindow = params.smoothingMonths / 2;
-    const MS_PER_MONTH = 30.4375 * 24 * 60 * 60 * 1000;
 
     for (const [wellId, entry] of wellInterp) {
       const meas = byWell.get(wellId)!;
@@ -173,54 +160,16 @@ export async function runStorageAnalysis(
 
       const xValues = sorted.map(m => new Date(m.date).getTime());
       const yValues = sorted.map(m => m.value);
+      if (xValues.length < 2) continue;
       const minT = xValues[0];
       const maxT = xValues[xValues.length - 1];
 
-      // PCHIP interpolate to monthly timestamps within the well's data range
-      const validMonthlyTs: number[] = [];
-      const validMonthlyIdx: number[] = [];
-      for (let i = 0; i < monthlyTimestamps.length; i++) {
-        if (monthlyTimestamps[i] >= minT && monthlyTimestamps[i] <= maxT) {
-          validMonthlyTs.push(monthlyTimestamps[i]);
-          validMonthlyIdx.push(i);
-        }
-      }
+      // Smooth at interval timestamps within the well's data range
+      const smoothed = kernelSmooth(xValues, yValues, intervalTimestamps, params.smoothingMonths);
 
-      if (validMonthlyTs.length < 2) continue;
-
-      const monthlyValues = interpolatePCHIP(xValues, yValues, validMonthlyTs);
-
-      // Apply centered moving average over the monthly series
-      const smoothed: number[] = new Array(monthlyValues.length);
-      for (let i = 0; i < monthlyValues.length; i++) {
-        const centerT = validMonthlyTs[i];
-        const windowMinT = centerT - halfWindow * MS_PER_MONTH;
-        const windowMaxT = centerT + halfWindow * MS_PER_MONTH;
-        let sum = 0, count = 0;
-        for (let j = 0; j < monthlyValues.length; j++) {
-          if (validMonthlyTs[j] >= windowMinT && validMonthlyTs[j] <= windowMaxT) {
-            sum += monthlyValues[j];
-            count++;
-          }
-        }
-        smoothed[i] = sum / count;
-      }
-
-      // Sample the smoothed series at the original interval dates via linear interpolation
-      const newValues: (number | null)[] = intervalTimestamps.map(t => {
+      const newValues: (number | null)[] = intervalTimestamps.map((t, i) => {
         if (t < minT || t > maxT) return null;
-        if (t < validMonthlyTs[0] || t > validMonthlyTs[validMonthlyTs.length - 1]) return null;
-        // Binary search for the interval containing t
-        let lo = 0, hi = validMonthlyTs.length - 1;
-        while (lo < hi - 1) {
-          const mid = (lo + hi) >> 1;
-          if (validMonthlyTs[mid] <= t) lo = mid; else hi = mid;
-        }
-        if (lo === hi || validMonthlyTs[lo] === validMonthlyTs[hi]) {
-          return smoothed[lo];
-        }
-        const frac = (t - validMonthlyTs[lo]) / (validMonthlyTs[hi] - validMonthlyTs[lo]);
-        return smoothed[lo] + frac * (smoothed[hi] - smoothed[lo]);
+        return smoothed[i];
       });
 
       entry.values = newValues;

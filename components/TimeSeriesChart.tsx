@@ -4,7 +4,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceLine
 } from 'recharts';
 import { Measurement, Well, DataType } from '../types';
-import { interpolatePCHIP } from '../utils/interpolation';
+import { interpolatePCHIP, kernelSmooth } from '../utils/interpolation';
 
 const SERIES_COLORS = [
   '#3b82f6', '#ef4444', '#10b981', '#f59e0b',
@@ -218,14 +218,10 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     return lines;
   }, [showTrendLine, measurements, selectedWells, trendWindowStart]);
 
-  // Compute a single smoothed (moving average) line per well.
-  // Approach: resample raw measurements to uniform monthly grid via PCHIP,
-  // apply centered moving average on that regular grid, then map back to chart timestamps.
+  // Compute a single smoothed line per well using Nadaraya-Watson kernel regression
+  // with PCHIP interpolation onto a monthly output grid for visual continuity.
   const smoothData = useMemo(() => {
     if (!showSmooth || measurements.length === 0 || wellIds.length === 0) return null;
-
-    const MS_PER_MONTH = 30.4375 * 24 * 60 * 60 * 1000;
-    const halfWindow = smoothMonths / 2;
 
     const byWell = new Map<string, Measurement[]>();
     for (const m of measurements) {
@@ -246,61 +242,26 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
 
       const xValues = sorted.map(m => new Date(m.date).getTime());
       const yValues = sorted.map(m => m.value);
-      const minT = xValues[0];
-      const maxT = xValues[xValues.length - 1];
 
-      // Generate monthly timestamps spanning the well's data range
-      const monthlyTs: number[] = [];
-      const cursor = new Date(minT);
-      while (cursor.getTime() <= maxT) {
-        monthlyTs.push(cursor.getTime());
+      // Monthly output grid spanning the well's data range
+      const outputTs: number[] = [];
+      const cursor = new Date(xValues[0]);
+      while (cursor.getTime() <= xValues[xValues.length - 1]) {
+        outputTs.push(cursor.getTime());
         cursor.setMonth(cursor.getMonth() + 1);
       }
-      if (monthlyTs.length < 2) continue;
 
-      // PCHIP interpolate to uniform monthly grid
-      const monthlyValues = interpolatePCHIP(xValues, yValues, monthlyTs);
+      const outputValues = kernelSmooth(xValues, yValues, outputTs, smoothMonths);
 
-      // Apply centered moving average over the monthly series
-      const smoothed: number[] = new Array(monthlyValues.length);
-      for (let i = 0; i < monthlyValues.length; i++) {
-        const centerT = monthlyTs[i];
-        const windowMinT = centerT - halfWindow * MS_PER_MONTH;
-        const windowMaxT = centerT + halfWindow * MS_PER_MONTH;
-        let sum = 0, count = 0;
-        for (let j = 0; j < monthlyValues.length; j++) {
-          if (monthlyTs[j] >= windowMinT && monthlyTs[j] <= windowMaxT) {
-            sum += monthlyValues[j];
-            count++;
-          }
-        }
-        smoothed[i] = sum / count;
-      }
-
-      // Map smoothed monthly values back to chart timestamps via linear interpolation
       const smoothMap = new Map<number, number>();
-      for (const row of chartData) {
-        const t = row.date as number;
-        if (row[`val_${wellId}`] === undefined) continue;
-        if (t < monthlyTs[0] || t > monthlyTs[monthlyTs.length - 1]) continue;
-        // Binary search for the interval containing t
-        let lo = 0, hi = monthlyTs.length - 1;
-        while (lo < hi - 1) {
-          const mid = (lo + hi) >> 1;
-          if (monthlyTs[mid] <= t) lo = mid; else hi = mid;
-        }
-        if (lo === hi || monthlyTs[lo] === monthlyTs[hi]) {
-          smoothMap.set(t, smoothed[lo]);
-        } else {
-          const frac = (t - monthlyTs[lo]) / (monthlyTs[hi] - monthlyTs[lo]);
-          smoothMap.set(t, smoothed[lo] + frac * (smoothed[hi] - smoothed[lo]));
-        }
+      for (let i = 0; i < outputTs.length; i++) {
+        smoothMap.set(outputTs[i], outputValues[i]);
       }
       if (smoothMap.size > 0) result.set(wellId, smoothMap);
     }
 
     return result.size > 0 ? result : null;
-  }, [showSmooth, smoothMonths, measurements, wellIds, chartData]);
+  }, [showSmooth, smoothMonths, measurements, wellIds]);
 
   // Merge trend line endpoints and smooth data into chart data
   const finalChartData = useMemo(() => {
@@ -326,13 +287,13 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
       }
     }
 
-    // Inject smooth values
+    // Inject smooth values (creating new rows for grid timestamps that don't exist in chartData)
     if (smoothData) {
-      for (const [wellId, maMap] of smoothData) {
+      for (const [wellId, smoothMap] of smoothData) {
         const key = `smooth_${wellId}`;
-        for (const [t, v] of maMap) {
-          const point = byTime.get(t);
-          if (point) point[key] = v;
+        for (const [t, v] of smoothMap) {
+          if (!byTime.has(t)) byTime.set(t, { date: t });
+          byTime.get(t)![key] = v;
         }
       }
     }
