@@ -94,6 +94,7 @@ export interface StorageAnalysisResult {
   aquiferId: string;
   aquiferName: string;
   regionId: string;
+  dataType: string;
   params: StorageAnalysisParams;
   grid: StorageGrid;
   frames: StorageFrame[];
@@ -117,6 +118,8 @@ export interface StorageAnalysisMeta {
   aquiferId: string;
   aquiferName: string;
   regionId: string;
+  filePath: string;
+  dataType: string;
   params: StorageAnalysisParams;
   createdAt: string;
 }

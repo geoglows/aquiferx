@@ -4,6 +4,7 @@ import { Layers, Map as MapIcon, Database, ChevronRight, Activity, Upload, Loade
 import { Region, Aquifer, Well, Measurement, DataType, StorageAnalysisResult, StorageAnalysisMeta, CrossSectionProfile } from './types';
 import { loadAllData } from './services/dataLoader';
 import { freshFetch } from './services/importUtils';
+import { slugify } from './utils/strings';
 import MapView, { MapViewHandle } from './components/MapView';
 import Sidebar from './components/Sidebar';
 import TimeSeriesChart from './components/TimeSeriesChart';
@@ -441,7 +442,7 @@ const App: React.FC = () => {
   const handleLoadStorage = async (meta: StorageAnalysisMeta) => {
     setLoadingStorageCode(meta.code);
     try {
-      const res = await fetch(`/data/${meta.regionId}/storage_${meta.code}.json`);
+      const res = await fetch(`/data/${meta.filePath}`);
       if (res.ok) {
         const fullResult: StorageAnalysisResult = await res.json();
         // Select the aquifer if not already selected
@@ -478,7 +479,7 @@ const App: React.FC = () => {
       return;
     }
     try {
-      const res = await fetch(`/data/${meta.regionId}/storage_${meta.code}.json`);
+      const res = await fetch(`/data/${meta.filePath}`);
       if (res.ok) {
         const fullResult: StorageAnalysisResult = await res.json();
         setCompareStorageResults(prev => [...prev, fullResult]);
@@ -500,7 +501,7 @@ const App: React.FC = () => {
       await fetch('/api/delete-file', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath: `${meta.regionId}/storage_${meta.code}.json` }),
+        body: JSON.stringify({ filePath: meta.filePath }),
       });
     } catch (e) {
       console.error('Failed to delete storage analysis file:', e);
@@ -1496,12 +1497,15 @@ const App: React.FC = () => {
           onClose={() => setStorageDialogOpen(false)}
           onComplete={(result) => {
             setStorageResult(result);
+            const aquiferSlug = slugify(result.aquiferName);
             setStorageMeta(prev => [...prev, {
               title: result.title,
               code: result.code,
               aquiferId: result.aquiferId,
               aquiferName: result.aquiferName,
               regionId: result.regionId,
+              filePath: `${result.regionId}/${aquiferSlug}/raster_wte_${result.code}.json`,
+              dataType: result.dataType || 'wte',
               params: result.params,
               createdAt: result.createdAt,
             }]);

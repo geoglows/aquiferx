@@ -2,6 +2,7 @@ import { Aquifer, Region, Well, Measurement, StorageAnalysisParams, StorageAnaly
 import { isPointInGeoJSON, cellAreaM2 } from '../utils/geo';
 import { interpolatePCHIP, kernelSmooth } from '../utils/interpolation';
 import { krigGrid, estimateVariogramParams } from './kriging';
+import { slugify } from '../utils/strings';
 
 // Generate interval dates between start and end (inclusive) as ISO strings
 function generateIntervalDates(startDate: string, endDate: string, interval: '3months' | '6months' | '1year'): string[] {
@@ -271,7 +272,7 @@ export async function runStorageAnalysis(
   await yieldToUI();
 
   // Step 6: Assemble result
-  const code = title.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  const code = slugify(title);
 
   const result: StorageAnalysisResult = {
     version: 1,
@@ -280,6 +281,7 @@ export async function runStorageAnalysis(
     aquiferId: aquifer.id,
     aquiferName: aquifer.name,
     regionId: region.id,
+    dataType: 'wte',
     params,
     grid: { minLng, minLat, dx, dy, nx, ny, mask },
     frames,
@@ -287,13 +289,14 @@ export async function runStorageAnalysis(
     createdAt: new Date().toISOString(),
   };
 
-  // Save to disk via API
+  // Save to disk via API — per-aquifer subfolder with raster_ prefix
+  const aquiferSlug = slugify(aquifer.name);
   await fetch('/api/save-data', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       files: [{
-        path: `${region.id}/storage_${code}.json`,
+        path: `${region.id}/${aquiferSlug}/raster_wte_${code}.json`,
         content: JSON.stringify(result),
       }]
     }),

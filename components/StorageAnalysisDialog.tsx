@@ -7,6 +7,7 @@ import {
 import { Aquifer, Region, Well, Measurement, StorageAnalysisResult, StorageAnalysisParams } from '../types';
 import { interpolatePCHIP } from '../utils/interpolation';
 import { runStorageAnalysis } from '../services/storageAnalysis';
+import { slugify } from '../utils/strings';
 
 const PREVIEW_COLORS = [
   '#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899',
@@ -25,8 +26,6 @@ interface StorageAnalysisDialogProps {
 }
 
 type Step = 'options' | 'running' | 'complete';
-
-const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 
 // Canvas-based PCHIP preview — handles hundreds of wells without crashing
 const PchipPreviewCanvas: React.FC<{
@@ -568,7 +567,7 @@ const StorageAnalysisDialog: React.FC<StorageAnalysisDialogProps> = ({
                     className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
                   {title && (
                     <div className="mt-1 flex items-center gap-2">
-                      <span className="text-[10px] text-slate-400">storage_{code}.json</span>
+                      <span className="text-[10px] text-slate-400">{slugify(aquifer.name)}/raster_wte_{code}.json</span>
                       {hasConflict && <span className="text-[10px] text-red-500 font-medium">Name already exists</span>}
                     </div>
                   )}

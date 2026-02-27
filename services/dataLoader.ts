@@ -420,7 +420,7 @@ export async function loadAllData(): Promise<{
 
     // Load storage analysis metadata
     try {
-      const storageRes = await freshFetch(`/api/list-storage?region=${encodeURIComponent(meta.id)}`);
+      const storageRes = await freshFetch(`/api/list-rasters?region=${encodeURIComponent(meta.id)}`);
       if (storageRes.ok) {
         const items: StorageAnalysisMeta[] = await storageRes.json();
         for (const item of items) allStorageMeta.push(item);

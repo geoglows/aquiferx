@@ -60,6 +60,14 @@ function saveDataPlugin(): Plugin {
             }
             if (fs.existsSync(fullPath)) {
               fs.unlinkSync(fullPath);
+              // Clean up empty parent directory (only within public/data/)
+              const parentDir = path.dirname(fullPath);
+              if (parentDir !== dataDir && parentDir.startsWith(dataDir + path.sep)) {
+                try {
+                  const remaining = fs.readdirSync(parentDir);
+                  if (remaining.length === 0) fs.rmdirSync(parentDir);
+                } catch { /* ignore */ }
+              }
             }
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({ ok: true }));
@@ -100,8 +108,8 @@ function saveDataPlugin(): Plugin {
         });
       });
 
-      // GET /api/list-storage?region={id} — list storage analysis metadata
-      server.middlewares.use('/api/list-storage', (req, res) => {
+      // GET /api/list-rasters?region={id} — list raster analysis metadata
+      server.middlewares.use('/api/list-rasters', (req, res) => {
         if (req.method !== 'GET') {
           res.statusCode = 405;
           res.end('Method not allowed');
@@ -124,16 +132,46 @@ function saveDataPlugin(): Plugin {
           }
           const results: any[] = [];
           if (fs.existsSync(regionDir)) {
+            // Scan subdirectories for raster_*.json (new layout)
+            for (const sub of fs.readdirSync(regionDir, { withFileTypes: true })) {
+              if (!sub.isDirectory()) continue;
+              const subDir = path.join(regionDir, sub.name);
+              for (const file of fs.readdirSync(subDir)) {
+                if (file.startsWith('raster_') && file.endsWith('.json')) {
+                  try {
+                    const data = JSON.parse(fs.readFileSync(path.join(subDir, file), 'utf-8'));
+                    // Parse dataType from filename: raster_{dataType}_{code}.json
+                    const match = file.match(/^raster_([a-z0-9_]+?)_(.+)\.json$/);
+                    const filePath = `${regionId}/${sub.name}/${file}`;
+                    results.push({
+                      title: data.title || file,
+                      code: data.code || (match ? match[2] : file.replace('.json', '')),
+                      aquiferId: data.aquiferId || '',
+                      aquiferName: data.aquiferName || '',
+                      regionId: data.regionId || regionId,
+                      filePath,
+                      dataType: data.dataType || (match ? match[1] : 'wte'),
+                      params: data.params || {},
+                      createdAt: data.createdAt || '',
+                    });
+                  } catch { /* skip malformed */ }
+                }
+              }
+            }
+            // Backward compat: scan for old storage_*.json at top level
             for (const entry of fs.readdirSync(regionDir)) {
               if (entry.startsWith('storage_') && entry.endsWith('.json')) {
                 try {
                   const data = JSON.parse(fs.readFileSync(path.join(regionDir, entry), 'utf-8'));
+                  const filePath = `${regionId}/${entry}`;
                   results.push({
                     title: data.title || entry,
                     code: data.code || entry.replace('storage_', '').replace('.json', ''),
                     aquiferId: data.aquiferId || '',
                     aquiferName: data.aquiferName || '',
                     regionId: data.regionId || regionId,
+                    filePath,
+                    dataType: data.dataType || 'wte',
                     params: data.params || {},
                     createdAt: data.createdAt || '',
                   });
