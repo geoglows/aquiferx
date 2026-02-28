@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Region, Aquifer, RasterAnalysisMeta } from '../types';
-import { MapPin, Droplets, List, Box, MoreVertical, Pencil, Trash2, Download, AlertTriangle, Plus, Minus, Layers, Loader2 } from 'lucide-react';
+import { MapPin, Droplets, List, Box, MoreVertical, Pencil, Trash2, Download, AlertTriangle, Plus, Minus, Layers, Loader2, Info, Check, X as XIcon } from 'lucide-react';
 
 interface SidebarProps {
   regions: Region[];
@@ -26,6 +26,8 @@ interface SidebarProps {
   onUnloadRaster: () => void;
   onToggleCompareRaster: (meta: RasterAnalysisMeta) => void;
   onDeleteRaster: (meta: RasterAnalysisMeta) => void;
+  onRenameRaster?: (meta: RasterAnalysisMeta, newTitle: string) => void;
+  onGetRasterInfo?: (meta: RasterAnalysisMeta) => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -50,6 +52,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onUnloadRaster,
   onToggleCompareRaster,
   onDeleteRaster,
+  onRenameRaster,
+  onGetRasterInfo,
 }) => {
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -398,6 +402,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                           const rasterMenuKey = `raster-${m.regionId}-${m.code}`;
                           const isRasterMenuOpen = menuOpen === rasterMenuKey;
                           const isRasterConfirming = confirmDelete === rasterMenuKey;
+                          const isRasterEditing = editing === `raster-${m.regionId}-${m.code}`;
 
                           if (isRasterConfirming) {
                             return (
@@ -417,6 +422,47 @@ const Sidebar: React.FC<SidebarProps> = ({
                                     Cancel
                                   </button>
                                 </div>
+                              </div>
+                            );
+                          }
+
+                          if (isRasterEditing) {
+                            return (
+                              <div key={m.code} className="flex items-center gap-1 px-1 py-1">
+                                <input
+                                  autoFocus
+                                  value={editValue}
+                                  onChange={e => setEditValue(e.target.value.replace(/[^a-zA-Z0-9 _-]/g, ''))}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                      const trimmed = editValue.trim();
+                                      if (trimmed && trimmed !== m.title && onRenameRaster) {
+                                        onRenameRaster(m, trimmed);
+                                      }
+                                      setEditing(null);
+                                    }
+                                    if (e.key === 'Escape') setEditing(null);
+                                  }}
+                                  className="flex-1 min-w-0 px-1.5 py-0.5 text-xs border border-emerald-400 rounded outline-none focus:ring-2 focus:ring-emerald-300"
+                                />
+                                <button
+                                  onClick={() => {
+                                    const trimmed = editValue.trim();
+                                    if (trimmed && trimmed !== m.title && onRenameRaster) {
+                                      onRenameRaster(m, trimmed);
+                                    }
+                                    setEditing(null);
+                                  }}
+                                  className="p-0.5 text-emerald-600 hover:bg-emerald-50 rounded"
+                                >
+                                  <Check size={12} />
+                                </button>
+                                <button
+                                  onClick={() => setEditing(null)}
+                                  className="p-0.5 text-slate-400 hover:bg-slate-100 rounded"
+                                >
+                                  <XIcon size={12} />
+                                </button>
                               </div>
                             );
                           }
@@ -470,6 +516,28 @@ const Sidebar: React.FC<SidebarProps> = ({
                               </div>
                               {isRasterMenuOpen && (
                                 <div ref={menuRef} className="absolute right-1 top-full mt-0.5 bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1 min-w-[100px]">
+                                  {onRenameRaster && (
+                                    <button
+                                      onClick={() => {
+                                        setMenuOpen(null);
+                                        setEditing(`raster-${m.regionId}-${m.code}`);
+                                        setEditValue(m.title);
+                                      }}
+                                      className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center space-x-2"
+                                    >
+                                      <Pencil size={11} />
+                                      <span>Edit</span>
+                                    </button>
+                                  )}
+                                  {onGetRasterInfo && (
+                                    <button
+                                      onClick={() => { setMenuOpen(null); onGetRasterInfo(m); }}
+                                      className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center space-x-2"
+                                    >
+                                      <Info size={11} />
+                                      <span>Get Info</span>
+                                    </button>
+                                  )}
                                   <button
                                     onClick={() => { setMenuOpen(null); setConfirmDelete(rasterMenuKey); }}
                                     className="w-full text-left px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 flex items-center space-x-2"

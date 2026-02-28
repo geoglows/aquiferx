@@ -1,13 +1,26 @@
 import { haversineDistance } from '../utils/geo';
+import type { VariogramModel, KrigingRangeMode } from '../types';
 
-// Spatial covariance function (does NOT include nugget/measurement-error self-variance)
-// C(h) = (sill - nugget) * exp(-(h/range)^2)
-// At h=0: C(0+) = sill - nugget
-// At h→∞: C(h) → 0
-// The diagonal of the kriging matrix is set separately to sill (includes nugget).
-function covarianceFunction(dist: number, sill: number, range: number, nugget: number): number {
+// Spatial covariance function — supports multiple variogram models
+// C(h) at h=0+: sill - nugget (off-diagonal); diagonal set separately to sill
+function covarianceFunction(
+  dist: number, sill: number, range: number, nugget: number,
+  model: VariogramModel = 'gaussian'
+): number {
+  const spatialVar = sill - nugget;
+  if (dist <= 0) return spatialVar;
   const ratio = dist / range;
-  return (sill - nugget) * Math.exp(-(ratio * ratio));
+
+  switch (model) {
+    case 'exponential':
+      return spatialVar * Math.exp(-ratio);
+    case 'spherical':
+      if (dist >= range) return 0;
+      return spatialVar * (1 - 1.5 * ratio + 0.5 * ratio * ratio * ratio);
+    case 'gaussian':
+    default:
+      return spatialVar * Math.exp(-(ratio * ratio));
+  }
 }
 
 // Build distance matrix between points using Haversine (returns meters)
@@ -25,9 +38,10 @@ function buildDistanceMatrix(lats: number[], lngs: number[]): number[][] {
 }
 
 // Build (N+1)x(N+1) ordinary kriging matrix using covariance formulation
-// Diagonal = sill (total variance including nugget) → well-conditioned
-// Off-diagonal = spatial covariance C(h) (excludes nugget) → proper nugget discontinuity
-function buildKrigingMatrix(dists: number[][], sill: number, range: number, nugget: number): number[][] {
+function buildKrigingMatrix(
+  dists: number[][], sill: number, range: number, nugget: number,
+  model: VariogramModel = 'gaussian'
+): number[][] {
   const n = dists.length;
   const size = n + 1;
   const K: number[][] = Array.from({ length: size }, () => new Array(size).fill(0));
@@ -36,7 +50,7 @@ function buildKrigingMatrix(dists: number[][], sill: number, range: number, nugg
     K[i][i] = sill; // diagonal: total variance (spatial + nugget)
     for (let j = 0; j < n; j++) {
       if (i !== j) {
-        K[i][j] = covarianceFunction(dists[i][j], sill, range, nugget);
+        K[i][j] = covarianceFunction(dists[i][j], sill, range, nugget, model);
       }
     }
     K[i][n] = 1;
@@ -132,7 +146,12 @@ function deduplicateWells(
 
 // Estimate variogram parameters heuristically from well data
 export function estimateVariogramParams(
-  wellLats: number[], wellLngs: number[], wellValues: number[]
+  wellLats: number[], wellLngs: number[], wellValues: number[],
+  options?: {
+    nuggetEnabled?: boolean;
+    rangeMode?: KrigingRangeMode;
+    rangeValue?: number | null;
+  }
 ): { sill: number; range: number; nugget: number } {
   const n = wellValues.length;
 
@@ -153,10 +172,22 @@ export function estimateVariogramParams(
     if (wellLngs[i] > maxLng) maxLng = wellLngs[i];
   }
   const diagonal = haversineDistance(minLat, minLng, maxLat, maxLng);
-  const range = diagonal / 3;
 
-  // Nugget: small fraction of sill (measurement error / micro-scale variability)
-  const nugget = variance * 0.05;
+  // Determine range based on mode
+  let range: number;
+  const rangeMode = options?.rangeMode ?? 'auto';
+  const rangeValue = options?.rangeValue;
+  if (rangeMode === 'custom' && rangeValue != null && rangeValue > 0) {
+    range = rangeValue;
+  } else if (rangeMode === 'percentage' && rangeValue != null && rangeValue > 0) {
+    range = (rangeValue / 100) * diagonal;
+  } else {
+    range = diagonal / 3;
+  }
+
+  // Nugget
+  const nuggetEnabled = options?.nuggetEnabled ?? true;
+  const nugget = nuggetEnabled ? variance * 0.05 : 0.001;
 
   console.log(`[Kriging] Variogram: sill=${variance.toFixed(2)}, range=${range.toFixed(0)}m, nugget=${nugget.toFixed(4)}, mean=${mean.toFixed(2)}, n=${n}`);
 
@@ -171,7 +202,8 @@ export function estimateVariogramParams(
 export function krigGrid(
   wellLats: number[], wellLngs: number[], wellValues: number[],
   gridLats: number[], gridLngs: number[], mask: (0 | 1)[],
-  variogramParams?: { sill: number; range: number; nugget: number }
+  variogramParams?: { sill: number; range: number; nugget: number },
+  model: VariogramModel = 'gaussian'
 ): (number | null)[] {
   if (wellLats.length === 0) return gridLats.map(() => null);
 
@@ -198,7 +230,7 @@ export function krigGrid(
   const wellDists = buildDistanceMatrix(wLats, wLngs);
 
   // Build the kriging matrix (covariance formulation)
-  const K = buildKrigingMatrix(wellDists, sill, range, nugget);
+  const K = buildKrigingMatrix(wellDists, sill, range, nugget, model);
 
   // For each grid cell, solve for weights and compute interpolated value
   const result: (number | null)[] = new Array(gridLats.length);
@@ -206,6 +238,7 @@ export function krigGrid(
   const maxVal = Math.max(...wValues);
   let gridMin = Infinity, gridMax = -Infinity;
   let outOfRangeCount = 0;
+  let nanCount = 0;
 
   for (let g = 0; g < gridLats.length; g++) {
     if (mask[g] === 0) {
@@ -217,7 +250,7 @@ export function krigGrid(
     const rhs = new Array(n + 1);
     for (let i = 0; i < n; i++) {
       const d = haversineDistance(gridLats[g], gridLngs[g], wLats[i], wLngs[i]);
-      rhs[i] = covarianceFunction(d, sill, range, nugget);
+      rhs[i] = covarianceFunction(d, sill, range, nugget, model);
     }
     rhs[n] = 1;
 
@@ -232,12 +265,17 @@ export function krigGrid(
 
     if (!isFinite(val)) {
       result[g] = null;
+      nanCount++;
     } else {
       if (val < minVal || val > maxVal) outOfRangeCount++;
       if (val < gridMin) gridMin = val;
       if (val > gridMax) gridMax = val;
       result[g] = val;
     }
+  }
+
+  if (nanCount > 0) {
+    console.warn(`[Kriging] ${nanCount} grid cells produced NaN/Infinity — check variogram parameters or data`);
   }
 
   console.log(`[Kriging] Output range: [${gridMin.toFixed(1)}, ${gridMax.toFixed(1)}], well range: [${minVal.toFixed(1)}, ${maxVal.toFixed(1)}], outside: ${outOfRangeCount}`);

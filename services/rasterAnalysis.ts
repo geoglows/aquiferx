@@ -1,8 +1,25 @@
-import { Aquifer, Region, Well, Measurement, RasterAnalysisParams, RasterAnalysisResult, RasterGrid, RasterFrame } from '../types';
+import {
+  Aquifer, Region, Well, Measurement,
+  RasterAnalysisParams, RasterAnalysisResult, RasterGrid, RasterFrame,
+  SpatialMethod, KrigingOptions, IdwOptions, GeneralInterpolationOptions, TemporalOptions, RasterOptions,
+} from '../types';
 import { isPointInGeoJSON } from '../utils/geo';
 import { interpolatePCHIP, kernelSmooth } from '../utils/interpolation';
 import { krigGrid, estimateVariogramParams } from './kriging';
+import { idwGrid } from './idw';
 import { slugify } from '../utils/strings';
+
+export interface RasterPipelineInput {
+  temporal: TemporalOptions;
+  spatial: {
+    method: SpatialMethod;
+    resolution: number;
+    kriging: KrigingOptions;
+    idw: IdwOptions;
+  };
+  general: GeneralInterpolationOptions;
+  title: string;
+}
 
 // Generate interval dates between start and end (inclusive) as ISO strings
 function generateIntervalDates(startDate: string, endDate: string, interval: '3months' | '6months' | '1year'): string[] {
@@ -26,7 +43,7 @@ function generateIntervalDates(startDate: string, endDate: string, interval: '3m
 
 
 export async function runRasterAnalysis(
-  params: RasterAnalysisParams,
+  input: RasterPipelineInput,
   dataType: string,
   aquifer: Aquifer,
   region: Region,
@@ -34,7 +51,9 @@ export async function runRasterAnalysis(
   measurements: Measurement[],
   onProgress: (step: string, pct: number) => void
 ): Promise<RasterAnalysisResult> {
-  const { startDate, endDate, resolution, interval, title } = params;
+  const { temporal, spatial, general, title } = input;
+  const { startDate, endDate, interval } = temporal;
+  const resolution = spatial.resolution;
 
   // Step 1: Build grid
   onProgress('Building grid...', 0);
@@ -93,7 +112,7 @@ export async function runRasterAnalysis(
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
     // Filter by min observations and min time span
-    if (sorted.length < Math.max(2, params.minObservations)) continue;
+    if (sorted.length < Math.max(2, temporal.minObservations)) continue;
 
     const xValues = sorted.map(m => new Date(m.date).getTime());
     const yValues = sorted.map(m => m.value);
@@ -101,7 +120,7 @@ export async function runRasterAnalysis(
     const maxT = xValues[xValues.length - 1];
 
     const timeSpanYears = (maxT - minT) / (365.25 * 24 * 60 * 60 * 1000);
-    if (timeSpanYears < params.minTimeSpanYears) continue;
+    if (timeSpanYears < temporal.minTimeSpan) continue;
 
     // Only interpolate within the well's data range (no extrapolation)
     const interpValues: (number | null)[] = intervalTimestamps.map(t => {
@@ -130,10 +149,10 @@ export async function runRasterAnalysis(
     wellInterp.set(wellId, { well, values: interpValues });
   }
 
-  console.log(`[RasterAnalysis] ${wellInterp.size}/${wellIds.length} wells qualified (minObs=${params.minObservations}, minSpan=${params.minTimeSpanYears}yr)`);
+  console.log(`[RasterAnalysis] ${wellInterp.size}/${wellIds.length} wells qualified (minObs=${temporal.minObservations}, minSpan=${temporal.minTimeSpan}yr)`);
 
   // Step 3b: Kernel smoothing (when selected)
-  if (params.smoothingMethod === 'moving-average') {
+  if (temporal.method === 'moving-average') {
     onProgress('Applying kernel smoothing...', 30);
     await yieldToUI();
 
@@ -150,7 +169,7 @@ export async function runRasterAnalysis(
       const maxT = xValues[xValues.length - 1];
 
       // Smooth at interval timestamps within the well's data range
-      const smoothed = kernelSmooth(xValues, yValues, intervalTimestamps, params.smoothingMonths);
+      const smoothed = kernelSmooth(xValues, yValues, intervalTimestamps, temporal.maWindow);
 
       const newValues: (number | null)[] = intervalTimestamps.map((t, i) => {
         if (t < minT || t > maxT) return null;
@@ -161,29 +180,44 @@ export async function runRasterAnalysis(
     }
   }
 
-  // Step 4: Compute a single variogram from all wells' mean PCHIP values
-  // This ensures consistent spatial correlation structure across all timesteps
-  const allWellLats: number[] = [];
-  const allWellLngs: number[] = [];
-  const allWellMeanValues: number[] = [];
-
-  for (const [, { well, values }] of wellInterp) {
-    const validValues = values.filter((v): v is number => v !== null);
-    if (validValues.length > 0) {
-      allWellLats.push(well.lat);
-      allWellLngs.push(well.lng);
-      allWellMeanValues.push(validValues.reduce((a, b) => a + b, 0) / validValues.length);
+  // Apply log transform to well values before spatial interpolation
+  if (general.logInterpolation) {
+    for (const [, entry] of wellInterp) {
+      entry.values = entry.values.map(v => v !== null ? Math.log(v) : null);
     }
   }
 
-  const variogramParams = estimateVariogramParams(allWellLats, allWellLngs, allWellMeanValues);
-  console.log(`[RasterAnalysis] Using single variogram for all ${intervalDates.length} timesteps, ${allWellLats.length} wells total`);
+  // Step 4: Compute variogram from all wells' mean values (kriging only)
+  let variogramParams: { sill: number; range: number; nugget: number } | undefined;
 
-  // Step 5: Krig per timestep using the shared variogram
+  if (spatial.method === 'kriging') {
+    const allWellLats: number[] = [];
+    const allWellLngs: number[] = [];
+    const allWellMeanValues: number[] = [];
+
+    for (const [, { well, values }] of wellInterp) {
+      const validValues = values.filter((v): v is number => v !== null);
+      if (validValues.length > 0) {
+        allWellLats.push(well.lat);
+        allWellLngs.push(well.lng);
+        allWellMeanValues.push(validValues.reduce((a, b) => a + b, 0) / validValues.length);
+      }
+    }
+
+    variogramParams = estimateVariogramParams(allWellLats, allWellLngs, allWellMeanValues, {
+      nuggetEnabled: spatial.kriging.nugget,
+      rangeMode: spatial.kriging.rangeMode,
+      rangeValue: spatial.kriging.rangeValue,
+    });
+    console.log(`[RasterAnalysis] Using single variogram for all ${intervalDates.length} timesteps, ${allWellLats.length} wells total`);
+  }
+
+  // Step 5: Spatial interpolation per timestep
   const frames: RasterFrame[] = [];
 
   for (let ti = 0; ti < intervalDates.length; ti++) {
-    onProgress(`Kriging timestep ${ti + 1}/${intervalDates.length}...`, 30 + (ti / intervalDates.length) * 50);
+    const methodLabel = spatial.method === 'kriging' ? 'Kriging' : 'IDW';
+    onProgress(`${methodLabel} timestep ${ti + 1}/${intervalDates.length}...`, 30 + (ti / intervalDates.length) * 50);
     await yieldToUI();
 
     // Collect wells that have a value at this timestep
@@ -204,12 +238,46 @@ export async function runRasterAnalysis(
 
     let gridValues: (number | null)[];
     if (activeValues.length >= 2) {
-      gridValues = krigGrid(activeLats, activeLngs, activeValues, gridLats, gridLngs, mask, variogramParams);
+      try {
+        if (spatial.method === 'kriging') {
+          gridValues = krigGrid(
+            activeLats, activeLngs, activeValues,
+            gridLats, gridLngs, mask,
+            variogramParams,
+            spatial.kriging.variogramModel
+          );
+        } else {
+          gridValues = idwGrid(
+            activeLats, activeLngs, activeValues,
+            gridLats, gridLngs, mask,
+            {
+              exponent: spatial.idw.exponent,
+              nodalFunction: spatial.idw.nodalFunction,
+              neighborMode: spatial.idw.neighborMode,
+              neighborCount: spatial.idw.neighborCount,
+            }
+          );
+        }
+      } catch (err) {
+        throw new Error(`Spatial interpolation failed at timestep ${intervalDates[ti]}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     } else if (activeValues.length === 1) {
       // Single well: constant value for all masked cells
       gridValues = mask.map(m => m === 1 ? activeValues[0] : null);
     } else {
       gridValues = mask.map(() => null);
+    }
+
+    // Post-processing: inverse log transform and truncation
+    if (general.logInterpolation || general.truncateLow || general.truncateHigh) {
+      for (let i = 0; i < gridValues.length; i++) {
+        if (gridValues[i] === null) continue;
+        let v = gridValues[i]!;
+        if (general.logInterpolation) v = Math.exp(v);
+        if (general.truncateLow && v < general.truncateLowValue) v = general.truncateLowValue;
+        if (general.truncateHigh && v > general.truncateHighValue) v = general.truncateHighValue;
+        gridValues[i] = v;
+      }
     }
 
     frames.push({ date: intervalDates[ti], values: gridValues });
@@ -220,6 +288,25 @@ export async function runRasterAnalysis(
 
   // Step 6: Assemble result
   const code = slugify(title);
+
+  // Build legacy params for backward compatibility
+  const params: RasterAnalysisParams = {
+    startDate,
+    endDate,
+    resolution,
+    interval,
+    title,
+    minObservations: temporal.minObservations,
+    minTimeSpanYears: temporal.minTimeSpan,
+    smoothingMethod: temporal.method,
+    smoothingMonths: temporal.maWindow,
+  };
+
+  const options: RasterOptions = {
+    temporal: { ...temporal },
+    spatial: { ...spatial },
+    general: { ...general },
+  };
 
   const result: RasterAnalysisResult = {
     version: 1,
@@ -233,6 +320,8 @@ export async function runRasterAnalysis(
     grid: { minLng, minLat, dx, dy, nx, ny, mask },
     frames,
     createdAt: new Date().toISOString(),
+    options,
+    generatedAt: new Date().toISOString(),
   };
 
   // Save to disk via API — per-aquifer subfolder with raster_ prefix

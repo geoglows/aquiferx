@@ -153,6 +153,8 @@ function saveDataPlugin(): Plugin {
                       dataType: data.dataType || (match ? match[1] : 'wte'),
                       params: data.params || {},
                       createdAt: data.createdAt || '',
+                      options: data.options || undefined,
+                      generatedAt: data.generatedAt || undefined,
                     });
                   } catch { /* skip malformed */ }
                 }
@@ -165,6 +167,67 @@ function saveDataPlugin(): Plugin {
           res.statusCode = 500;
           res.end(String(err));
         }
+      });
+
+      // POST /api/rename-raster — rename a raster analysis file
+      server.middlewares.use('/api/rename-raster', (req, res) => {
+        if (req.method !== 'POST') {
+          res.statusCode = 405;
+          res.end('Method not allowed');
+          return;
+        }
+        let body = '';
+        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('end', () => {
+          try {
+            const { oldPath, newPath, newCode, newTitle } = JSON.parse(body) as {
+              oldPath: string; newPath: string; newCode: string; newTitle: string;
+            };
+            const dataDir = path.resolve(__dirname, 'public/data');
+            const fullOldPath = path.resolve(dataDir, oldPath);
+            const fullNewPath = path.resolve(dataDir, newPath);
+
+            // Safety: ensure both paths are within public/data
+            if (!fullOldPath.startsWith(dataDir + path.sep) || !fullNewPath.startsWith(dataDir + path.sep)) {
+              res.statusCode = 400;
+              res.end('Invalid path');
+              return;
+            }
+
+            if (!fs.existsSync(fullOldPath)) {
+              res.statusCode = 404;
+              res.end('File not found');
+              return;
+            }
+
+            // Read, update, write
+            const data = JSON.parse(fs.readFileSync(fullOldPath, 'utf-8'));
+            data.code = newCode;
+            data.title = newTitle;
+
+            fs.mkdirSync(path.dirname(fullNewPath), { recursive: true });
+            fs.writeFileSync(fullNewPath, JSON.stringify(data), 'utf-8');
+
+            // Delete old file if path changed
+            if (fullOldPath !== fullNewPath) {
+              fs.unlinkSync(fullOldPath);
+              // Clean up empty parent directory
+              const parentDir = path.dirname(fullOldPath);
+              if (parentDir !== dataDir && parentDir.startsWith(dataDir + path.sep)) {
+                try {
+                  const remaining = fs.readdirSync(parentDir);
+                  if (remaining.length === 0) fs.rmdirSync(parentDir);
+                } catch { /* ignore */ }
+              }
+            }
+
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ ok: true }));
+          } catch (err) {
+            res.statusCode = 500;
+            res.end(String(err));
+          }
+        });
       });
 
       server.middlewares.use('/api/save-data', (req, res) => {

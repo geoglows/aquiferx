@@ -1,12 +1,15 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
-import { X, Play, Loader2, CheckCircle2 } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, Play, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, Cell
 } from 'recharts';
-import { Aquifer, Region, Well, Measurement, DataType, RasterAnalysisResult, RasterAnalysisParams } from '../types';
+import {
+  Aquifer, Region, Well, Measurement, DataType, RasterAnalysisResult,
+  VariogramModel, KrigingRangeMode, IdwNodalFunction, IdwNeighborMode, SpatialMethod,
+} from '../types';
 import { interpolatePCHIP } from '../utils/interpolation';
-import { runRasterAnalysis } from '../services/rasterAnalysis';
+import { runRasterAnalysis, RasterPipelineInput } from '../services/rasterAnalysis';
 import { slugify } from '../utils/strings';
 
 const PREVIEW_COLORS = [
@@ -26,7 +29,7 @@ interface SpatialAnalysisDialogProps {
   onComplete: (result: RasterAnalysisResult) => void;
 }
 
-type Step = 'options' | 'running' | 'complete';
+type Step = 1 | 2 | 3 | 'running' | 'complete';
 
 // Canvas-based PCHIP preview — handles hundreds of wells without crashing
 const PchipPreviewCanvas: React.FC<{
@@ -217,23 +220,46 @@ const PchipPreviewCanvas: React.FC<{
   );
 };
 
+const STEP_LABELS = ['Temporal', 'Spatial', 'Title & Run'];
+
 const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
   aquifer, region, wells, measurements, dataType, existingCodes, onClose, onComplete,
 }) => {
-  const [step, setStep] = useState<Step>('options');
+  const [step, setStep] = useState<Step>(1);
   const [progressText, setProgressText] = useState('');
   const [progressPct, setProgressPct] = useState(0);
   const [result, setResult] = useState<RasterAnalysisResult | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const cancelledRef = useRef(false);
 
-  // Options state
-  const [title, setTitle] = useState('');
+  // --- Temporal options (Step 1) ---
   const [resolution, setResolution] = useState(50);
   const [interval, setInterval] = useState<'3months' | '6months' | '1year'>('1year');
   const [minObs, setMinObs] = useState(5);
   const [minSpanYears, setMinSpanYears] = useState(5);
   const [smoothingMethod, setSmoothingMethod] = useState<'pchip' | 'moving-average'>('pchip');
   const [smoothingMonths, setSmoothingMonths] = useState(12);
+
+  // --- Spatial options (Step 2) ---
+  const [spatialMethod, setSpatialMethod] = useState<SpatialMethod>('kriging');
+  const [variogramModel, setVariogramModel] = useState<VariogramModel>('gaussian');
+  const [nuggetEnabled, setNuggetEnabled] = useState(true);
+  const [rangeMode, setRangeMode] = useState<KrigingRangeMode>('auto');
+  const [rangeValue, setRangeValue] = useState<number>(33);
+  const [idwExponent, setIdwExponent] = useState(2);
+  const [nodalFunction, setNodalFunction] = useState<IdwNodalFunction>('classic');
+  const [neighborMode, setNeighborMode] = useState<IdwNeighborMode>('all');
+  const [neighborCount, setNeighborCount] = useState(12);
+
+  // --- General options (Step 2) ---
+  const [truncateLow, setTruncateLow] = useState(false);
+  const [truncateLowValue, setTruncateLowValue] = useState(0);
+  const [truncateHigh, setTruncateHigh] = useState(false);
+  const [truncateHighValue, setTruncateHighValue] = useState(0);
+  const [logInterpolation, setLogInterpolation] = useState(false);
+
+  // --- Title (Step 3) ---
+  const [title, setTitle] = useState('');
 
   // Build well ID set for fast lookup
   const wellIdSet = useMemo(() => new Set(wells.map(w => w.id)), [wells]);
@@ -242,6 +268,23 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
   const wteMeasurements = useMemo(() =>
     measurements.filter(m => m.dataType === dataType.code && wellIdSet.has(m.wellId)),
   [measurements, wellIdSet, dataType.code]);
+
+  // Check if any values are non-positive (disables log interpolation)
+  const hasNonPositiveValues = useMemo(() => {
+    for (const m of wteMeasurements) {
+      if (m.value <= 0) return true;
+    }
+    return false;
+  }, [wteMeasurements]);
+
+  // Initialize max observed for truncation default
+  useEffect(() => {
+    if (wteMeasurements.length > 0) {
+      let max = -Infinity;
+      for (const m of wteMeasurements) if (m.value > max) max = m.value;
+      setTruncateHighValue(Math.ceil(max));
+    }
+  }, [wteMeasurements]);
 
   // Data density analysis: 6-month bins
   const { densityData, defaultStartDate, defaultEndDate } = useMemo(() => {
@@ -321,22 +364,61 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
 
   const code = slugify(title);
   const hasConflict = existingCodes.includes(code);
-  const canRun = title.trim().length > 0 && !hasConflict && startDate && endDate && startDate < endDate && wells.length > 0;
+
+  // Validation
+  const step1Valid = startDate && endDate && startDate < endDate && wells.length > 0;
+  const step2Valid = (() => {
+    if (spatialMethod === 'idw' && nodalFunction === 'quadratic' && neighborMode === 'nearest' && neighborCount < 6) return false;
+    if (rangeMode === 'custom' && (rangeValue <= 0)) return false;
+    if (rangeMode === 'percentage' && (rangeValue <= 0 || rangeValue > 100)) return false;
+    return true;
+  })();
+  const step3Valid = title.trim().length > 0 && !hasConflict;
 
   const handleRun = async () => {
     cancelledRef.current = false;
     setStep('running');
+    setErrorMessage(null);
 
-    const params: RasterAnalysisParams = {
-      startDate, endDate, resolution,
-      interval, title,
-      minObservations: minObs, minTimeSpanYears: minSpanYears,
-      smoothingMethod, smoothingMonths,
+    const input: RasterPipelineInput = {
+      temporal: {
+        method: smoothingMethod,
+        maWindow: smoothingMonths,
+        startDate,
+        endDate,
+        interval,
+        minObservations: minObs,
+        minTimeSpan: minSpanYears,
+      },
+      spatial: {
+        method: spatialMethod,
+        resolution,
+        kriging: {
+          variogramModel,
+          nugget: nuggetEnabled,
+          rangeMode,
+          rangeValue: rangeMode === 'auto' ? null : rangeValue,
+        },
+        idw: {
+          exponent: idwExponent,
+          nodalFunction,
+          neighborMode,
+          neighborCount,
+        },
+      },
+      general: {
+        truncateLow,
+        truncateLowValue,
+        truncateHigh,
+        truncateHighValue,
+        logInterpolation,
+      },
+      title,
     };
 
     try {
       const result = await runRasterAnalysis(
-        params, dataType.code, aquifer, region, wells,
+        input, dataType.code, aquifer, region, wells,
         measurements.filter(m => wellIdSet.has(m.wellId)),
         (stepText, pct) => {
           if (!cancelledRef.current) {
@@ -351,15 +433,19 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
       }
     } catch (err) {
       console.error('Raster analysis failed:', err);
-      setProgressText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+      setStep(3);
     }
   };
 
   const handleCancel = () => {
-    cancelledRef.current = true;
-    setStep('options');
+    if (step === 'running') {
+      cancelledRef.current = true;
+    }
+    setStep(1);
     setProgressPct(0);
     setProgressText('');
+    setErrorMessage(null);
   };
 
   // Date range markers for charts
@@ -402,6 +488,18 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
     return { qualifiedWellCount: qualified, omittedWellCount: omitted };
   }, [wteMeasurements, minObs, minSpanYears]);
 
+  const stepNumber = typeof step === 'number' ? step : null;
+
+  // --- Input class helpers ---
+  const inputCls = "w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500";
+  const labelCls = "block text-xs font-medium text-slate-600 mb-1";
+  const radioCls = (active: boolean) =>
+    `px-3 py-1.5 text-xs font-medium rounded-md border cursor-pointer transition-colors ${
+      active
+        ? 'bg-emerald-600 text-white border-emerald-600'
+        : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+    }`;
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-xl shadow-2xl w-[900px] max-h-[90vh] flex flex-col overflow-hidden">
@@ -411,16 +509,40 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
             <h2 className="text-lg font-bold text-slate-800">Build Spatial Raster</h2>
             <p className="text-sm text-slate-500">{aquifer.name} &mdash; {region.name}</p>
           </div>
-          <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded-lg transition-colors">
-            <X size={20} className="text-slate-400" />
-          </button>
+          <div className="flex items-center gap-4">
+            {/* Step indicator */}
+            {stepNumber && (
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                {STEP_LABELS.map((label, i) => {
+                  const sn = i + 1;
+                  const isActive = sn === stepNumber;
+                  const isDone = sn < stepNumber;
+                  return (
+                    <React.Fragment key={i}>
+                      {i > 0 && <div className="w-4 h-px bg-slate-300" />}
+                      <div className={`flex items-center gap-1 ${isActive ? 'text-emerald-600 font-semibold' : isDone ? 'text-emerald-500' : 'text-slate-400'}`}>
+                        <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                          isActive ? 'bg-emerald-600 text-white' : isDone ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-400'
+                        }`}>{sn}</div>
+                        <span className="hidden sm:inline">{label}</span>
+                      </div>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            )}
+            <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded-lg transition-colors">
+              <X size={20} className="text-slate-400" />
+            </button>
+          </div>
         </div>
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
-          {step === 'options' && (
+          {/* ===== STEP 1: Temporal ===== */}
+          {step === 1 && (
             <div className="space-y-5">
-              {/* PCHIP Preview — canvas-based for performance with many wells */}
+              {/* PCHIP Preview */}
               {wteMeasurements.length > 0 && (
                 <div>
                   <h3 className="text-sm font-semibold text-slate-700 mb-1">
@@ -478,32 +600,27 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
               {/* Options Form */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Start Date</label>
-                  <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
-                    className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
+                  <label className={labelCls}>Start Date</label>
+                  <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className={inputCls} />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">End Date</label>
-                  <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
-                    className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
+                  <label className={labelCls}>End Date</label>
+                  <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className={inputCls} />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Resolution (columns)</label>
+                  <label className={labelCls}>Resolution (columns)</label>
                   <input type="number" value={resolution} min={10} max={500} step={10}
-                    onChange={e => setResolution(Math.max(10, parseInt(e.target.value) || 100))}
-                    className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
+                    onChange={e => setResolution(Math.max(10, parseInt(e.target.value) || 100))} className={inputCls} />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Min Observations / Well</label>
+                  <label className={labelCls}>Min Observations / Well</label>
                   <input type="number" value={minObs} min={2} max={100} step={1}
-                    onChange={e => setMinObs(Math.max(2, parseInt(e.target.value) || 5))}
-                    className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
+                    onChange={e => setMinObs(Math.max(2, parseInt(e.target.value) || 5))} className={inputCls} />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Min Time Span / Well (years)</label>
+                  <label className={labelCls}>Min Time Span / Well (years)</label>
                   <input type="number" value={minSpanYears} min={0} max={50} step={1}
-                    onChange={e => setMinSpanYears(Math.max(0, parseFloat(e.target.value) || 5))}
-                    className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
+                    onChange={e => setMinSpanYears(Math.max(0, parseFloat(e.target.value) || 5))} className={inputCls} />
                 </div>
                 <div className="col-span-2">
                   <div className="flex items-center gap-3 text-xs">
@@ -514,43 +631,246 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                   </div>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Interval</label>
-                  <select value={interval} onChange={e => setInterval(e.target.value as any)}
-                    className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500">
+                  <label className={labelCls}>Interval</label>
+                  <select value={interval} onChange={e => setInterval(e.target.value as any)} className={inputCls}>
                     <option value="3months">3 months</option>
                     <option value="6months">6 months</option>
                     <option value="1year">1 year</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Interpolation Method</label>
-                  <select value={smoothingMethod} onChange={e => setSmoothingMethod(e.target.value as any)}
-                    className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500">
+                  <label className={labelCls}>Temporal Method</label>
+                  <select value={smoothingMethod} onChange={e => setSmoothingMethod(e.target.value as any)} className={inputCls}>
                     <option value="pchip">PCHIP</option>
                     <option value="moving-average">Moving Average</option>
                   </select>
                 </div>
-                <div>
-                  {smoothingMethod === 'moving-average' ? (
-                    <>
-                      <label className="block text-xs font-medium text-slate-600 mb-1">MA Window (months)</label>
-                      <input type="number" value={smoothingMonths} min={1} max={60} step={1}
-                        onChange={e => setSmoothingMonths(Math.max(1, Math.min(60, parseInt(e.target.value) || 12)))}
-                        className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
-                    </>
-                  ) : (
-                    <div />
-                  )}
+                {smoothingMethod === 'moving-average' && (
+                  <div>
+                    <label className={labelCls}>MA Window (months)</label>
+                    <input type="number" value={smoothingMonths} min={1} max={60} step={1}
+                      onChange={e => setSmoothingMonths(Math.max(1, Math.min(60, parseInt(e.target.value) || 12)))}
+                      className={inputCls} />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ===== STEP 2: Spatial ===== */}
+          {step === 2 && (
+            <div className="space-y-5">
+              {/* Spatial Method selector */}
+              <div>
+                <h3 className="text-sm font-semibold text-slate-700 mb-2">Spatial Method</h3>
+                <div className="flex gap-2">
+                  <button onClick={() => setSpatialMethod('kriging')} className={radioCls(spatialMethod === 'kriging')}>
+                    Kriging
+                  </button>
+                  <button onClick={() => setSpatialMethod('idw')} className={radioCls(spatialMethod === 'idw')}>
+                    IDW (Inverse Distance)
+                  </button>
                 </div>
-                <div className="col-span-2">
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Title</label>
-                  <input type="text" value={title} onChange={e => setTitle(e.target.value)}
-                    placeholder="e.g. Annual Analysis 2024"
-                    className="w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
-                  {title && (
-                    <div className="mt-1 flex items-center gap-2">
-                      <span className="text-[10px] text-slate-400">{slugify(aquifer.name)}/raster_{dataType.code}_{code}.json</span>
-                      {hasConflict && <span className="text-[10px] text-red-500 font-medium">Name already exists</span>}
+              </div>
+
+              {/* Method-specific options */}
+              {spatialMethod === 'kriging' && (
+                <div className="bg-slate-50 rounded-lg border border-slate-200 p-4 space-y-4">
+                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide">Kriging Options</h4>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>Variogram Model</label>
+                      <select value={variogramModel} onChange={e => setVariogramModel(e.target.value as VariogramModel)} className={inputCls}>
+                        <option value="gaussian">Gaussian</option>
+                        <option value="spherical">Spherical</option>
+                        <option value="exponential">Exponential</option>
+                      </select>
+                    </div>
+                    <div className="flex items-end pb-1">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={nuggetEnabled}
+                          onChange={e => setNuggetEnabled(e.target.checked)}
+                          className="w-3.5 h-3.5 rounded accent-emerald-600" />
+                        <span className="text-xs text-slate-600">Enable nugget</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className={labelCls}>Range</label>
+                    <div className="flex gap-2 mb-2">
+                      {(['auto', 'custom', 'percentage'] as KrigingRangeMode[]).map(mode => (
+                        <button key={mode} onClick={() => setRangeMode(mode)} className={radioCls(rangeMode === mode)}>
+                          {mode === 'auto' ? 'Auto (1/3 diagonal)' : mode === 'custom' ? 'Custom (meters)' : 'Percentage'}
+                        </button>
+                      ))}
+                    </div>
+                    {rangeMode !== 'auto' && (
+                      <input type="number" value={rangeValue} min={0.1}
+                        step={rangeMode === 'percentage' ? 1 : 100}
+                        onChange={e => setRangeValue(parseFloat(e.target.value) || 0)}
+                        className={inputCls}
+                        placeholder={rangeMode === 'custom' ? 'Range in meters' : 'Percentage of diagonal'} />
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {spatialMethod === 'idw' && (
+                <div className="bg-slate-50 rounded-lg border border-slate-200 p-4 space-y-4">
+                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide">IDW Options</h4>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>Exponent</label>
+                      <input type="number" value={idwExponent} min={0.5} max={10} step={0.1}
+                        onChange={e => setIdwExponent(Math.max(0.5, Math.min(10, parseFloat(e.target.value) || 2)))}
+                        className={inputCls} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>Nodal Function</label>
+                      <select value={nodalFunction} onChange={e => setNodalFunction(e.target.value as IdwNodalFunction)} className={inputCls}>
+                        <option value="classic">Classic</option>
+                        <option value="gradient">Gradient Plane</option>
+                        <option value="quadratic">Quadratic</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className={labelCls}>Neighbors</label>
+                    <div className="flex gap-2 mb-2">
+                      <button onClick={() => setNeighborMode('all')} className={radioCls(neighborMode === 'all')}>
+                        All Wells
+                      </button>
+                      <button onClick={() => setNeighborMode('nearest')} className={radioCls(neighborMode === 'nearest')}>
+                        Nearest N
+                      </button>
+                    </div>
+                    {neighborMode === 'nearest' && (
+                      <div>
+                        <input type="number" value={neighborCount} min={3} max={100} step={1}
+                          onChange={e => setNeighborCount(Math.max(3, parseInt(e.target.value) || 12))}
+                          className={inputCls} />
+                        {nodalFunction === 'quadratic' && neighborCount < 6 && (
+                          <p className="text-[10px] text-red-500 mt-1">Quadratic nodal function requires at least 6 neighbors</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* General interpolation options */}
+              <div className="bg-slate-50 rounded-lg border border-slate-200 p-4 space-y-3">
+                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide">General Options</h4>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="flex items-center gap-2 cursor-pointer mb-1">
+                      <input type="checkbox" checked={truncateLow}
+                        onChange={e => setTruncateLow(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded accent-emerald-600" />
+                      <span className="text-xs text-slate-600">Truncate Low</span>
+                    </label>
+                    {truncateLow && (
+                      <input type="number" value={truncateLowValue} step={1}
+                        onChange={e => setTruncateLowValue(parseFloat(e.target.value) || 0)}
+                        className={inputCls} />
+                    )}
+                  </div>
+                  <div>
+                    <label className="flex items-center gap-2 cursor-pointer mb-1">
+                      <input type="checkbox" checked={truncateHigh}
+                        onChange={e => setTruncateHigh(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded accent-emerald-600" />
+                      <span className="text-xs text-slate-600">Truncate High</span>
+                    </label>
+                    {truncateHigh && (
+                      <input type="number" value={truncateHighValue} step={1}
+                        onChange={e => setTruncateHighValue(parseFloat(e.target.value) || 0)}
+                        className={inputCls} />
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-2 cursor-pointer" title={hasNonPositiveValues ? 'Cannot use log interpolation: dataset contains zero or negative values' : ''}>
+                    <input type="checkbox" checked={logInterpolation}
+                      disabled={hasNonPositiveValues}
+                      onChange={e => setLogInterpolation(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded accent-emerald-600 disabled:opacity-40" />
+                    <span className={`text-xs ${hasNonPositiveValues ? 'text-slate-400' : 'text-slate-600'}`}>
+                      Log Interpolation
+                      {hasNonPositiveValues && <span className="ml-1 text-[10px] text-amber-500">(non-positive values present)</span>}
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ===== STEP 3: Title & Summary ===== */}
+          {step === 3 && (
+            <div className="space-y-5">
+              {errorMessage && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2">
+                  <AlertTriangle size={16} className="text-red-500 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium text-red-800">Analysis Failed</p>
+                    <p className="text-xs text-red-600 mt-1">{errorMessage}</p>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className={labelCls}>Title</label>
+                <input type="text" value={title} onChange={e => {
+                  // Only allow [a-zA-Z0-9 _-]
+                  const v = e.target.value.replace(/[^a-zA-Z0-9 _-]/g, '');
+                  setTitle(v);
+                }}
+                  placeholder="e.g. Annual Analysis 2024"
+                  className={inputCls} />
+                {title && (
+                  <div className="mt-1 flex items-center gap-2">
+                    <span className="text-[10px] text-slate-400">{slugify(aquifer.name)}/raster_{dataType.code}_{code}.json</span>
+                    {hasConflict && <span className="text-[10px] text-red-500 font-medium">Name already exists</span>}
+                  </div>
+                )}
+              </div>
+
+              {/* Options summary */}
+              <div className="bg-slate-50 rounded-lg border border-slate-200 p-4">
+                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Options Summary</h4>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-slate-600">
+                  <div><span className="text-slate-400">Dates:</span> {startDate} to {endDate}</div>
+                  <div><span className="text-slate-400">Interval:</span> {interval}</div>
+                  <div><span className="text-slate-400">Resolution:</span> {resolution} cols</div>
+                  <div><span className="text-slate-400">Temporal:</span> {smoothingMethod === 'pchip' ? 'PCHIP' : `MA ${smoothingMonths}mo`}</div>
+                  <div><span className="text-slate-400">Wells:</span> {qualifiedWellCount} qualified</div>
+                  <div><span className="text-slate-400">Method:</span> {spatialMethod === 'kriging' ? `Kriging (${variogramModel})` : `IDW (p=${idwExponent})`}</div>
+                  {spatialMethod === 'kriging' && (
+                    <>
+                      <div><span className="text-slate-400">Nugget:</span> {nuggetEnabled ? 'Yes' : 'No'}</div>
+                      <div><span className="text-slate-400">Range:</span> {rangeMode === 'auto' ? 'Auto' : rangeMode === 'custom' ? `${rangeValue}m` : `${rangeValue}%`}</div>
+                    </>
+                  )}
+                  {spatialMethod === 'idw' && (
+                    <>
+                      <div><span className="text-slate-400">Nodal:</span> {nodalFunction}</div>
+                      <div><span className="text-slate-400">Neighbors:</span> {neighborMode === 'all' ? 'All' : `Nearest ${neighborCount}`}</div>
+                    </>
+                  )}
+                  {(truncateLow || truncateHigh || logInterpolation) && (
+                    <div className="col-span-2 mt-1 pt-1 border-t border-slate-200">
+                      <span className="text-slate-400">Post-processing:</span>{' '}
+                      {[
+                        truncateLow && `low >= ${truncateLowValue}`,
+                        truncateHigh && `high <= ${truncateHighValue}`,
+                        logInterpolation && 'log transform',
+                      ].filter(Boolean).join(', ')}
                     </div>
                   )}
                 </div>
@@ -558,6 +878,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
             </div>
           )}
 
+          {/* ===== RUNNING ===== */}
           {step === 'running' && (
             <div className="flex flex-col items-center justify-center py-12 space-y-4">
               <Loader2 className="w-10 h-10 text-emerald-500 animate-spin" />
@@ -570,6 +891,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
             </div>
           )}
 
+          {/* ===== COMPLETE ===== */}
           {step === 'complete' && result && (
             <div className="flex flex-col items-center justify-center py-12 space-y-4">
               <CheckCircle2 className="w-12 h-12 text-emerald-500" />
@@ -583,32 +905,61 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end px-6 py-3 border-t border-slate-200 bg-slate-50 gap-3">
-          {step === 'options' && (
-            <>
-              <button onClick={onClose}
+        <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 bg-slate-50">
+          {/* Left: Cancel */}
+          <div>
+            {(stepNumber || step === 'running') && (
+              <button onClick={step === 'running' ? handleCancel : onClose}
                 className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
                 Cancel
               </button>
-              <button onClick={handleRun} disabled={!canRun}
+            )}
+          </div>
+
+          {/* Center: Back */}
+          <div>
+            {stepNumber && stepNumber > 1 && (
+              <button onClick={() => setStep((stepNumber - 1) as Step)}
+                className="flex items-center gap-1 px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
+                <ChevronLeft size={16} />
+                Back
+              </button>
+            )}
+          </div>
+
+          {/* Right: Next / Run / View */}
+          <div>
+            {step === 1 && (
+              <button onClick={() => setStep(2)} disabled={!step1Valid}
+                className="flex items-center gap-1 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                Next
+                <ChevronRight size={16} />
+              </button>
+            )}
+            {step === 2 && (
+              <button onClick={() => setStep(3)} disabled={!step2Valid}
+                className="flex items-center gap-1 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                Next
+                <ChevronRight size={16} />
+              </button>
+            )}
+            {step === 3 && (
+              <button onClick={handleRun} disabled={!step3Valid}
                 className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 <Play size={16} />
                 Run Analysis
               </button>
-            </>
-          )}
-          {step === 'running' && (
-            <button onClick={handleCancel}
-              className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
-              Cancel
-            </button>
-          )}
-          {step === 'complete' && result && (
-            <button onClick={() => onComplete(result)}
-              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors">
-              View Results
-            </button>
-          )}
+            )}
+            {step === 'running' && (
+              <div /> /* Cancel is on the left */
+            )}
+            {step === 'complete' && result && (
+              <button onClick={() => onComplete(result)}
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors">
+                View Results
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

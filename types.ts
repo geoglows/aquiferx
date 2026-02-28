@@ -85,6 +85,55 @@ export interface RasterFrame {
   values: (number | null)[];
 }
 
+export type VariogramModel = 'gaussian' | 'spherical' | 'exponential';
+export type KrigingRangeMode = 'auto' | 'custom' | 'percentage';
+export type IdwNodalFunction = 'classic' | 'gradient' | 'quadratic';
+export type IdwNeighborMode = 'all' | 'nearest';
+export type SpatialMethod = 'kriging' | 'idw';
+
+export interface TemporalOptions {
+  method: 'pchip' | 'moving-average';
+  maWindow: number;
+  startDate: string;
+  endDate: string;
+  interval: '3months' | '6months' | '1year';
+  minObservations: number;
+  minTimeSpan: number;
+}
+
+export interface KrigingOptions {
+  variogramModel: VariogramModel;
+  nugget: boolean;
+  rangeMode: KrigingRangeMode;
+  rangeValue: number | null;
+}
+
+export interface IdwOptions {
+  exponent: number;
+  nodalFunction: IdwNodalFunction;
+  neighborMode: IdwNeighborMode;
+  neighborCount: number;
+}
+
+export interface GeneralInterpolationOptions {
+  truncateLow: boolean;
+  truncateLowValue: number;
+  truncateHigh: boolean;
+  truncateHighValue: number;
+  logInterpolation: boolean;
+}
+
+export interface RasterOptions {
+  temporal: TemporalOptions;
+  spatial: {
+    method: SpatialMethod;
+    resolution: number;
+    kriging: KrigingOptions;
+    idw: IdwOptions;
+  };
+  general: GeneralInterpolationOptions;
+}
+
 export interface RasterAnalysisResult {
   version: number;
   title: string;
@@ -97,6 +146,8 @@ export interface RasterAnalysisResult {
   grid: RasterGrid;
   frames: RasterFrame[];
   createdAt: string;
+  options?: RasterOptions;
+  generatedAt?: string;
 }
 
 export interface CrossSectionProfile {
@@ -119,4 +170,6 @@ export interface RasterAnalysisMeta {
   dataType: string;
   params: RasterAnalysisParams;
   createdAt: string;
+  options?: RasterOptions;
+  generatedAt?: string;
 }

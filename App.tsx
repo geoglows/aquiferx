@@ -11,6 +11,7 @@ import TimeSeriesChart from './components/TimeSeriesChart';
 import ImportDataHub from './components/import/ImportDataHub';
 import DataEditor from './components/DataEditor';
 import SpatialAnalysisDialog from './components/SpatialAnalysisDialog';
+import RasterInfoDialog from './components/RasterInfoDialog';
 import RasterOverlay from './components/RasterOverlay';
 import CrossSectionChart from './components/CrossSectionChart';
 import { computeStorageChange } from './utils/storageVolume';
@@ -511,6 +512,40 @@ const App: React.FC = () => {
     } catch (e) {
       console.error('Failed to delete raster analysis file:', e);
     }
+  };
+
+  const handleRenameRaster = async (meta: RasterAnalysisMeta, newTitle: string) => {
+    const newCode = slugify(newTitle);
+    const oldPath = meta.filePath;
+    // Build new file path: same directory, new code in filename
+    const dir = oldPath.substring(0, oldPath.lastIndexOf('/'));
+    const newPath = `${dir}/raster_${meta.dataType}_${newCode}.json`;
+
+    try {
+      const res = await fetch('/api/rename-raster', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ oldPath, newPath, newCode, newTitle }),
+      });
+      if (res.ok) {
+        setRasterMeta(prev => prev.map(m =>
+          m.code === meta.code && m.regionId === meta.regionId
+            ? { ...m, title: newTitle, code: newCode, filePath: newPath }
+            : m
+        ));
+        // Update active raster if it was the renamed one
+        if (rasterResult?.code === meta.code && rasterResult?.regionId === meta.regionId) {
+          setRasterResult(prev => prev ? { ...prev, title: newTitle, code: newCode } : null);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to rename raster:', e);
+    }
+  };
+
+  const [rasterInfoMeta, setRasterInfoMeta] = useState<RasterAnalysisMeta | null>(null);
+  const handleGetRasterInfo = (meta: RasterAnalysisMeta) => {
+    setRasterInfoMeta(meta);
   };
 
   // Active data type object
@@ -1014,6 +1049,8 @@ const App: React.FC = () => {
         onUnloadRaster={handleUnloadRaster}
         onToggleCompareRaster={handleToggleCompareRaster}
         onDeleteRaster={handleDeleteRaster}
+        onRenameRaster={handleRenameRaster}
+        onGetRasterInfo={handleGetRasterInfo}
       />
 
       {/* Main Content Area */}
@@ -1575,9 +1612,19 @@ const App: React.FC = () => {
               dataType: result.dataType,
               params: result.params,
               createdAt: result.createdAt,
+              options: result.options,
+              generatedAt: result.generatedAt,
             }]);
             setRasterDialogOpen(false);
           }}
+        />
+      )}
+
+      {/* Raster Info Dialog */}
+      {rasterInfoMeta && (
+        <RasterInfoDialog
+          meta={rasterInfoMeta}
+          onClose={() => setRasterInfoMeta(null)}
         />
       )}
 
