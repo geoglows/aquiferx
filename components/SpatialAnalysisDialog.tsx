@@ -937,7 +937,16 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
               </button>
             )}
             {step === 2 && (
-              <button onClick={() => setStep(3)} disabled={!step2Valid}
+              <button onClick={() => {
+                  if (!title) {
+                    const defaultTitle = spatialMethod === 'kriging' ? 'kriging'
+                      : nodalFunction === 'classic' ? 'idw'
+                      : nodalFunction === 'gradient' ? 'idw_gp'
+                      : 'idw_quad';
+                    setTitle(defaultTitle);
+                  }
+                  setStep(3);
+                }} disabled={!step2Valid}
                 className="flex items-center gap-1 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 Next
                 <ChevronRight size={16} />
