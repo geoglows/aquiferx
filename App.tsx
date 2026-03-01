@@ -573,44 +573,45 @@ const App: React.FC = () => {
       : [],
   [selectedWells, measurements, selectedDataType]);
 
-  // Compute which wells are active contributors for the current raster frame
-  const rasterActiveWellIds = useMemo<Set<string> | null>(() => {
-    if (!showActiveWells || !rasterResult || !rasterFrameDate) return null;
+  // Precompute eligible well time ranges once (stable across frames)
+  const wellTimeRanges = useMemo<Map<string, [number, number]> | null>(() => {
+    if (!showActiveWells || !rasterResult) return null;
 
     const opts = rasterResult.options;
     const dataType = rasterResult.dataType;
-    const frameTs = rasterFrameDate.dateTs;
-
-    // Get temporal thresholds from options or legacy params
     const minObs = opts?.temporal.minObservations ?? 2;
     const minSpanYears = opts?.temporal.minTimeSpan ?? 0;
 
-    const active = new Set<string>();
+    const ranges = new Map<string, [number, number]>();
 
     for (const w of filteredWells) {
-      const wellMeas = measurements
-        .filter(m => m.wellId === w.id && m.dataType === dataType && !isNaN(new Date(m.date).getTime()))
-        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-      // Must meet minimum observations
-      if (wellMeas.length < Math.max(2, minObs)) continue;
-
-      const times = wellMeas.map(m => new Date(m.date).getTime());
+      const times: number[] = [];
+      for (const m of measurements) {
+        if (m.wellId !== w.id || m.dataType !== dataType) continue;
+        const t = new Date(m.date).getTime();
+        if (!isNaN(t)) times.push(t);
+      }
+      if (times.length < Math.max(2, minObs)) continue;
+      times.sort((a, b) => a - b);
       const minT = times[0];
       const maxT = times[times.length - 1];
-
-      // Must meet minimum time span
       const spanYears = (maxT - minT) / (365.25 * 24 * 60 * 60 * 1000);
       if (spanYears < minSpanYears) continue;
-
-      // Frame date must fall within this well's data range (no extrapolation)
-      if (frameTs < minT || frameTs > maxT) continue;
-
-      active.add(w.id);
+      ranges.set(w.id, [minT, maxT]);
     }
+    return ranges;
+  }, [showActiveWells, rasterResult, filteredWells, measurements]);
 
+  // Cheap per-frame check: just test frame date against precomputed ranges
+  const rasterActiveWellIds = useMemo<Set<string> | null>(() => {
+    if (!wellTimeRanges || !rasterFrameDate) return null;
+    const frameTs = rasterFrameDate.dateTs;
+    const active = new Set<string>();
+    for (const [wellId, [minT, maxT]] of wellTimeRanges) {
+      if (frameTs >= minT && frameTs <= maxT) active.add(wellId);
+    }
     return active;
-  }, [showActiveWells, rasterResult, rasterFrameDate, filteredWells, measurements]);
+  }, [wellTimeRanges, rasterFrameDate]);
 
   const allRasterResults = useMemo(() => {
     if (!rasterResult) return [];
