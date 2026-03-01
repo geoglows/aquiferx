@@ -1,4 +1,31 @@
 /**
+ * Piecewise linear interpolation. Clamps to boundary values outside the data range.
+ */
+export function interpolateLinear(x: number[], y: number[], targetX: number[]): number[] {
+  const n = x.length;
+  if (n < 2) return targetX.map(() => (n === 1 ? y[0] : 0));
+
+  return targetX.map(tx => {
+    if (tx <= x[0]) return y[0];
+    if (tx >= x[n - 1]) return y[n - 1];
+
+    // Binary search for interval
+    let lo = 0;
+    let hi = n - 1;
+    while (lo < hi - 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (x[mid] <= tx) lo = mid;
+      else hi = mid;
+    }
+
+    const dx = x[hi] - x[lo];
+    if (dx === 0) return y[lo];
+    const t = (tx - x[lo]) / dx;
+    return y[lo] + t * (y[hi] - y[lo]);
+  });
+}
+
+/**
  * PCHIP (Piecewise Cubic Hermite Interpolating Polynomial) interpolation.
  * Matches the scipy.interpolate.PchipInterpolator algorithm used by PANDAS.
  *

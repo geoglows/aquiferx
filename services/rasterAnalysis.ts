@@ -4,7 +4,7 @@ import {
   SpatialMethod, KrigingOptions, IdwOptions, GeneralInterpolationOptions, TemporalOptions, RasterOptions,
 } from '../types';
 import { isPointInGeoJSON } from '../utils/geo';
-import { interpolatePCHIP, kernelSmooth } from '../utils/interpolation';
+import { interpolatePCHIP, interpolateLinear, kernelSmooth } from '../utils/interpolation';
 import { krigGrid, estimateVariogramParams } from './kriging';
 import { idwGrid } from './idw';
 import { slugify } from '../utils/strings';
@@ -86,7 +86,7 @@ export async function runRasterAnalysis(
   const intervalDates = generateIntervalDates(startDate, endDate, interval);
   const intervalTimestamps = intervalDates.map(d => new Date(d).getTime());
 
-  // Step 3: PCHIP per well
+  // Step 3: Temporal interpolation per well
   // Group measurements by well for the target data type
   const wteMeasurements = measurements.filter(m => m.dataType === dataType);
   const byWell = new Map<string, Measurement[]>();
@@ -122,27 +122,34 @@ export async function runRasterAnalysis(
     const timeSpanYears = (maxT - minT) / (365.25 * 24 * 60 * 60 * 1000);
     if (timeSpanYears < temporal.minTimeSpan) continue;
 
-    // Only interpolate within the well's data range (no extrapolation)
-    const interpValues: (number | null)[] = intervalTimestamps.map(t => {
-      if (t < minT || t > maxT) return null;
-      return null; // placeholder, filled below
-    });
+    // Interpolate within the well's data range (no extrapolation) using selected method
+    let interpValues: (number | null)[];
 
-    // Get all valid target timestamps
-    const validTargets: number[] = [];
-    const validIndices: number[] = [];
-    for (let i = 0; i < intervalTimestamps.length; i++) {
-      const t = intervalTimestamps[i];
-      if (t >= minT && t <= maxT) {
-        validTargets.push(t);
-        validIndices.push(i);
+    if (temporal.method === 'moving-average') {
+      const smoothed = kernelSmooth(xValues, yValues, intervalTimestamps, temporal.maWindow);
+      interpValues = intervalTimestamps.map((t, i) => {
+        if (t < minT || t > maxT) return null;
+        return smoothed[i];
+      });
+    } else {
+      // PCHIP or Linear
+      interpValues = intervalTimestamps.map(() => null);
+      const validTargets: number[] = [];
+      const validIndices: number[] = [];
+      for (let i = 0; i < intervalTimestamps.length; i++) {
+        const t = intervalTimestamps[i];
+        if (t >= minT && t <= maxT) {
+          validTargets.push(t);
+          validIndices.push(i);
+        }
       }
-    }
-
-    if (validTargets.length > 0) {
-      const interpolated = interpolatePCHIP(xValues, yValues, validTargets);
-      for (let i = 0; i < validIndices.length; i++) {
-        interpValues[validIndices[i]] = interpolated[i];
+      if (validTargets.length > 0) {
+        const interpolated = temporal.method === 'linear'
+          ? interpolateLinear(xValues, yValues, validTargets)
+          : interpolatePCHIP(xValues, yValues, validTargets);
+        for (let i = 0; i < validIndices.length; i++) {
+          interpValues[validIndices[i]] = interpolated[i];
+        }
       }
     }
 
@@ -150,35 +157,6 @@ export async function runRasterAnalysis(
   }
 
   console.log(`[RasterAnalysis] ${wellInterp.size}/${wellIds.length} wells qualified (minObs=${temporal.minObservations}, minSpan=${temporal.minTimeSpan}yr)`);
-
-  // Step 3b: Kernel smoothing (when selected)
-  if (temporal.method === 'moving-average') {
-    onProgress('Applying kernel smoothing...', 30);
-    await yieldToUI();
-
-    for (const [wellId, entry] of wellInterp) {
-      const meas = byWell.get(wellId)!;
-      const sorted = [...meas]
-        .filter(m => !isNaN(new Date(m.date).getTime()))
-        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-      const xValues = sorted.map(m => new Date(m.date).getTime());
-      const yValues = sorted.map(m => m.value);
-      if (xValues.length < 2) continue;
-      const minT = xValues[0];
-      const maxT = xValues[xValues.length - 1];
-
-      // Smooth at interval timestamps within the well's data range
-      const smoothed = kernelSmooth(xValues, yValues, intervalTimestamps, temporal.maWindow);
-
-      const newValues: (number | null)[] = intervalTimestamps.map((t, i) => {
-        if (t < minT || t > maxT) return null;
-        return smoothed[i];
-      });
-
-      entry.values = newValues;
-    }
-  }
 
   // Apply log transform to well values before spatial interpolation
   if (general.logInterpolation) {

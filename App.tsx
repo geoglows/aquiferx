@@ -204,6 +204,7 @@ const App: React.FC = () => {
   const [showGSE, setShowGSE] = useState(false);
   const [showTrendLine, setShowTrendLine] = useState(false);
   const [showSmooth, setShowSmooth] = useState(false);
+  const [usePCHIP, setUsePCHIP] = useState(true);
   const [smoothMonths, setSmoothMonths] = useState(3);
   const [trendColors, setTrendColors] = useState<Map<string, string> | null>(null);
   const [aquiferTrendColors, setAquiferTrendColors] = useState<Map<string, string> | null>(null);
@@ -1435,6 +1436,10 @@ const App: React.FC = () => {
                             </label>
                           )}
                           <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none">
+                            <input type="checkbox" checked={usePCHIP} onChange={(e) => setUsePCHIP(e.target.checked)} className="accent-blue-500" />
+                            PCHIP
+                          </label>
+                          <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none">
                             <input type="checkbox" checked={showTrendLine} onChange={(e) => setShowTrendLine(e.target.checked)} className="accent-blue-500" />
                             Trend Line
                           </label>
@@ -1489,6 +1494,10 @@ const App: React.FC = () => {
                         </>
                       ) : effectiveTab === 'storageChange' ? (
                         <div className="flex items-center gap-3">
+                          <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none">
+                            <input type="checkbox" checked={usePCHIP} onChange={(e) => setUsePCHIP(e.target.checked)} className="accent-blue-500" />
+                            PCHIP
+                          </label>
                           <label className="flex items-center gap-1.5 text-xs text-slate-600 select-none">
                             <span className="font-medium">Storage Coeff.</span>
                             <button
@@ -1557,6 +1566,7 @@ const App: React.FC = () => {
                         showTrendLine={showTrendLine}
                         showSmooth={showSmooth}
                         smoothMonths={smoothMonths}
+                        usePCHIP={usePCHIP}
                         dataType={activeDataType}
                         lengthUnit={selectedRegion?.lengthUnit || 'ft'}
                         onEditMeasurement={handleChartEditMeasurement}
@@ -1615,7 +1625,7 @@ const App: React.FC = () => {
                           {allRasterResults.map((r, i) => (
                             <Line
                               key={r.code}
-                              type="monotone"
+                              type={usePCHIP ? 'monotone' : 'linear'}
                               dataKey={`value_${i}`}
                               stroke={STORAGE_COLORS[i % STORAGE_COLORS.length]}
                               strokeWidth={i === 0 ? 2 : 1.5}

@@ -237,7 +237,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
   const [interval, setInterval] = useState<'3months' | '6months' | '1year'>('1year');
   const [minObs, setMinObs] = useState(5);
   const [minSpanYears, setMinSpanYears] = useState(5);
-  const [smoothingMethod, setSmoothingMethod] = useState<'pchip' | 'moving-average'>('pchip');
+  const [smoothingMethod, setSmoothingMethod] = useState<'pchip' | 'linear' | 'moving-average'>('pchip');
   const [smoothingMonths, setSmoothingMonths] = useState(12);
 
   // --- Spatial options (Step 2) ---
@@ -642,6 +642,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                   <label className={labelCls}>Temporal Method</label>
                   <select value={smoothingMethod} onChange={e => setSmoothingMethod(e.target.value as any)} className={inputCls}>
                     <option value="pchip">PCHIP</option>
+                    <option value="linear">Linear</option>
                     <option value="moving-average">Moving Average</option>
                   </select>
                 </div>
@@ -848,7 +849,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                   <div><span className="text-slate-400">Dates:</span> {startDate} to {endDate}</div>
                   <div><span className="text-slate-400">Interval:</span> {interval}</div>
                   <div><span className="text-slate-400">Resolution:</span> {resolution} cols</div>
-                  <div><span className="text-slate-400">Temporal:</span> {smoothingMethod === 'pchip' ? 'PCHIP' : `MA ${smoothingMonths}mo`}</div>
+                  <div><span className="text-slate-400">Temporal:</span> {smoothingMethod === 'pchip' ? 'PCHIP' : smoothingMethod === 'linear' ? 'Linear' : `MA ${smoothingMonths}mo`}</div>
                   <div><span className="text-slate-400">Wells:</span> {qualifiedWellCount} qualified</div>
                   <div><span className="text-slate-400">Method:</span> {spatialMethod === 'kriging' ? `Kriging (${variogramModel})` : `IDW (p=${idwExponent})`}</div>
                   {spatialMethod === 'kriging' && (

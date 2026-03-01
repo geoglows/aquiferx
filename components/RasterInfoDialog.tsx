@@ -43,7 +43,7 @@ const RasterInfoDialog: React.FC<RasterInfoDialogProps> = ({ meta, onClose }) =>
               <div className="space-y-0">
                 <div className={rowCls}><span className={labelCls}>Dates</span><span className={valueCls}>{opts.temporal.startDate} to {opts.temporal.endDate}</span></div>
                 <div className={rowCls}><span className={labelCls}>Interval</span><span className={valueCls}>{opts.temporal.interval}</span></div>
-                <div className={rowCls}><span className={labelCls}>Method</span><span className={valueCls}>{opts.temporal.method === 'pchip' ? 'PCHIP' : `Moving Average (${opts.temporal.maWindow}mo)`}</span></div>
+                <div className={rowCls}><span className={labelCls}>Method</span><span className={valueCls}>{opts.temporal.method === 'pchip' ? 'PCHIP' : opts.temporal.method === 'linear' ? 'Linear' : `Moving Average (${opts.temporal.maWindow}mo)`}</span></div>
                 <div className={rowCls}><span className={labelCls}>Min Observations</span><span className={valueCls}>{opts.temporal.minObservations}</span></div>
                 <div className={rowCls}><span className={labelCls}>Min Time Span</span><span className={valueCls}>{opts.temporal.minTimeSpan} years</span></div>
               </div>
@@ -51,7 +51,7 @@ const RasterInfoDialog: React.FC<RasterInfoDialogProps> = ({ meta, onClose }) =>
               <div className="space-y-0">
                 <div className={rowCls}><span className={labelCls}>Dates</span><span className={valueCls}>{meta.params.startDate} to {meta.params.endDate}</span></div>
                 <div className={rowCls}><span className={labelCls}>Interval</span><span className={valueCls}>{meta.params.interval}</span></div>
-                <div className={rowCls}><span className={labelCls}>Method</span><span className={valueCls}>{meta.params.smoothingMethod === 'pchip' ? 'PCHIP' : `Moving Average (${meta.params.smoothingMonths}mo)`}</span></div>
+                <div className={rowCls}><span className={labelCls}>Method</span><span className={valueCls}>{meta.params.smoothingMethod === 'pchip' ? 'PCHIP' : meta.params.smoothingMethod === 'linear' ? 'Linear' : `Moving Average (${meta.params.smoothingMonths}mo)`}</span></div>
               </div>
             )}
           </section>

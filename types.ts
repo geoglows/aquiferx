@@ -67,7 +67,7 @@ export interface RasterAnalysisParams {
   title: string;
   minObservations: number;
   minTimeSpanYears: number;
-  smoothingMethod: 'pchip' | 'moving-average';
+  smoothingMethod: 'pchip' | 'linear' | 'moving-average';
   smoothingMonths: number;
 }
 
@@ -93,7 +93,7 @@ export type IdwNeighborMode = 'all' | 'nearest';
 export type SpatialMethod = 'kriging' | 'idw';
 
 export interface TemporalOptions {
-  method: 'pchip' | 'moving-average';
+  method: 'pchip' | 'linear' | 'moving-average';
   maWindow: number;
   startDate: string;
   endDate: string;

@@ -23,6 +23,7 @@ interface TimeSeriesChartProps {
   showTrendLine: boolean;
   showSmooth: boolean;
   smoothMonths: number;
+  usePCHIP?: boolean;
   dataType: DataType;
   lengthUnit?: 'ft' | 'm';
   referenceDate?: number;
@@ -46,7 +47,7 @@ interface DotPosition extends SelectedPoint {
 
 const HIT_RADIUS = 15;
 
-const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selectedWells, showGSE, showTrendLine, showSmooth, smoothMonths, dataType, lengthUnit = 'ft', referenceDate, rasterTimeRange, trendWindowStart, onEditMeasurement, onDeleteMeasurement, onEscapeUnhandled }) => {
+const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selectedWells, showGSE, showTrendLine, showSmooth, smoothMonths, usePCHIP = true, dataType, lengthUnit = 'ft', referenceDate, rasterTimeRange, trendWindowStart, onEditMeasurement, onDeleteMeasurement, onEscapeUnhandled }) => {
   const [selectedPoint, setSelectedPoint] = useState<SelectedPoint | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [editModal, setEditModal] = useState(false);
@@ -118,6 +119,9 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
 
       if (sorted.length === 1) {
         interpMap.set(xValues[0], yValues[0]);
+      } else if (!usePCHIP) {
+        // Linear: just plot the raw data points
+        xValues.forEach((x, i) => interpMap.set(x, yValues[i]));
       } else {
         const minX = Math.min(...xValues);
         const maxX = Math.max(...xValues);
@@ -166,7 +170,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     });
 
     return { chartData: data, wellIds: orderedWellIds };
-  }, [measurements, selectedWells]);
+  }, [measurements, selectedWells, usePCHIP]);
 
   // Compute linear regression trend lines per well (requires >= 3 measurements)
   const trendData = useMemo(() => {
@@ -536,6 +540,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     >
       <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
         <LineChart
+          key={usePCHIP ? 'pchip' : 'linear'}
           data={finalChartData}
           margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
           onMouseDown={(e: any) => {
