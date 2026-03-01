@@ -75,15 +75,12 @@ function solveSmall(A: number[][], b: number[]): number[] | null {
   return x;
 }
 
-// Fit gradient plane: f(x,y) ≈ f_i + fx*(x-xi) + fy*(y-yi)
+// Fit gradient plane: Q_i(x,y) = f_i + fx*(x-xi) + fy*(y-yi)
 // Returns [fx, fy] or null if singular
 function fitGradientPlane(
   cx: number, cy: number, cv: number,
   nx: number[], ny: number[], nv: number[], nw: number[]
 ): [number, number] | null {
-  // Weighted least squares: minimize sum w_j * (f_j - cv - fx*dx - fy*dy)^2
-  // Normal equations: [sum w*dx*dx, sum w*dx*dy] [fx]   [sum w*dx*df]
-  //                   [sum w*dx*dy, sum w*dy*dy] [fy] = [sum w*dy*df]
   let a00 = 0, a01 = 0, a11 = 0, b0 = 0, b1 = 0;
   for (let j = 0; j < nx.length; j++) {
     const dx = nx[j] - cx;
@@ -101,16 +98,14 @@ function fitGradientPlane(
   return result ? [result[0], result[1]] : null;
 }
 
-// Fit quadratic: f(x,y) ≈ a1 + a2*dx + a3*dy + a4*dx^2 + a5*dx*dy + a6*dy^2
+// Fit quadratic: Q_k(x,y) = f_k + a2*dx + a3*dy + a4*dx^2 + a5*dx*dy + a6*dy^2
 // Returns [a2, a3, a4, a5, a6] or null if singular
 function fitQuadratic(
   cx: number, cy: number, cv: number,
   nx: number[], ny: number[], nv: number[], nw: number[]
 ): [number, number, number, number, number] | null {
-  // Need at least 5 neighbors for 5 unknowns (a1=cv is known)
   if (nx.length < 5) return null;
 
-  // Weighted least squares with 5 basis functions
   const m = 5;
   const A = Array.from({ length: m }, () => new Array(m).fill(0));
   const b = new Array(m).fill(0);
@@ -151,12 +146,12 @@ export function idwGrid(
   const exponent = options.exponent ?? 2;
   const nodalFn = options.nodalFunction ?? 'classic';
   const neighborMode = options.neighborMode ?? 'all';
-  const neighborCount = options.neighborCount ?? 12;
+  const neighborCount = options.neighborCount ?? 24;
 
-  // Project all wells to meters
+  // Project all scatter points (wells) to meters
   const { xs: wellXs, ys: wellYs, centLat, centLng } = projectPoints(wellLats, wellLngs);
 
-  // Build kd-tree from wells
+  // Build kd-tree from scatter points
   const treePoints: ProjectedPoint[] = wellXs.map((x, i) => ({ x, y: wellYs[i], idx: i }));
   const distFn = (a: ProjectedPoint, b: ProjectedPoint) => {
     const dx = a.x - b.x;
@@ -165,21 +160,17 @@ export function idwGrid(
   };
   const tree = new kdTree<ProjectedPoint>(treePoints, distFn, ['x', 'y']);
 
-  // Pre-compute nodal function coefficients for each scatter point.
-  // Each well also gets its own radius of influence R_w (distance to farthest
-  // fitting neighbor). Beyond R_w, the nodal function falls back to f_i to
-  // prevent wild extrapolation of gradient/quadratic surfaces.
+  // Pre-compute nodal function coefficients at each scatter point.
+  // Fitted using the scatter point's nearest neighbors with modified Shepard weights.
   const nodalCoeffs: (number[] | null)[] = new Array(nWells).fill(null);
-  const nodalRadius: number[] = new Array(nWells).fill(Infinity);
 
   if (nodalFn !== 'classic') {
-    // For each well, find its k nearest neighbors and fit nodal function
-    const k = Math.min(nWells - 1, Math.max(nodalFn === 'quadratic' ? 8 : 5, neighborCount));
+    const fitK = Math.min(nWells - 1, Math.max(nodalFn === 'quadratic' ? 8 : 5, neighborCount));
     for (let i = 0; i < nWells; i++) {
       const query = { x: wellXs[i], y: wellYs[i], idx: i };
-      const nearest = tree.nearest(query, k + 1); // includes self
+      const nearest = tree.nearest(query, fitK + 1); // includes self
 
-      // Collect neighbors (excluding self) and track max distance (R_w)
+      // Collect neighbors (excluding self) and track max distance (Rw)
       const neighX: number[] = [], neighY: number[] = [], neighV: number[] = [];
       const neighDist: number[] = [];
       let Rw = 0;
@@ -192,11 +183,7 @@ export function idwGrid(
         if (dist > Rw) Rw = dist;
       }
 
-      nodalRadius[i] = Rw;
-
-      // Compute fitting weights using modified Shepard formula: ((Rw - d) / (Rw * d))^2
-      // This gives high weight to close neighbors and zero at the boundary,
-      // consistent with the interpolation weighting.
+      // Fitting weights: ((Rw - d) / (Rw * d))^2
       const neighW: number[] = neighDist.map(d => {
         if (d < 1e-10) return 1e10;
         if (d >= Rw) return 0;
@@ -209,41 +196,34 @@ export function idwGrid(
         if (qCoeffs) {
           nodalCoeffs[i] = qCoeffs;
         } else {
-          // Fall back to gradient
+          // Fall back to gradient if quadratic is singular
           const gCoeffs = fitGradientPlane(wellXs[i], wellYs[i], wellValues[i], neighX, neighY, neighV, neighW);
           nodalCoeffs[i] = gCoeffs ? [...gCoeffs, 0, 0, 0] : null;
         }
       } else {
         const gCoeffs = fitGradientPlane(wellXs[i], wellYs[i], wellValues[i], neighX, neighY, neighV, neighW);
-        nodalCoeffs[i] = gCoeffs ? [...gCoeffs] : null;
+        nodalCoeffs[i] = gCoeffs;
       }
     }
   }
 
-  // Evaluate nodal function Q_i at a point (px, py).
-  // Falls back to f_i if the point is beyond the well's fitting radius.
+  // Evaluate nodal function Q_i at an interpolation point (px, py)
   function evalNodal(i: number, px: number, py: number): number {
     const fi = wellValues[i];
     const coeffs = nodalCoeffs[i];
-    if (!coeffs) return fi; // fall back to classic
+    if (!coeffs) return fi; // classic fallback
 
     const dx = px - wellXs[i];
     const dy = py - wellYs[i];
-    const dist = Math.sqrt(dx * dx + dy * dy);
-
-    // Beyond the fitting radius, the nodal function is unreliable — use constant
-    if (dist > nodalRadius[i]) return fi;
 
     if (coeffs.length === 2) {
-      // Gradient: fi + fx*dx + fy*dy
       return fi + coeffs[0] * dx + coeffs[1] * dy;
     }
-    // Quadratic: fi + a2*dx + a3*dy + a4*dx^2 + a5*dx*dy + a6*dy^2
     return fi + coeffs[0] * dx + coeffs[1] * dy
       + coeffs[2] * dx * dx + coeffs[3] * dx * dy + coeffs[4] * dy * dy;
   }
 
-  // Interpolate each grid cell
+  // Interpolate each grid cell (interpolation point)
   const result: (number | null)[] = new Array(gridLats.length);
   let gridMin = Infinity, gridMax = -Infinity;
 
@@ -255,7 +235,7 @@ export function idwGrid(
 
     const { x: gx, y: gy } = projectSingle(gridLats[g], gridLngs[g], centLat, centLng);
 
-    // Find neighbors
+    // Find active scatter points for this interpolation point
     let activeIndices: number[];
     let activeDists: number[];
 
@@ -265,7 +245,6 @@ export function idwGrid(
       activeIndices = nearest.map(([pt]) => pt.idx);
       activeDists = nearest.map(([, d]) => d);
     } else {
-      // All wells
       activeIndices = [];
       activeDists = [];
       for (let i = 0; i < nWells; i++) {
@@ -276,7 +255,7 @@ export function idwGrid(
       }
     }
 
-    // Check for coincident point
+    // Coincident point: if interpolation point is at a scatter point, use f_i directly
     let coincident = -1;
     for (let k = 0; k < activeDists.length; k++) {
       if (activeDists[k] < 1e-10) { coincident = activeIndices[k]; break; }
@@ -288,18 +267,20 @@ export function idwGrid(
       continue;
     }
 
-    // R = distance to farthest neighbor in active set
+    // R = distance from this interpolation point to the most distant scatter point
+    // in the active set. Recalculated for every interpolation point.
     let R = 0;
     for (const d of activeDists) if (d > R) R = d;
-    if (R < 1e-10) R = 1; // safety
+    if (R < 1e-10) R = 1;
 
-    // Modified Shepard weights: ((R - h) / (R * h))^p, normalized to sum to 1
-    // Points at or beyond R get zero weight
+    // Weights: ((R - h_i) / (R * h_i))^p, normalized to sum to 1.
+    // Same formula for all nodal function modes.
+    // Scatter points at h_i >= R get zero weight.
     let sumW = 0;
     let sumWQ = 0;
     for (let k = 0; k < activeIndices.length; k++) {
       const h = activeDists[k];
-      if (h >= R) continue; // zero weight beyond R
+      if (h >= R) continue;
       const w = Math.pow((R - h) / (R * h), exponent);
       const q = evalNodal(activeIndices[k], gx, gy);
       sumW += w;

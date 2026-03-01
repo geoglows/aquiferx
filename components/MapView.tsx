@@ -54,6 +54,7 @@ interface MapViewProps {
   selectedDataType?: string;
   wellColors?: Map<string, string> | null;
   aquiferColors?: Map<string, string> | null;
+  rasterActiveWellIds?: Set<string> | null;
   onRegionClick: (r: Region) => void;
   onAquiferClick: (a: Aquifer) => void;
   onWellClick: (w: Well, shiftKey: boolean) => void;
@@ -75,6 +76,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
   selectedDataType = 'wte',
   wellColors,
   aquiferColors,
+  rasterActiveWellIds,
   onRegionClick,
   onAquiferClick,
   onWellClick,
@@ -388,19 +390,28 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
     visibleWellsRef.current = visible;
   }, [wells, selectedAquifer, wellMeasurementCounts, minObs, wellColors]);
 
-  // Update marker styles when selection changes — no clearing/recreation
+  // Update marker styles when selection or raster active wells change — no clearing/recreation
   useEffect(() => {
     const selectedIds = new Set(selectedWells.map(w => w.id));
     wellMarkerMapRef.current.forEach((marker, wellId) => {
       const isSelected = selectedIds.has(wellId);
       const hasTrend = wellColors?.has(wellId);
+      // Raster mode: green = active contributor, dark gray = not contributing
+      const rasterFill = rasterActiveWellIds
+        ? (rasterActiveWellIds.has(wellId) ? '#22c55e' : '#4b5563')
+        : null;
+      const measurementCount = wellMeasurementCounts.get(wellId) || 0;
+      const defaultFill = measurementCount === 0 ? '#ef4444'
+        : measurementCount === 1 ? '#6b7280'
+        : '#0000ff';
       marker.setStyle({
         radius: isSelected ? 8 : 6,
+        fillColor: hasTrend ? wellColors!.get(wellId)! : rasterFill || defaultFill,
         color: isSelected ? '#f59e0b' : hasTrend ? '#000000' : '#ffffff',
         weight: isSelected ? 2 : 1,
       });
     });
-  }, [selectedWells, wellColors]);
+  }, [selectedWells, wellColors, rasterActiveWellIds, wellMeasurementCounts]);
 
   // Well labels
   useEffect(() => {

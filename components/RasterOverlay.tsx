@@ -561,6 +561,47 @@ const RasterOverlay: React.FC<RasterOverlayProps> = ({
 
   const activeRampName = COLOR_RAMPS.find(r => r.id === selectedRamp)?.name || 'RYGB';
 
+  // --- Cursor value tooltip ---
+  const [cursorValue, setCursorValue] = useState<{ x: number; y: number; val: number } | null>(null);
+
+  useEffect(() => {
+    const onMouseMove = (e: L.LeafletMouseEvent) => {
+      const { lat, lng } = e.latlng;
+      const col = Math.floor((lng - minLng) / dx);
+      const row = Math.floor((lat - minLat) / dy);
+
+      if (col < 0 || col >= nx || row < 0 || row >= ny) {
+        setCursorValue(null);
+        return;
+      }
+
+      const idx = row * nx + col;
+      if (mask[idx] === 0) {
+        setCursorValue(null);
+        return;
+      }
+
+      const frame = frames[frameIdx];
+      const val = frame?.values[idx];
+      if (val === null || val === undefined) {
+        setCursorValue(null);
+        return;
+      }
+
+      const containerPt = map.latLngToContainerPoint(e.latlng);
+      setCursorValue({ x: containerPt.x, y: containerPt.y, val });
+    };
+
+    const onMouseOut = () => setCursorValue(null);
+
+    map.on('mousemove', onMouseMove);
+    map.on('mouseout', onMouseOut);
+    return () => {
+      map.off('mousemove', onMouseMove);
+      map.off('mouseout', onMouseOut);
+    };
+  }, [map, frames, frameIdx, minLat, minLng, dx, dy, nx, ny, mask]);
+
   return (
     <>
       {/* Animation Controls */}
@@ -652,6 +693,18 @@ const RasterOverlay: React.FC<RasterOverlayProps> = ({
           {hasCrossSection ? 'Clear' : 'Cross Section'}
         </button>
       </div>
+
+      {/* Cursor value tooltip */}
+      {cursorValue && !crossSectionMode && (
+        <div
+          className="absolute z-[96] pointer-events-none"
+          style={{ left: cursorValue.x + 14, top: cursorValue.y - 10 }}
+        >
+          <div className="bg-black/80 text-white text-xs font-medium px-2 py-1 rounded shadow-lg whitespace-nowrap">
+            {cursorValue.val.toFixed(1)}
+          </div>
+        </div>
+      )}
 
       {/* Cross-section drawing overlay */}
       {crossSectionMode && !hasCrossSection && (

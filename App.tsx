@@ -572,6 +572,45 @@ const App: React.FC = () => {
       : [],
   [selectedWells, measurements, selectedDataType]);
 
+  // Compute which wells are active contributors for the current raster frame
+  const rasterActiveWellIds = useMemo<Set<string> | null>(() => {
+    if (!rasterResult || !rasterFrameDate) return null;
+
+    const opts = rasterResult.options;
+    const dataType = rasterResult.dataType;
+    const frameTs = rasterFrameDate.dateTs;
+
+    // Get temporal thresholds from options or legacy params
+    const minObs = opts?.temporal.minObservations ?? 2;
+    const minSpanYears = opts?.temporal.minTimeSpan ?? 0;
+
+    const active = new Set<string>();
+
+    for (const w of filteredWells) {
+      const wellMeas = measurements
+        .filter(m => m.wellId === w.id && m.dataType === dataType && !isNaN(new Date(m.date).getTime()))
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+      // Must meet minimum observations
+      if (wellMeas.length < Math.max(2, minObs)) continue;
+
+      const times = wellMeas.map(m => new Date(m.date).getTime());
+      const minT = times[0];
+      const maxT = times[times.length - 1];
+
+      // Must meet minimum time span
+      const spanYears = (maxT - minT) / (365.25 * 24 * 60 * 60 * 1000);
+      if (spanYears < minSpanYears) continue;
+
+      // Frame date must fall within this well's data range (no extrapolation)
+      if (frameTs < minT || frameTs > maxT) continue;
+
+      active.add(w.id);
+    }
+
+    return active;
+  }, [rasterResult, rasterFrameDate, filteredWells, measurements]);
+
   const allRasterResults = useMemo(() => {
     if (!rasterResult) return [];
     return [rasterResult, ...compareRasterResults];
@@ -1186,6 +1225,7 @@ const App: React.FC = () => {
               selectedDataType={selectedDataType}
               wellColors={showTrends ? trendColors : null}
               aquiferColors={showTrends && !selectedAquifer ? aquiferTrendColors : null}
+              rasterActiveWellIds={rasterActiveWellIds}
               onRegionClick={(r) => {
                 if (selectedRegion?.id === r.id) {
                   // Clicking the already-selected region: deselect aquifer (if any) or clear wells
