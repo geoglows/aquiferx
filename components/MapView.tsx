@@ -59,6 +59,7 @@ interface MapViewProps {
   onAquiferClick: (a: Aquifer) => void;
   onWellClick: (w: Well, shiftKey: boolean) => void;
   onWellBoxSelect: (wells: Well[]) => void;
+  onShowWellsChange?: (show: boolean) => void;
 }
 
 export interface MapViewHandle {
@@ -80,7 +81,8 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
   onRegionClick,
   onAquiferClick,
   onWellClick,
-  onWellBoxSelect
+  onWellBoxSelect,
+  onShowWellsChange
 }, ref) => {
   // Count measurements per well for the active data type (keyed by regionId:aquiferId:wellId)
   const wellMeasurementCounts = useMemo(() => {
@@ -132,7 +134,29 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
   const [showAquiferIds, setShowAquiferIds] = useState(false);
   const [showWellIds, setShowWellIds] = useState(false);
   const [showWellNames, setShowWellNames] = useState(false);
+  const [showWells, setShowWells] = useState(true);
   const [labelFontSize, setLabelFontSize] = useState(9);
+
+  // Toggle well layer visibility on the map
+  useEffect(() => {
+    if (!mapRef.current) return;
+    if (showWells) {
+      if (wellLayerRef.current && !mapRef.current.hasLayer(wellLayerRef.current)) {
+        wellLayerRef.current.addTo(mapRef.current);
+      }
+      if (wellLabelLayerRef.current && !mapRef.current.hasLayer(wellLabelLayerRef.current)) {
+        wellLabelLayerRef.current.addTo(mapRef.current);
+      }
+    } else {
+      if (wellLayerRef.current && mapRef.current.hasLayer(wellLayerRef.current)) {
+        wellLayerRef.current.removeFrom(mapRef.current);
+      }
+      if (wellLabelLayerRef.current && mapRef.current.hasLayer(wellLabelLayerRef.current)) {
+        wellLabelLayerRef.current.removeFrom(mapRef.current);
+      }
+    }
+    onShowWellsChange?.(showWells);
+  }, [showWells, onShowWellsChange]);
 
   // Box-drag selection state
   const [shiftHeld, setShiftHeld] = useState(false);
@@ -597,6 +621,12 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
           <label className="flex items-center gap-1 cursor-pointer">
             <input type="checkbox" checked={showAquiferIds} onChange={(e) => setShowAquiferIds(e.target.checked)} className="w-3 h-3" />
             <span className="text-xs text-slate-600">Aquifer IDs</span>
+          </label>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1 cursor-pointer">
+            <input type="checkbox" checked={showWells} onChange={(e) => setShowWells(e.target.checked)} className="w-3 h-3" />
+            <span className="text-xs text-slate-600">Wells</span>
           </label>
           <label className="flex items-center gap-1 cursor-pointer">
             <input type="checkbox" checked={showWellNames} onChange={(e) => setShowWellNames(e.target.checked)} className="w-3 h-3" />
