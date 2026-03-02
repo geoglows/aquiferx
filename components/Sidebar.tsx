@@ -313,7 +313,15 @@ const Sidebar: React.FC<SidebarProps> = ({
                     <div className="relative">
                       <button
                         onClick={() => {
-                          if (!isEditing) setSelectedAquifer(isSelected ? null : a);
+                          if (!isEditing) {
+                            const selecting = !isSelected;
+                            setSelectedAquifer(selecting ? a : null);
+                            if (selecting && hasRasters) {
+                              setExpandedAquiferIds(new Set([a.id]));
+                            } else {
+                              setExpandedAquiferIds(new Set());
+                            }
+                          }
                         }}
                         className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all flex items-center group ${
                           isSelected
