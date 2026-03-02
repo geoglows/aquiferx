@@ -61,45 +61,65 @@ function buildKrigingMatrix(
   return K;
 }
 
-// Solve linear system Ax=b using Gaussian elimination with partial pivoting
-function solveLinearSystem(A: number[][], b: number[]): number[] {
+// LU decomposition with partial pivoting — O(n³) done once
+// Returns { LU, perm } where LU stores L (below diagonal) and U (on/above diagonal)
+function luDecompose(A: number[][]): { LU: Float64Array[]; perm: Int32Array } {
   const n = A.length;
-  const aug: number[][] = A.map((row, i) => [...row, b[i]]);
+  const LU: Float64Array[] = Array.from({ length: n }, (_, i) => Float64Array.from(A[i]));
+  const perm = new Int32Array(n);
+  for (let i = 0; i < n; i++) perm[i] = i;
 
   for (let col = 0; col < n; col++) {
     // Partial pivoting
     let maxRow = col;
-    let maxVal = Math.abs(aug[col][col]);
+    let maxVal = Math.abs(LU[col][col]);
     for (let row = col + 1; row < n; row++) {
-      if (Math.abs(aug[row][col]) > maxVal) {
-        maxVal = Math.abs(aug[row][col]);
-        maxRow = row;
-      }
+      const v = Math.abs(LU[row][col]);
+      if (v > maxVal) { maxVal = v; maxRow = row; }
     }
     if (maxRow !== col) {
-      [aug[col], aug[maxRow]] = [aug[maxRow], aug[col]];
+      const tmp = LU[col]; LU[col] = LU[maxRow]; LU[maxRow] = tmp;
+      const tp = perm[col]; perm[col] = perm[maxRow]; perm[maxRow] = tp;
     }
 
-    const pivot = aug[col][col];
+    const pivot = LU[col][col];
     if (Math.abs(pivot) < 1e-12) continue;
 
-    // Eliminate below
     for (let row = col + 1; row < n; row++) {
-      const factor = aug[row][col] / pivot;
-      for (let j = col; j <= n; j++) {
-        aug[row][j] -= factor * aug[col][j];
+      const factor = LU[row][col] / pivot;
+      LU[row][col] = factor; // store L multiplier in-place
+      for (let j = col + 1; j < n; j++) {
+        LU[row][j] -= factor * LU[col][j];
       }
     }
   }
 
-  // Back substitution
-  const x = new Array(n).fill(0);
+  return { LU, perm };
+}
+
+// Solve using pre-computed LU factorization — O(n²) per right-hand side
+function luSolve(LU: Float64Array[], perm: Int32Array, b: number[]): number[] {
+  const n = LU.length;
+
+  // Apply permutation: y = P * b
+  const y = new Float64Array(n);
+  for (let i = 0; i < n; i++) y[i] = b[perm[i]];
+
+  // Forward substitution: L * z = y
+  for (let i = 1; i < n; i++) {
+    let sum = y[i];
+    const row = LU[i];
+    for (let j = 0; j < i; j++) sum -= row[j] * y[j];
+    y[i] = sum;
+  }
+
+  // Back substitution: U * x = z
+  const x = new Array(n);
   for (let i = n - 1; i >= 0; i--) {
-    let sum = aug[i][n];
-    for (let j = i + 1; j < n; j++) {
-      sum -= aug[i][j] * x[j];
-    }
-    const diag = aug[i][i];
+    let sum = y[i];
+    const row = LU[i];
+    for (let j = i + 1; j < n; j++) sum -= row[j] * x[j];
+    const diag = row[i];
     x[i] = Math.abs(diag) < 1e-12 ? 0 : sum / diag;
   }
 
@@ -229,10 +249,11 @@ export function krigGrid(
   // Build distance matrix between wells
   const wellDists = buildDistanceMatrix(wLats, wLngs);
 
-  // Build the kriging matrix (covariance formulation)
+  // Build the kriging matrix and LU-decompose once (O(n³))
   const K = buildKrigingMatrix(wellDists, sill, range, nugget, model);
+  const { LU, perm } = luDecompose(K);
 
-  // For each grid cell, solve for weights and compute interpolated value
+  // For each grid cell, solve for weights via O(n²) LU back-substitution
   const result: (number | null)[] = new Array(gridLats.length);
   const minVal = Math.min(...wValues);
   const maxVal = Math.max(...wValues);
@@ -254,8 +275,8 @@ export function krigGrid(
     }
     rhs[n] = 1;
 
-    // Solve for weights (copy K since solver modifies in-place)
-    const weights = solveLinearSystem(K.map(row => [...row]), rhs);
+    // Solve using pre-computed LU factorization
+    const weights = luSolve(LU, perm, rhs);
 
     // Interpolated value = weighted sum of well values
     let val = 0;

@@ -335,22 +335,36 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
       return { label: bin.label, count: wellsInBin.size, startTs: bin.start.getTime() };
     }).filter(b => b.startTs >= allMin - 365 * 86400000 && b.startTs <= allMax + 365 * 86400000);
 
-    // Find default start/end based on 10-well threshold
-    const threshold = 10;
-    let firstAbove = -1, lastAbove = -1;
-    for (let i = 0; i < densityData.length; i++) {
-      if (densityData[i].count >= threshold) {
-        if (firstAbove === -1) firstAbove = i;
-        lastAbove = i;
+    // Compute per-well time series span [minDate, maxDate]
+    const wellSpans: { min: number; max: number }[] = [];
+    for (const [, dates] of byWellDate) {
+      let wMin = Infinity, wMax = -Infinity;
+      for (const d of dates) {
+        const t = new Date(d).getTime();
+        if (!isNaN(t)) { if (t < wMin) wMin = t; if (t > wMax) wMax = t; }
+      }
+      if (wMin < Infinity) wellSpans.push({ min: wMin, max: wMax });
+    }
+
+    // Find default start/end: first/last Jan 1 where ≥5% of wells (min 10) have spanning coverage
+    const threshold = Math.max(10, Math.ceil(wellSpans.length * 0.05));
+    let defStartYear = -1, defEndYear = -1;
+    for (let y = minYear; y <= maxYear; y++) {
+      const jan1 = new Date(y, 0, 1).getTime();
+      let spanning = 0;
+      for (const span of wellSpans) {
+        if (span.min <= jan1 && span.max >= jan1) spanning++;
+      }
+      if (spanning >= threshold) {
+        if (defStartYear === -1) defStartYear = y;
+        defEndYear = y;
       }
     }
 
     let defStart: string, defEnd: string;
-    if (firstAbove >= 0) {
-      defStart = `${new Date(densityData[firstAbove].startTs).getFullYear()}-01-01`;
-      const endBin = densityData[lastAbove];
-      const endDate = new Date(endBin.startTs);
-      defEnd = endDate.getMonth() >= 6 ? `${endDate.getFullYear() + 1}-01-01` : `${endDate.getFullYear()}-07-01`;
+    if (defStartYear >= 0) {
+      defStart = `${defStartYear}-01-01`;
+      defEnd = `${defEndYear}-01-01`;
     } else {
       defStart = minDateStr;
       defEnd = maxDateStr;
@@ -601,11 +615,27 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className={labelCls}>Start Date</label>
-                  <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className={inputCls} />
+                  <div className="flex items-center gap-1">
+                    <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className={inputCls + ' flex-1'} />
+                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => { const y = parseInt(startDate); if (!isNaN(y)) setStartDate(`${y - 1}-01-01`); }}>
+                      <svg width="14" height="14" viewBox="0 0 14 14"><path d="M9 2L4 7l5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </button>
+                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => { const y = parseInt(startDate); if (!isNaN(y)) setStartDate(`${y + 1}-01-01`); }}>
+                      <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 2l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label className={labelCls}>End Date</label>
-                  <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className={inputCls} />
+                  <div className="flex items-center gap-1">
+                    <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className={inputCls + ' flex-1'} />
+                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => { const y = parseInt(endDate); if (!isNaN(y)) setEndDate(`${y - 1}-01-01`); }}>
+                      <svg width="14" height="14" viewBox="0 0 14 14"><path d="M9 2L4 7l5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </button>
+                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => { const y = parseInt(endDate); if (!isNaN(y)) setEndDate(`${y + 1}-01-01`); }}>
+                      <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 2l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label className={labelCls}>Resolution (columns)</label>
