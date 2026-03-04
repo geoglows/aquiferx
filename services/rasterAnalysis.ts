@@ -5,7 +5,7 @@ import {
   ImputationModelResult,
 } from '../types';
 import { isPointInGeoJSON } from '../utils/geo';
-import { interpolatePCHIP, interpolateLinear, kernelSmooth } from '../utils/interpolation';
+import { interpolatePCHIP, interpolateLinear, kernelSmooth, smoothModelCombined } from '../utils/interpolation';
 import { krigGrid, estimateVariogramParams } from './kriging';
 import { idwGrid } from './idw';
 import { slugify } from '../utils/strings';
@@ -150,6 +150,58 @@ export async function runRasterAnalysis(
           interpValues[validIndices[i]] = interpolated[i];
         }
       }
+
+      wellInterp.set(wellId, { well, values: interpValues });
+    }
+  } else if ((temporal.method === 'model-direct' || temporal.method === 'model-mavg') && temporal.modelFilePath) {
+    // Model-based: direct lookup or smoothed moving average
+    onProgress('Loading imputation model...', 5);
+    await yieldToUI();
+
+    const modelResp = await fetch(`/data/${temporal.modelFilePath}`);
+    if (!modelResp.ok) throw new Error(`Failed to load model: ${temporal.modelFilePath}`);
+    const modelResult: ImputationModelResult = await modelResp.json();
+
+    // Group model data by well
+    const modelByWell = new Map<string, { date: string; combined: number }[]>();
+    for (const row of modelResult.data) {
+      if (!modelByWell.has(row.well_id)) modelByWell.set(row.well_id, []);
+      modelByWell.get(row.well_id)!.push({ date: row.date, combined: row.combined });
+    }
+
+    const modelWellIds = wells.map(w => w.id).filter(id => modelByWell.has(id));
+
+    for (let wi = 0; wi < modelWellIds.length; wi++) {
+      const wellId = modelWellIds[wi];
+      const well = wells.find(w => w.id === wellId)!;
+      const rows = modelByWell.get(wellId)!;
+
+      onProgress(`Model ${temporal.method === 'model-direct' ? 'direct' : 'MA'} well ${wi + 1}/${modelWellIds.length}...`, 5 + (wi / modelWellIds.length) * 25);
+      if (wi % 5 === 0) await yieldToUI();
+
+      // Build timestamp→value map (direct or smoothed)
+      let tsMap: Map<number, number>;
+
+      if (temporal.method === 'model-mavg') {
+        const { dates, values } = smoothModelCombined(rows, temporal.maWindow);
+        tsMap = new Map();
+        for (let i = 0; i < dates.length; i++) tsMap.set(dates[i], values[i]);
+      } else {
+        // model-direct: exact lookup by timestamp
+        tsMap = new Map();
+        for (const r of rows) tsMap.set(new Date(r.date).getTime(), r.combined);
+      }
+
+      // Map interval timestamps to values via exact lookup or nearest 1st-of-month
+      const interpValues: (number | null)[] = intervalTimestamps.map(t => {
+        const exact = tsMap.get(t);
+        if (exact !== undefined) return exact;
+        // Try snapping to 1st of month (intervals should already align)
+        const d = new Date(t);
+        const snap = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+        const snapped = tsMap.get(snap);
+        return snapped !== undefined ? snapped : null;
+      });
 
       wellInterp.set(wellId, { well, values: interpValues });
     }
@@ -335,7 +387,7 @@ export async function runRasterAnalysis(
     title,
     minObservations: temporal.minObservations,
     minTimeSpanYears: temporal.minTimeSpan,
-    smoothingMethod: temporal.method === 'model' ? 'pchip' : temporal.method,
+    smoothingMethod: (temporal.method === 'model' || temporal.method === 'model-direct' || temporal.method === 'model-mavg') ? 'pchip' : temporal.method,
     smoothingMonths: temporal.maWindow,
   };
 

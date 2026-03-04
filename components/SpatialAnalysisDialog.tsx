@@ -44,10 +44,11 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
   const [interval, setInterval] = useState<'3months' | '6months' | '1year'>('1year');
   const [minObs, setMinObs] = useState(5);
   const [minSpanYears, setMinSpanYears] = useState(5);
-  const [smoothingMethod, setSmoothingMethod] = useState<'pchip' | 'linear' | 'moving-average' | 'model'>('pchip');
+  const [smoothingMethod, setSmoothingMethod] = useState<'pchip' | 'linear' | 'moving-average' | 'model' | 'model-direct' | 'model-mavg'>('pchip');
   const [smoothingMonths, setSmoothingMonths] = useState(12);
   const [selectedModelCode, setSelectedModelCode] = useState<string>('');
   const [selectedModelFilePath, setSelectedModelFilePath] = useState<string>('');
+  const [dataSource, setDataSource] = useState<'raw' | 'model'>('raw');
 
   // --- Spatial options (Step 2) ---
   const [spatialMethod, setSpatialMethod] = useState<SpatialMethod>('kriging');
@@ -185,6 +186,53 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(defaultEndDate);
 
+  // Model date range for clamping
+  const modelDateRange = useMemo(() => {
+    if (dataSource !== 'model' || !selectedModelCode || !availableModels) return null;
+    const m = availableModels.find(mm => mm.code === selectedModelCode);
+    if (!m?.params) return null;
+    return { min: m.params.startDate, max: m.params.endDate };
+  }, [dataSource, selectedModelCode, availableModels]);
+
+  // Show data source toggle only when WTE + models exist
+  const showDataSource = dataType.code === 'wte' && availableModels && availableModels.length > 0;
+
+  // Handle switching between raw and model data source
+  const handleDataSourceChange = useCallback((source: 'raw' | 'model') => {
+    setDataSource(source);
+    if (source === 'model') {
+      // Auto-select first model if none selected
+      if (availableModels && availableModels.length > 0) {
+        const m = availableModels[0];
+        setSelectedModelCode(m.code);
+        setSelectedModelFilePath(m.filePath);
+        if (m.params) {
+          setStartDate(m.params.startDate);
+          setEndDate(m.params.endDate);
+        }
+      }
+      setSmoothingMethod('model-direct');
+    } else {
+      setSmoothingMethod('pchip');
+      setStartDate(defaultStartDate);
+      setEndDate(defaultEndDate);
+    }
+  }, [availableModels, defaultStartDate, defaultEndDate]);
+
+  // When model selection changes, re-clamp dates
+  const handleModelChange = useCallback((code: string) => {
+    setSelectedModelCode(code);
+    const m = availableModels?.find(mm => mm.code === code);
+    if (m) {
+      setSelectedModelFilePath(m.filePath);
+      if (m.params) {
+        // Clamp dates to new model range
+        setStartDate(prev => prev < m.params.startDate ? m.params.startDate : prev > m.params.endDate ? m.params.endDate : prev);
+        setEndDate(prev => prev > m.params.endDate ? m.params.endDate : prev < m.params.startDate ? m.params.startDate : prev);
+      }
+    }
+  }, [availableModels]);
+
   const code = slugify(title);
   const hasConflict = existingCodes.includes(code);
 
@@ -212,7 +260,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
         interval,
         minObservations: minObs,
         minTimeSpan: minSpanYears,
-        ...(smoothingMethod === 'model' ? { modelCode: selectedModelCode, modelFilePath: selectedModelFilePath } : {}),
+        ...((smoothingMethod === 'model' || smoothingMethod === 'model-direct' || smoothingMethod === 'model-mavg') ? { modelCode: selectedModelCode, modelFilePath: selectedModelFilePath } : {}),
       },
       spatial: {
         method: spatialMethod,
@@ -366,6 +414,38 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
           {/* ===== STEP 1: Temporal ===== */}
           {step === 1 && (
             <div className="space-y-5">
+              {/* Data Source selector (WTE + models only) */}
+              {showDataSource && (
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700 mb-2">Data Source</h3>
+                  <div className="flex items-center gap-3">
+                    <div className="flex gap-2">
+                      <button onClick={() => handleDataSourceChange('raw')} className={radioCls(dataSource === 'raw')}>
+                        Raw Data
+                      </button>
+                      <button onClick={() => handleDataSourceChange('model')} className={radioCls(dataSource === 'model')}>
+                        Imputed Data
+                      </button>
+                    </div>
+                    {dataSource === 'model' && availableModels && (
+                      availableModels.length === 1 ? (
+                        <span className="text-xs text-slate-500">{availableModels[0].title}</span>
+                      ) : (
+                        <select
+                          value={selectedModelCode}
+                          onChange={e => handleModelChange(e.target.value)}
+                          className="px-2 py-1 border border-slate-300 rounded-md text-xs focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                        >
+                          {availableModels.map(m => (
+                            <option key={m.code} value={m.code}>{m.title}</option>
+                          ))}
+                        </select>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* PCHIP Preview */}
               {wteMeasurements.length > 0 && (
                 <div>
@@ -378,6 +458,10 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                       wteMeasurements={wteMeasurements}
                       startTs={startTs}
                       endTs={endTs}
+                      gldasRange={modelDateRange ? {
+                        min: new Date(modelDateRange.min).getTime(),
+                        max: new Date(modelDateRange.max).getTime(),
+                      } : undefined}
                     />
                   </div>
                 </div>
@@ -426,11 +510,23 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                 <div>
                   <label className={labelCls}>Start Date</label>
                   <div className="flex items-center gap-1">
-                    <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className={inputCls + ' flex-1'} />
-                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => { const y = parseInt(startDate); if (!isNaN(y)) setStartDate(`${y - 1}-01-01`); }}>
+                    <input type="date" value={startDate}
+                      min={modelDateRange?.min} max={modelDateRange?.max}
+                      onChange={e => setStartDate(e.target.value)} className={inputCls + ' flex-1'} />
+                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
+                      const y = parseInt(startDate); if (isNaN(y)) return;
+                      let next = `${y - 1}-01-01`;
+                      if (modelDateRange && next < modelDateRange.min) next = modelDateRange.min;
+                      setStartDate(next);
+                    }}>
                       <svg width="14" height="14" viewBox="0 0 14 14"><path d="M9 2L4 7l5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </button>
-                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => { const y = parseInt(startDate); if (!isNaN(y)) setStartDate(`${y + 1}-01-01`); }}>
+                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
+                      const y = parseInt(startDate); if (isNaN(y)) return;
+                      let next = `${y + 1}-01-01`;
+                      if (modelDateRange && next > modelDateRange.max) next = modelDateRange.max;
+                      setStartDate(next);
+                    }}>
                       <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 2l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </button>
                   </div>
@@ -438,11 +534,23 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                 <div>
                   <label className={labelCls}>End Date</label>
                   <div className="flex items-center gap-1">
-                    <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className={inputCls + ' flex-1'} />
-                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => { const y = parseInt(endDate); if (!isNaN(y)) setEndDate(`${y - 1}-01-01`); }}>
+                    <input type="date" value={endDate}
+                      min={modelDateRange?.min} max={modelDateRange?.max}
+                      onChange={e => setEndDate(e.target.value)} className={inputCls + ' flex-1'} />
+                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
+                      const y = parseInt(endDate); if (isNaN(y)) return;
+                      let next = `${y - 1}-01-01`;
+                      if (modelDateRange && next < modelDateRange.min) next = modelDateRange.min;
+                      setEndDate(next);
+                    }}>
                       <svg width="14" height="14" viewBox="0 0 14 14"><path d="M9 2L4 7l5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </button>
-                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => { const y = parseInt(endDate); if (!isNaN(y)) setEndDate(`${y + 1}-01-01`); }}>
+                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
+                      const y = parseInt(endDate); if (isNaN(y)) return;
+                      let next = `${y + 1}-01-01`;
+                      if (modelDateRange && next > modelDateRange.max) next = modelDateRange.max;
+                      setEndDate(next);
+                    }}>
                       <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 2l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </button>
                   </div>
@@ -452,24 +560,30 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                   <input type="number" value={resolution} min={10} max={500} step={10}
                     onChange={e => setResolution(Math.max(10, parseInt(e.target.value) || 100))} className={inputCls} />
                 </div>
-                <div>
-                  <label className={labelCls}>Min Observations / Well</label>
-                  <input type="number" value={minObs} min={2} max={100} step={1}
-                    onChange={e => setMinObs(Math.max(2, parseInt(e.target.value) || 5))} className={inputCls} />
-                </div>
-                <div>
-                  <label className={labelCls}>Min Time Span / Well (years)</label>
-                  <input type="number" value={minSpanYears} min={0} max={50} step={1}
-                    onChange={e => setMinSpanYears(Math.max(0, parseFloat(e.target.value) || 5))} className={inputCls} />
-                </div>
-                <div className="col-span-2">
-                  <div className="flex items-center gap-3 text-xs">
-                    <span className="text-emerald-600 font-medium">{qualifiedWellCount} wells qualify</span>
-                    {omittedWellCount > 0 && (
-                      <span className="text-slate-400">{omittedWellCount} omitted</span>
-                    )}
+                {dataSource !== 'model' && (
+                  <div>
+                    <label className={labelCls}>Min Observations / Well</label>
+                    <input type="number" value={minObs} min={2} max={100} step={1}
+                      onChange={e => setMinObs(Math.max(2, parseInt(e.target.value) || 5))} className={inputCls} />
                   </div>
-                </div>
+                )}
+                {dataSource !== 'model' && (
+                  <div>
+                    <label className={labelCls}>Min Time Span / Well (years)</label>
+                    <input type="number" value={minSpanYears} min={0} max={50} step={1}
+                      onChange={e => setMinSpanYears(Math.max(0, parseFloat(e.target.value) || 5))} className={inputCls} />
+                  </div>
+                )}
+                {dataSource !== 'model' && (
+                  <div className="col-span-2">
+                    <div className="flex items-center gap-3 text-xs">
+                      <span className="text-emerald-600 font-medium">{qualifiedWellCount} wells qualify</span>
+                      {omittedWellCount > 0 && (
+                        <span className="text-slate-400">{omittedWellCount} omitted</span>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div>
                   <label className={labelCls}>Interval</label>
                   <select value={interval} onChange={e => setInterval(e.target.value as any)} className={inputCls}>
@@ -480,42 +594,20 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                 </div>
                 <div>
                   <label className={labelCls}>Temporal Method</label>
-                  <select value={smoothingMethod} onChange={e => {
-                    const val = e.target.value as any;
-                    setSmoothingMethod(val);
-                    if (val === 'model' && availableModels && availableModels.length > 0 && !selectedModelCode) {
-                      setSelectedModelCode(availableModels[0].code);
-                      setSelectedModelFilePath(availableModels[0].filePath);
-                    }
-                  }} className={inputCls}>
-                    <option value="pchip">PCHIP</option>
-                    <option value="linear">Linear</option>
-                    <option value="moving-average">Moving Average</option>
-                    {availableModels && availableModels.length > 0 && (
-                      <option value="model">Model (Imputation)</option>
-                    )}
-                  </select>
-                </div>
-                {smoothingMethod === 'model' && availableModels && availableModels.length > 0 && (
-                  <div>
-                    <label className={labelCls}>Imputation Model</label>
-                    <select
-                      value={selectedModelCode}
-                      onChange={e => {
-                        const code = e.target.value;
-                        setSelectedModelCode(code);
-                        const m = availableModels.find(mm => mm.code === code);
-                        if (m) setSelectedModelFilePath(m.filePath);
-                      }}
-                      className={inputCls}
-                    >
-                      {availableModels.map(m => (
-                        <option key={m.code} value={m.code}>{m.title}</option>
-                      ))}
+                  {dataSource === 'model' ? (
+                    <select value={smoothingMethod} onChange={e => setSmoothingMethod(e.target.value as any)} className={inputCls}>
+                      <option value="model-direct">Direct</option>
+                      <option value="model-mavg">Moving Average</option>
                     </select>
-                  </div>
-                )}
-                {smoothingMethod === 'moving-average' && (
+                  ) : (
+                    <select value={smoothingMethod} onChange={e => setSmoothingMethod(e.target.value as any)} className={inputCls}>
+                      <option value="pchip">PCHIP</option>
+                      <option value="linear">Linear</option>
+                      <option value="moving-average">Moving Average</option>
+                    </select>
+                  )}
+                </div>
+                {(smoothingMethod === 'moving-average' || smoothingMethod === 'model-mavg') && (
                   <div>
                     <label className={labelCls}>MA Window (months)</label>
                     <input type="number" value={smoothingMonths} min={1} max={60} step={1}
@@ -718,7 +810,14 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                   <div><span className="text-slate-400">Dates:</span> {startDate} to {endDate}</div>
                   <div><span className="text-slate-400">Interval:</span> {interval}</div>
                   <div><span className="text-slate-400">Resolution:</span> {resolution} cols</div>
-                  <div><span className="text-slate-400">Temporal:</span> {smoothingMethod === 'pchip' ? 'PCHIP' : smoothingMethod === 'linear' ? 'Linear' : smoothingMethod === 'model' ? `Model (${selectedModelCode})` : `MA ${smoothingMonths}mo`}</div>
+                  <div><span className="text-slate-400">Temporal:</span> {
+                    smoothingMethod === 'pchip' ? 'PCHIP' :
+                    smoothingMethod === 'linear' ? 'Linear' :
+                    smoothingMethod === 'model' ? `Model (${selectedModelCode})` :
+                    smoothingMethod === 'model-direct' ? `Model Direct (${selectedModelCode})` :
+                    smoothingMethod === 'model-mavg' ? `Model MA ${smoothingMonths}mo (${selectedModelCode})` :
+                    `MA ${smoothingMonths}mo`
+                  }</div>
                   <div><span className="text-slate-400">Wells:</span> {qualifiedWellCount} qualified</div>
                   <div><span className="text-slate-400">Method:</span> {spatialMethod === 'kriging' ? `Kriging (${variogramModel})` : `IDW (p=${idwExponent})`}</div>
                   {spatialMethod === 'kriging' && (

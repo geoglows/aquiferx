@@ -93,7 +93,7 @@ export type IdwNeighborMode = 'all' | 'nearest';
 export type SpatialMethod = 'kriging' | 'idw';
 
 export interface TemporalOptions {
-  method: 'pchip' | 'linear' | 'moving-average' | 'model';
+  method: 'pchip' | 'linear' | 'moving-average' | 'model' | 'model-direct' | 'model-mavg';
   maWindow: number;
   startDate: string;
   endDate: string;
