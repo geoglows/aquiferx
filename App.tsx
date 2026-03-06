@@ -1249,7 +1249,7 @@ const App: React.FC = () => {
               }}
               className="font-semibold text-slate-800 hover:text-blue-600 transition-colors"
             >
-              Groundwater Explorer
+              Home
             </button>
             {selectedRegion && (
               <>

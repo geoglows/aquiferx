@@ -164,7 +164,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
 
   useEffect(() => {
     if (!mapRef.current) {
-      mapRef.current = L.map('map-container', { boxZoom: false }).setView([37.1, -113.5], 10);
+      mapRef.current = L.map('map-container', { boxZoom: false, zoomSnap: 0.5, zoomDelta: 0.5 }).setView([39, -98], 4);
 
       const basemap = BASEMAPS[currentBasemap];
       basemapLayerRef.current = L.tileLayer(basemap.url, {
@@ -292,8 +292,16 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
     });
 
     if (!selectedRegion && regions.length > 0) {
-      const bounds = regionLayerRef.current.getBounds();
-      if (bounds.isValid()) mapRef.current.fitBounds(bounds, { padding: [20, 20] });
+      const allBounds = L.latLngBounds(
+        regions.map(r => [
+          L.latLng(r.bounds[0], r.bounds[1]),
+          L.latLng(r.bounds[2], r.bounds[3])
+        ]).flat()
+      );
+      if (allBounds.isValid()) {
+        const zoom = Math.max(mapRef.current.getBoundsZoom(allBounds, false, L.point(20, 20)), 2.5);
+        mapRef.current.setView(allBounds.getCenter(), zoom, { animate: false });
+      }
     }
   }, [regions, selectedRegion]);
 
