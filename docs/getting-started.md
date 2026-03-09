@@ -7,6 +7,33 @@ This guide covers everything you need to install AquiferX and begin working with
 - **Node.js** 18 or later
 - **Modern web browser**: Chrome, Firefox, Edge, or Safari (latest two major versions)
 - **Operating system**: Windows, macOS, or Linux
+- **Git** — required to clone the repository
+
+### Installing Git
+
+If you don't already have Git installed, follow the instructions for your operating system:
+
+=== "Windows"
+
+1. Download the installer from [git-scm.com](https://git-scm.com/download/win).
+2. Run the installer and accept the default settings.
+3. After installation, open **Git Bash** or **Command Prompt** and verify:
+
+        git --version
+
+=== "macOS"
+
+Open **Terminal** and run:
+
+    git --version
+
+If Git is not installed, macOS will prompt you to install the Xcode Command Line Tools. Click **Install** and follow the prompts. Alternatively, install via [Homebrew](https://brew.sh/):
+
+    brew install git
+
+After installing, verify Git is available by running:
+
+    git --version
 
 ## Installation
 
@@ -24,6 +51,11 @@ This guide covers everything you need to install AquiferX and begin working with
         npm run dev
 
    The app starts on [http://localhost:3000](http://localhost:3000).
+
+The steps above are for the fist installation only. After the initial installation, you simply need to navigate to the `aquiferx` folder and run `npm run dev` to start the app:
+
+        cd aquiferx
+        npm run dev
 
 ## First Launch
 
