@@ -59,6 +59,12 @@ Wells appear as circles on the map. Their color reflects the number of available
 
 Toggle aquifer labels and well labels using the controls in the toolbar. Labels can show the well ID or name, and you can adjust the font size (9–16px).
 
+## Well Search
+
+When an aquifer is selected, a search bar appears in the top-left corner of the map. Type a well name or ID to filter matching wells — up to 8 results appear in a dropdown. Use the <kbd>Arrow</kbd> keys to navigate the list and <kbd>Enter</kbd> to select, or click a result directly. Press <kbd>Escape</kbd> to dismiss the search.
+
+Selecting a well from the search results flies the map to that well's location and briefly highlights it with a shrinking red ring animation.
+
 ## Well Selection
 
 AquiferX supports several ways to select wells for viewing in the time series chart.
