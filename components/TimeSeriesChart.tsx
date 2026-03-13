@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceLine
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceLine, ReferenceArea
 } from 'recharts';
 import { Measurement, Well, DataType } from '../types';
 import { interpolatePCHIP, kernelSmooth } from '../utils/interpolation';
@@ -29,6 +29,7 @@ interface TimeSeriesChartProps {
   referenceDate?: number;
   rasterTimeRange?: [number, number];
   trendWindowStart?: number;
+  dateFilter?: { minYear: number; maxYear: number } | null;
   onEditMeasurement?: (wellId: string, date: number, newValue: number) => void;
   onDeleteMeasurement?: (wellId: string, date: number) => void;
   onEscapeUnhandled?: () => void;
@@ -47,7 +48,7 @@ interface DotPosition extends SelectedPoint {
 
 const HIT_RADIUS = 15;
 
-const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selectedWells, showGSE, showTrendLine, showSmooth, smoothMonths, usePCHIP = true, dataType, lengthUnit = 'ft', referenceDate, rasterTimeRange, trendWindowStart, onEditMeasurement, onDeleteMeasurement, onEscapeUnhandled }) => {
+const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selectedWells, showGSE, showTrendLine, showSmooth, smoothMonths, usePCHIP = true, dataType, lengthUnit = 'ft', referenceDate, rasterTimeRange, trendWindowStart, dateFilter, onEditMeasurement, onDeleteMeasurement, onEscapeUnhandled }) => {
   const [selectedPoint, setSelectedPoint] = useState<SelectedPoint | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [editModal, setEditModal] = useState(false);
@@ -723,6 +724,16 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
           })}
           {referenceDate != null && (
             <ReferenceLine x={referenceDate} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={1.5} />
+          )}
+          {dateFilter && (
+            <ReferenceArea
+              x1={new Date(dateFilter.minYear, 0, 1).getTime()}
+              x2={new Date(dateFilter.maxYear, 11, 31).getTime()}
+              fillOpacity={0.15}
+              strokeOpacity={0.3}
+              ifOverflow="extendDomain"
+              {...{ fill: '#9ca3af', stroke: '#9ca3af' } as any}
+            />
           )}
           {showTrendLine && trendData && wellIds.map((wellId) => {
             const line = trendData.get(wellId);

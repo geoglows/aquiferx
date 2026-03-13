@@ -55,6 +55,14 @@ Each basemap shows a thumbnail preview in the selector.
 
 Wells appear as circles on the map. Their color reflects the number of available measurements for the currently selected data type — lighter colors indicate fewer measurements, darker colors indicate more. A minimum observation threshold filter (in the toolbar) lets you hide wells with too few measurements.
 
+### Date Filter
+
+The **Filter dates** toggle in the map options panel lets you show only wells whose measurement date range overlaps a specified time window. When enabled, two year inputs appear for the minimum and maximum year. The min year defaults to the earliest measurement year in the data, and the max year defaults to the current year.
+
+A well passes the filter if its measurement span (earliest to latest) overlaps the filter range — the well does not need to have a measurement that falls directly within the range. For example, a well with measurements in 2000 and 2008 would pass a 2002–2005 filter because its span covers that period.
+
+The filter updates only after you enter a full 4-digit year, so typing intermediate digits does not cause wells to flicker on and off. When the date filter is active and you select a well, the time series chart displays a gray shaded band over the filter range for visual reference.
+
 ### Labels
 
 Toggle aquifer labels and well labels using the controls in the toolbar. Labels can show the well ID or name, and you can adjust the font size (9–16px).

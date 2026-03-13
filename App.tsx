@@ -214,6 +214,7 @@ const App: React.FC = () => {
   const [aquiferTrendColors, setAquiferTrendColors] = useState<Map<string, string> | null>(null);
   const [showTrends, setShowTrends] = useState(false);
   const [showWellsOnMap, setShowWellsOnMap] = useState(true);
+  const [dateFilter, setDateFilter] = useState<{ minYear: number; maxYear: number } | null>(null);
   const [showWellIdsOnMap, setShowWellIdsOnMap] = useState(false);
   const [trendWindowYears, setTrendWindowYears] = useState(10);
   const [selectedDataType, setSelectedDataType] = useState<string>('wte');
@@ -1403,6 +1404,7 @@ const App: React.FC = () => {
               onWellBoxSelect={handleWellBoxSelect}
               onShowWellsChange={setShowWellsOnMap}
               onShowWellIdsChange={setShowWellIdsOnMap}
+              onDateFilterChange={setDateFilter}
             />
             {/* Well legend — shown when aquifer selected, wells visible, and trends not active */}
             {selectedAquifer && showWellsOnMap && !(showTrends && (trendColors || aquiferTrendColors)) && (
@@ -1783,6 +1785,7 @@ const App: React.FC = () => {
                         referenceDate={rasterResult && rasterFrameDate ? rasterFrameDate.dateTs : undefined}
                         rasterTimeRange={rasterTimeRange}
                         trendWindowStart={showTrends ? Date.now() - trendWindowYears * MS_PER_YEAR : undefined}
+                        dateFilter={dateFilter}
                       />
                     ) : effectiveTab === 'crossSection' && crossSectionProfile ? (
                       <CrossSectionChart
@@ -1981,6 +1984,7 @@ const App: React.FC = () => {
             referenceDate={rasterResult && rasterFrameDate ? rasterFrameDate.dateTs : undefined}
             rasterTimeRange={rasterTimeRange}
             trendWindowStart={showTrends ? Date.now() - trendWindowYears * MS_PER_YEAR : undefined}
+            dateFilter={dateFilter}
             onEscapeUnhandled={() => setIsChartExpanded(false)}
           />
         </ExpandedChartWindow>

@@ -61,6 +61,7 @@ interface MapViewProps {
   onWellBoxSelect: (wells: Well[]) => void;
   onShowWellsChange?: (show: boolean) => void;
   onShowWellIdsChange?: (show: boolean) => void;
+  onDateFilterChange?: (filter: { minYear: number; maxYear: number } | null) => void;
 }
 
 export interface MapViewHandle {
@@ -84,7 +85,8 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
   onWellClick,
   onWellBoxSelect,
   onShowWellsChange,
-  onShowWellIdsChange
+  onShowWellIdsChange,
+  onDateFilterChange
 }, ref) => {
   // Count measurements per well for the active data type (keyed by regionId:aquiferId:wellId)
   const wellMeasurementCounts = useMemo(() => {
@@ -97,6 +99,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
     }
     return counts;
   }, [measurements, selectedDataType]);
+
   const mapRef = useRef<L.Map | null>(null);
 
   useImperativeHandle(ref, () => ({
@@ -137,7 +140,99 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
   const [showWellIds, setShowWellIds] = useState(false);
   const [showWellNames, setShowWellNames] = useState(false);
   const [showWells, setShowWells] = useState(true);
+  const [filterDatesEnabled, setFilterDatesEnabled] = useState(false);
+  const [filterMinYear, setFilterMinYear] = useState<string>('');
+  const [filterMaxYear, setFilterMaxYear] = useState<string>('');
+  // "Applied" values only update when input reaches 4 digits — avoids flicker mid-edit
+  const [appliedMinYear, setAppliedMinYear] = useState<number | null>(null);
+  const [appliedMaxYear, setAppliedMaxYear] = useState<number | null>(null);
+  const filterDatesInitialized = useRef(false);
   const [labelFontSize, setLabelFontSize] = useState(9);
+
+  // Compute default date filter bounds from measurements
+  const defaultFilterMinYear = useMemo(() => {
+    let earliest = Infinity;
+    for (const m of measurements) {
+      if (m.dataType !== selectedDataType) continue;
+      const y = new Date(m.date).getFullYear();
+      if (y < earliest) earliest = y;
+    }
+    return earliest === Infinity ? new Date().getFullYear() : earliest;
+  }, [measurements, selectedDataType]);
+
+  // Update applied values only when input is a valid 4-digit year
+  useEffect(() => {
+    if (filterMinYear.length === 4) {
+      const y = parseInt(filterMinYear);
+      if (!isNaN(y)) setAppliedMinYear(y);
+    }
+  }, [filterMinYear]);
+  useEffect(() => {
+    if (filterMaxYear.length === 4) {
+      const y = parseInt(filterMaxYear);
+      if (!isNaN(y)) setAppliedMaxYear(y);
+    }
+  }, [filterMaxYear]);
+
+  // Initialize date filter inputs with defaults when first enabled
+  useEffect(() => {
+    if (filterDatesEnabled && !filterDatesInitialized.current) {
+      filterDatesInitialized.current = true;
+      if (!filterMinYear) {
+        const defMin = String(defaultFilterMinYear);
+        setFilterMinYear(defMin);
+        setAppliedMinYear(defaultFilterMinYear);
+      }
+      if (!filterMaxYear) {
+        const curYear = new Date().getFullYear();
+        setFilterMaxYear(String(curYear));
+        setAppliedMaxYear(curYear);
+      }
+    }
+    if (!filterDatesEnabled) {
+      filterDatesInitialized.current = false;
+    }
+  }, [filterDatesEnabled]);
+
+  // Wells that pass the date filter (measurement span overlaps filter range)
+  const dateFilterPassingWells = useMemo(() => {
+    if (!filterDatesEnabled || (appliedMinYear == null && appliedMaxYear == null)) return null;
+    const filterMin = appliedMinYear != null ? new Date(appliedMinYear, 0, 1).getTime() : -Infinity;
+    const filterMax = appliedMaxYear != null ? new Date(appliedMaxYear, 11, 31, 23, 59, 59, 999).getTime() : Infinity;
+    // Compute each well's earliest and latest measurement dates
+    const wellMin = new Map<string, number>();
+    const wellMax = new Map<string, number>();
+    for (const m of measurements) {
+      if (m.dataType !== selectedDataType) continue;
+      const key = `${m.regionId}:${m.aquiferId}:${m.wellId}`;
+      const ts = new Date(m.date).getTime();
+      const curMin = wellMin.get(key);
+      if (curMin === undefined || ts < curMin) wellMin.set(key, ts);
+      const curMax = wellMax.get(key);
+      if (curMax === undefined || ts > curMax) wellMax.set(key, ts);
+    }
+    // A well passes if its [earliest, latest] range overlaps [filterMin, filterMax]
+    const passing = new Set<string>();
+    for (const [key, earliest] of wellMin) {
+      const latest = wellMax.get(key)!;
+      if (earliest <= filterMax && latest >= filterMin) {
+        passing.add(key);
+      }
+    }
+    return passing;
+  }, [measurements, selectedDataType, filterDatesEnabled, appliedMinYear, appliedMaxYear]);
+
+  // Notify parent of date filter changes
+  useEffect(() => {
+    if (filterDatesEnabled && (appliedMinYear != null || appliedMaxYear != null)) {
+      onDateFilterChange?.({
+        minYear: appliedMinYear ?? 1,
+        maxYear: appliedMaxYear ?? 9999,
+      });
+    } else {
+      onDateFilterChange?.(null);
+    }
+  }, [filterDatesEnabled, appliedMinYear, appliedMaxYear, onDateFilterChange]);
 
   // Toggle well layer visibility on the map
   useEffect(() => {
@@ -178,7 +273,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
     return visibleWellsRef.current
       .filter(w => w.name.toLowerCase().includes(q) || w.id.toLowerCase().includes(q))
       .slice(0, 8);
-  }, [wellSearchQuery, selectedAquifer, wells, minObs]);
+  }, [wellSearchQuery, selectedAquifer, wells, minObs, dateFilterPassingWells]);
 
   const flashWellRef = useRef<L.Marker | null>(null);
 
@@ -444,8 +539,10 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
     const visible: Well[] = [];
     if (selectedAquifer) {
       wells.forEach(w => {
-        const measurementCount = wellMeasurementCounts.get(`${w.regionId}:${w.aquiferId}:${w.id}`) || 0;
+        const wellKey = `${w.regionId}:${w.aquiferId}:${w.id}`;
+        const measurementCount = wellMeasurementCounts.get(wellKey) || 0;
         if (measurementCount < minObs) return;
+        if (dateFilterPassingWells && !dateFilterPassingWells.has(wellKey)) return;
         visible.push(w);
         const trendColor = wellColors?.get(w.id);
         // Color by measurement count: 0=red, 1=gray, 2+=blue
@@ -488,7 +585,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
       prevSelectedAquiferIdRef.current = null;
     }
     visibleWellsRef.current = visible;
-  }, [wells, selectedAquifer, wellMeasurementCounts, minObs, wellColors]);
+  }, [wells, selectedAquifer, wellMeasurementCounts, minObs, dateFilterPassingWells, wellColors]);
 
   // Update marker styles when selection or raster active wells change — no clearing/recreation
   useEffect(() => {
@@ -544,7 +641,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
       });
       wellLabelLayerRef.current?.addLayer(label);
     });
-  }, [showWellIds, showWellNames, selectedAquifer, wells, minObs, wellMeasurementCounts, labelFontSize]);
+  }, [showWellIds, showWellNames, selectedAquifer, wells, minObs, dateFilterPassingWells, wellMeasurementCounts, labelFontSize]);
 
   // Track shift key for box-drag overlay
   useEffect(() => {
@@ -743,6 +840,35 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
               className="w-12 text-xs text-center border border-slate-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
             />
           </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-1 cursor-pointer">
+            <input type="checkbox" checked={filterDatesEnabled} onChange={(e) => setFilterDatesEnabled(e.target.checked)} className="w-3 h-3" />
+            <span className="text-xs font-medium text-slate-600 whitespace-nowrap">Filter dates:</span>
+          </label>
+          <input
+            type="number"
+            min={1800}
+            max={2200}
+            step={1}
+            placeholder="min"
+            value={filterMinYear}
+            onChange={(e) => setFilterMinYear(e.target.value)}
+            disabled={!filterDatesEnabled}
+            className="w-14 text-xs text-center border border-slate-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:opacity-40"
+          />
+          <span className="text-xs text-slate-400">–</span>
+          <input
+            type="number"
+            min={1800}
+            max={2200}
+            step={1}
+            placeholder="max"
+            value={filterMaxYear}
+            onChange={(e) => setFilterMaxYear(e.target.value)}
+            disabled={!filterDatesEnabled}
+            className="w-14 text-xs text-center border border-slate-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:opacity-40"
+          />
         </div>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-1 cursor-pointer">
