@@ -29,3 +29,7 @@ AquiferX is designed for hydrogeologists, water resource engineers, researchers,
 ## Getting Started
 
 Ready to dive in? Head to the [Getting Started](getting-started.md) guide to install the app and load your first dataset. For a broader overview of the app's interface and capabilities, see the [Overview](overview.md) page.
+
+## License
+
+AquiferX is released under the [MIT License](../LICENSE).
