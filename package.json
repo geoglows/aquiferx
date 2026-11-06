@@ -1,5 +1,5 @@
 {
-  "name": "groundwater-data-explorer",
+  "name": "aquiferx",
   "private": true,
   "version": "0.0.0",
   "license": "MIT",
@@ -38,5 +38,8 @@
     "tailwindcss": "^3.4.19",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
+  },
+  "allowScripts": {
+    "github:geoglows/geoglows-auth": true
   }
 }
