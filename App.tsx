@@ -1527,7 +1527,8 @@ const App: React.FC = () => {
                         <h3 className="font-bold text-[var(--text)]">{rasterResult.title}</h3>
                       ) : null}
                     </div>
-                    <div className="flex items-center space-x-4">
+                    {/* The controls keep their size and stay on one line; the title gives way */}
+                    <div className="flex items-center space-x-4 flex-shrink-0 whitespace-nowrap">
                       {effectiveTab === 'waterLevel' ? (
                         <>
                           {activeDataType.code === 'wte' && (
