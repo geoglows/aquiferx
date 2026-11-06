@@ -465,6 +465,18 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
     }
   }, []);
 
+  // Leaflet loads tiles only for the size it last measured, and the container
+  // changes size without a window resize: the layout settling after load, the
+  // chart panel opening and closing, the split being dragged. Without this a
+  // part of the map stays blank grey.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const observer = new ResizeObserver(() => map.invalidateSize({ pan: false }));
+    observer.observe(map.getContainer());
+    return () => observer.disconnect();
+  }, []);
+
   // Handle basemap changes
   const changeBasemap = (name: keyof typeof BASEMAPS) => {
     if (!mapRef.current) return;

@@ -749,12 +749,11 @@ const RasterOverlay: React.FC<RasterOverlayProps> = ({
         </button>
       </div>
 
-      {/* Color legend + Cross Section button — top-right, under the basemap
-          button. top-16 rather than top-14: the button is 44px tall and starts
-          at top-3, so it ends at 56px. 64px leaves the same 8px gap the buttons
-          below this use between themselves. */}
-      <div className="absolute top-16 right-3 z-[95] flex flex-col items-end gap-2">
-        <div className="rfs-card p-3">
+      {/* Color legend with the Cross Section and Active Wells buttons on one card,
+          top-right under the basemap button. top-16 rather than top-14: the button
+          is 44px tall and starts at top-3, so it ends at 56px. */}
+      <div className="rfs-card absolute top-16 right-3 z-[95] p-3 w-[176px]">
+        <div>
           <button
             onClick={() => setShowRampPicker(!showRampPicker)}
             className="flex items-center gap-1.5 text-xs font-semibold mb-2 transition-colors text-[var(--text-dim)] hover:text-[var(--accent)]"
@@ -794,6 +793,7 @@ const RasterOverlay: React.FC<RasterOverlayProps> = ({
           </div>
         </div>
 
+        <div className="mt-3 pt-3 border-t border-[var(--border)] flex flex-col gap-2">
         <button
           onClick={() => {
             if (hasCrossSection) {
@@ -804,19 +804,20 @@ const RasterOverlay: React.FC<RasterOverlayProps> = ({
               setCrossSectionEnd(null);
             }
           }}
-          className={`rfs-btn auto shadow-lg ${
+          className={`rfs-btn auto w-full ${
             hasCrossSection ? 'on-danger' : crossSectionMode ? 'active' : ''
           }`}
         >
-          {hasCrossSection ? 'Clear' : 'Cross Section'}
+          {hasCrossSection ? 'Clear Cross Section' : 'Cross Section'}
         </button>
 
         <button
           onClick={onToggleActiveWells}
-          className={`rfs-btn auto shadow-lg ${showActiveWells ? 'on-success' : ''}`}
+          className={`rfs-btn auto w-full ${showActiveWells ? 'on-success' : ''}`}
         >
           Active Wells
         </button>
+        </div>
       </div>
 
       {/* Cursor value tooltip (positioned/filled via direct DOM writes) */}
