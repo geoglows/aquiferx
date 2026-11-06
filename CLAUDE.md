@@ -3,7 +3,7 @@
 ## Project Overview
 - React 19 + TypeScript 5.8 + Vite 6 groundwater data visualization app
 - No backend: the app builds to static files. `services/dataStore.ts` is the only way to read or write region files
-- **Sample Data** (read-only) ships in `public/data/{region}/`; the folders are listed in `scripts/sample-regions.mjs` and indexed into `public/data/index.json` by `scripts/build-sample-index.mjs` (run by `npm run dev` and `npm run build`). Other folders in `public/data` are dev-only and are stripped from `dist/`
+- **Sample Data** (read-only) ships in `public/data/{region}/`; the folders are listed in `scripts/sample-regions.mjs` and indexed into `public/data/index.json` by `scripts/build-sample-index.mjs` (run by `npm run dev` and `npm run build`). Regions used only in development live in the private companion repo (`../aquiferx_private/data`, geoglows/aquiferx_private); `.gitignore` keeps any other folder in `public/data` out of git, and the build strips them from `dist/`
 - **My Data** (the user's own) lives in IndexedDB in the browser, one record per file under the same relative path (`{region}/wells.csv`). Backup = zip download, Restore = zip upload, same `{region}/...` layout. A My Data region id may never equal a sample id, so a path's first segment says which store it is in
 - Tailwind CSS for styling, Recharts for charts, Leaflet for maps
 - Light (default) and dark themes: `utils/theme.ts` sets `data-theme` on `<html>`. Panel tokens (`--surface`, `--text`, ...) are in `index.css`; `tailwind.config.js` maps slate, `bg-white` and accent tints to CSS variables, so Tailwind classes follow the theme. Write new UI with the tokens or with ordinary light-palette Tailwind classes; avoid literal hex colors except for data (series, map symbols)
@@ -36,7 +36,7 @@
 - `components/SettingsDialog.tsx` — light mode, map label size, storage use, Delete all My Data
 - Map display options (`MapDisplay` in types.ts) live in App, are set from the panel's MAP section and read by MapView
 - `vite.config.ts` — strips non-sample regions from `dist/`; dev-only `/local-zarr/` server for previewing a zarr store (`LOCAL_ZARR_DIR`)
-- `scripts/make-backup.mjs` — package `public/data` folders as a backup zip to Restore into My Data
+- `scripts/make-backup.mjs` — package region folders (`public/data`, or `--from <dir>`) as a backup zip to Restore into My Data
 
 ## Conventions
 - Data type codes: lowercase alphanumeric + underscore, max 20 chars; "wte" is the reserved default (water table elevation)
@@ -49,6 +49,9 @@
 - Measurement values stored in `value` column (not `wte`)
 - A region folder (sample, My Data record prefix, or backup zip) holds: `region.json`, `region.geojson`, `aquifers.geojson`, `wells.csv`, `data_{code}.csv`, and per-aquifer `raster_*.json` / `model_*.json`
 - Anything that writes must not run on a sample region: App routes such actions through a "Copy to My Data" prompt
+
+## Private companion repo
+- Plans, strategy notes and development data go in `../aquiferx_private` (geoglows/aquiferx_private), not here. The release plan is `../aquiferx_private/plans/plan_release_v1.md`
 
 ## Commands
 - `npm run dev` — rebuild the sample index, start dev server on port 3000

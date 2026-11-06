@@ -29,3 +29,10 @@ npm-debug.log*
 
 # Cache
 .cache/
+
+# Only Sample Data (scripts/sample-regions.mjs) is tracked in public/data;
+# development regions live in ../aquiferx_private/data
+/public/data/*/
+!/public/data/arizona/
+!/public/data/oregon/
+!/public/data/utah/

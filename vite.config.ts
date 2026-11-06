@@ -4,7 +4,7 @@ import { defineConfig, loadEnv, Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
 // Sample Data is the folders listed in public/data/index.json. Everything
-// else in public/data (regions kept around for development) is copied into
+// else in public/data (a region copied in while developing) is copied into
 // dist by Vite like any public file, so it is removed again here.
 function shipOnlySampleData(): Plugin {
   return {
