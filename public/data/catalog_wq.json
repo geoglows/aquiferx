@@ -4,7 +4,7 @@
       "name": "pH",
       "unit": "",
       "group": "Physical",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "pH",
@@ -15,7 +15,7 @@
       "name": "Temperature",
       "unit": "deg C",
       "group": "Physical",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Temperature, water",
@@ -26,7 +26,7 @@
       "name": "Specific Conductance",
       "unit": "uS/cm",
       "group": "Physical",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Specific conductance",
@@ -37,7 +37,7 @@
       "name": "Turbidity",
       "unit": "NTU",
       "group": "Physical",
-      "mcl": null,
+      "epa": null,
       "who": 5,
       "wqp": {
         "characteristicName": "Turbidity",
@@ -48,7 +48,8 @@
       "name": "Total Dissolved Solids",
       "unit": "mg/L",
       "group": "Physical",
-      "mcl": 500,
+      "epa": 500,
+      "epaKind": "secondary",
       "who": 1000,
       "wqp": {
         "characteristicName": "Total dissolved solids",
@@ -59,7 +60,7 @@
       "name": "Hardness",
       "unit": "mg/L",
       "group": "Physical",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Hardness, Ca, Mg",
@@ -68,10 +69,11 @@
     },
     "nitrate": {
       "name": "Nitrate",
-      "unit": "mg/L",
+      "unit": "mg/L as N",
       "group": "Nutrient",
-      "mcl": 10,
-      "who": 50,
+      "epa": 10,
+      "epaKind": "mcl",
+      "who": 11.3,
       "wqp": {
         "characteristicName": "Nitrate",
         "sampleFraction": "Filtered"
@@ -79,10 +81,11 @@
     },
     "nitrite": {
       "name": "Nitrite",
-      "unit": "mg/L",
+      "unit": "mg/L as N",
       "group": "Nutrient",
-      "mcl": 1,
-      "who": 3,
+      "epa": 1,
+      "epaKind": "mcl",
+      "who": 0.91,
       "wqp": {
         "characteristicName": "Nitrite",
         "sampleFraction": "Filtered"
@@ -90,9 +93,9 @@
     },
     "ammonia": {
       "name": "Ammonia",
-      "unit": "mg/L",
+      "unit": "mg/L as N",
       "group": "Nutrient",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Ammonia",
@@ -101,9 +104,9 @@
     },
     "phosphorus": {
       "name": "Phosphorus",
-      "unit": "mg/L",
+      "unit": "mg/L as P",
       "group": "Nutrient",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Phosphorus",
@@ -112,9 +115,9 @@
     },
     "total_nitrogen": {
       "name": "Total Nitrogen",
-      "unit": "mg/L",
+      "unit": "mg/L as N",
       "group": "Nutrient",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Total Nitrogen, mixed forms",
@@ -123,9 +126,9 @@
     },
     "total_phosphorus": {
       "name": "Total Phosphorus",
-      "unit": "mg/L",
+      "unit": "mg/L as P",
       "group": "Nutrient",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Total Phosphorus, mixed forms",
@@ -136,7 +139,7 @@
       "name": "Calcium",
       "unit": "mg/L",
       "group": "Major Ions",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Calcium",
@@ -147,7 +150,7 @@
       "name": "Magnesium",
       "unit": "mg/L",
       "group": "Major Ions",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Magnesium",
@@ -158,7 +161,7 @@
       "name": "Sodium",
       "unit": "mg/L",
       "group": "Major Ions",
-      "mcl": null,
+      "epa": null,
       "who": 200,
       "wqp": {
         "characteristicName": "Sodium",
@@ -169,7 +172,7 @@
       "name": "Potassium",
       "unit": "mg/L",
       "group": "Major Ions",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Potassium",
@@ -180,7 +183,8 @@
       "name": "Chloride",
       "unit": "mg/L",
       "group": "Major Ions",
-      "mcl": 250,
+      "epa": 250,
+      "epaKind": "secondary",
       "who": null,
       "wqp": {
         "characteristicName": "Chloride",
@@ -191,7 +195,8 @@
       "name": "Sulfate",
       "unit": "mg/L",
       "group": "Major Ions",
-      "mcl": 250,
+      "epa": 250,
+      "epaKind": "secondary",
       "who": null,
       "wqp": {
         "characteristicName": "Sulfate",
@@ -202,7 +207,7 @@
       "name": "Bicarbonate",
       "unit": "mg/L",
       "group": "Major Ions",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Bicarbonate",
@@ -213,7 +218,7 @@
       "name": "Carbonate",
       "unit": "mg/L",
       "group": "Major Ions",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Carbonate",
@@ -224,7 +229,8 @@
       "name": "Arsenic",
       "unit": "ug/L",
       "group": "Minor Metals",
-      "mcl": 10,
+      "epa": 10,
+      "epaKind": "mcl",
       "who": 10,
       "wqp": {
         "characteristicName": "Arsenic",
@@ -235,7 +241,8 @@
       "name": "Iron",
       "unit": "ug/L",
       "group": "Minor Metals",
-      "mcl": 300,
+      "epa": 300,
+      "epaKind": "secondary",
       "who": null,
       "wqp": {
         "characteristicName": "Iron",
@@ -246,7 +253,8 @@
       "name": "Manganese",
       "unit": "ug/L",
       "group": "Minor Metals",
-      "mcl": 50,
+      "epa": 50,
+      "epaKind": "secondary",
       "who": 400,
       "wqp": {
         "characteristicName": "Manganese",
@@ -257,7 +265,8 @@
       "name": "Lead",
       "unit": "ug/L",
       "group": "Minor Metals",
-      "mcl": 15,
+      "epa": 15,
+      "epaKind": "action",
       "who": 10,
       "wqp": {
         "characteristicName": "Lead",
@@ -268,7 +277,8 @@
       "name": "Copper",
       "unit": "ug/L",
       "group": "Minor Metals",
-      "mcl": 1300,
+      "epa": 1300,
+      "epaKind": "action",
       "who": 2000,
       "wqp": {
         "characteristicName": "Copper",
@@ -279,7 +289,8 @@
       "name": "Zinc",
       "unit": "ug/L",
       "group": "Minor Metals",
-      "mcl": 5000,
+      "epa": 5000,
+      "epaKind": "secondary",
       "who": null,
       "wqp": {
         "characteristicName": "Zinc",
@@ -290,7 +301,8 @@
       "name": "Chromium",
       "unit": "ug/L",
       "group": "Minor Metals",
-      "mcl": 100,
+      "epa": 100,
+      "epaKind": "mcl",
       "who": 50,
       "wqp": {
         "characteristicName": "Chromium",
@@ -301,7 +313,8 @@
       "name": "Selenium",
       "unit": "ug/L",
       "group": "Minor Metals",
-      "mcl": 50,
+      "epa": 50,
+      "epaKind": "mcl",
       "who": 40,
       "wqp": {
         "characteristicName": "Selenium",
@@ -312,7 +325,8 @@
       "name": "Fluoride",
       "unit": "mg/L",
       "group": "Minor Non-metals",
-      "mcl": 4,
+      "epa": 4,
+      "epaKind": "mcl",
       "who": 1.5,
       "wqp": {
         "characteristicName": "Fluoride",
@@ -323,7 +337,7 @@
       "name": "Boron",
       "unit": "ug/L",
       "group": "Minor Non-metals",
-      "mcl": null,
+      "epa": null,
       "who": 2400,
       "wqp": {
         "characteristicName": "Boron",
@@ -334,7 +348,7 @@
       "name": "Silica",
       "unit": "mg/L",
       "group": "Minor Non-metals",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Silica",
@@ -345,7 +359,8 @@
       "name": "E. coli",
       "unit": "CFU/100mL",
       "group": "Microbiological",
-      "mcl": 0,
+      "epa": 0,
+      "epaKind": "mcl",
       "who": 0,
       "wqp": {
         "characteristicName": "Escherichia coli",
@@ -356,7 +371,7 @@
       "name": "Fecal Coliform",
       "unit": "CFU/100mL",
       "group": "Microbiological",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Fecal Coliform",
@@ -367,7 +382,7 @@
       "name": "Total Coliform",
       "unit": "CFU/100mL",
       "group": "Microbiological",
-      "mcl": null,
+      "epa": null,
       "who": 0,
       "wqp": {
         "characteristicName": "Total Coliform",
@@ -378,7 +393,7 @@
       "name": "Dissolved Oxygen",
       "unit": "mg/L",
       "group": "Other",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Dissolved oxygen (DO)",
@@ -389,7 +404,7 @@
       "name": "Alkalinity",
       "unit": "mg/L",
       "group": "Other",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Alkalinity, total",
@@ -400,7 +415,7 @@
       "name": "Biochemical Oxygen Demand",
       "unit": "mg/L",
       "group": "Other",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Biochemical oxygen demand, standard conditions",
@@ -411,7 +426,7 @@
       "name": "Chemical Oxygen Demand",
       "unit": "mg/L",
       "group": "Other",
-      "mcl": null,
+      "epa": null,
       "who": null,
       "wqp": {
         "characteristicName": "Chemical oxygen demand",

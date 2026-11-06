@@ -21,20 +21,27 @@ export type DuplicateStrategy = 'keep-all' | 'average' | 'maximum';
 /** Columns every data_{code}.csv is written with. */
 export const MEASUREMENT_CSV_HEADERS = ['well_id', 'date', 'value', 'aquifer_id'];
 
-/**
- * Convert a depth-below-surface reading to a water table elevation.
- * Returns the original string when there is no usable GSE or the value
- * does not parse — callers decide whether such rows are kept.
- */
-export function depthToWte(rawValue: string, gse: number): string {
-  const raw = parseFloat(rawValue);
-  if (isNaN(raw) || gse <= 0) return rawValue;
-  return String(Math.round((gse - Math.abs(raw)) * 100) / 100);
+/** Convert a depth-below-surface reading to a water table elevation. */
+export function depthToWte(depth: number, gse: number): string {
+  return String(Math.round((gse - Math.abs(depth)) * 100) / 100);
+}
+
+/** Rows buildMeasurementRows left out, for the import summary. */
+export interface SkippedRows {
+  /** Values that are not numbers, such as "<0.05" or "dry" */
+  nonNumeric: number;
+  /** A few of those values, to show what was skipped */
+  nonNumericExamples: string[];
+  /** Depths to water whose well has no ground surface elevation to convert them with */
+  noGse: number;
 }
 
 /**
  * Build normalized measurement rows for one data type from source CSV rows.
- * Rows without a resolvable well, date, or value are dropped.
+ * Rows without a resolvable well, date, or value are dropped, and so are
+ * values that are not numbers and depths that can't be converted (counted
+ * in `skipped`): stored, they would be ignored on load, or mix depths into
+ * elevations.
  */
 export function buildMeasurementRows(
   sourceRows: Record<string, string>[],
@@ -47,14 +54,28 @@ export function buildMeasurementRows(
     resolveAquifer: (row: Record<string, string>) => string;
     gseOf: (wellId: string) => number;
   }
-): MeasurementRow[] {
+): { rows: MeasurementRow[]; skipped: SkippedRows } {
   const out: MeasurementRow[] = [];
+  const skipped: SkippedRows = { nonNumeric: 0, nonNumericExamples: [], noGse: 0 };
   for (const r of sourceRows) {
     const wid = opts.rowToWellId(r);
-    if (!wid || !r[opts.dateCol] || !r[opts.valueCol]) continue;
-    const value = opts.convertDepthToWte
-      ? depthToWte(r[opts.valueCol], opts.gseOf(wid))
-      : r[opts.valueCol];
+    const raw = (r[opts.valueCol] || '').trim();
+    if (!wid || !r[opts.dateCol] || !raw) continue;
+    // Number() rather than parseFloat: "12 mg/L" or "12,5" must not pass as 12
+    const num = Number(raw);
+    if (!isFinite(num)) {
+      skipped.nonNumeric++;
+      if (skipped.nonNumericExamples.length < 3 && !skipped.nonNumericExamples.includes(raw)) {
+        skipped.nonNumericExamples.push(raw);
+      }
+      continue;
+    }
+    let value = raw;
+    if (opts.convertDepthToWte) {
+      const gse = opts.gseOf(wid);
+      if (!(gse > 0)) { skipped.noGse++; continue; }
+      value = depthToWte(num, gse);
+    }
     out.push({
       well_id: wid,
       date: parseDate(r[opts.dateCol], opts.dateFormat),
@@ -62,7 +83,7 @@ export function buildMeasurementRows(
       aquifer_id: opts.resolveAquifer(r),
     });
   }
-  return out;
+  return { rows: out, skipped };
 }
 
 /**

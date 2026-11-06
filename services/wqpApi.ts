@@ -79,6 +79,8 @@ export interface WqpDataQualityReport {
   kept: number;
   droppedNonNumeric: number;
   droppedFractionMismatch: number;
+  /** Results in a unit that could not be converted to the catalog's */
+  droppedUnits: number;
   droppedDuplicates: number;
   details: string[];
 }
@@ -86,7 +88,65 @@ export interface WqpDataQualityReport {
 /** Catalog → WQP mapping: characteristicName (lowercased) →
  *  `{ code, preferredFraction }`. Only includes catalog entries that
  *  actually carry a `wqp` block. */
-export type CharacteristicMap = Map<string, { code: string; preferredFraction: string | null }>;
+export type CharacteristicMap = Map<string, { code: string; preferredFraction: string | null; unit: string }>;
+
+// ============================================================================
+// Units
+// ============================================================================
+
+const norm = (u: string) => (u || '').toLowerCase().replace(/[µμ]/g, 'u').replace(/\s+/g, ' ').trim();
+
+// Molar-mass ratios from a species to its nitrogen or phosphorus content
+const TO_N: Record<string, number> = { n: 1, no3: 14.0067 / 62.0049, no2: 14.0067 / 46.0055, nh4: 14.0067 / 18.0385, nh3: 14.0067 / 17.0305 };
+const TO_P: Record<string, number> = { p: 1, po4: 30.9738 / 94.9714 };
+// Parameters whose amount is conventionally reported as N or P even without saying so
+const IMPLIED_BASIS = new Set(['phosphorus', 'total_phosphorus', 'total_nitrogen']);
+// A unit may name the parameter's own species ("mg/l as CaCO3" for hardness); that is no conversion
+const OWN_BASIS: Record<string, string[]> = {
+  hardness: ['caco3'], alkalinity: ['caco3'], silica: ['sio2'], sulfate: ['so4'], bicarbonate: ['hco3'],
+  carbonate: ['co3'], chloride: ['cl'], fluoride: ['f'], calcium: ['ca'], magnesium: ['mg'], sodium: ['na'], potassium: ['k'],
+};
+const MASS: Record<string, number> = { ng: 1e-6, ug: 1e-3, mg: 1, g: 1000 };   // relative to mg
+
+/**
+ * A function that converts a value in the Water Quality Portal's unit to the
+ * catalog's unit for `code`, or null when the conversion isn't certain (an
+ * unknown unit, or nitrate in "mg/l" without saying as N or as NO3).
+ */
+export function wqpUnitConverter(code: string, wqpUnit: string, catalogUnit: string): ((v: number) => number) | null {
+  const src = norm(wqpUnit), tgt = norm(catalogUnit);
+  if (src === tgt) return v => v;
+  // pH and other unitless values
+  if (tgt === '') return ['', 'none', 'std units', 'su', 'ph units', 'units'].includes(src) ? v => v : null;
+  if (tgt === 'deg c') {
+    if (src === 'deg c') return v => v;
+    if (src === 'deg f') return v => Math.round((v - 32) * 5 / 9 * 100) / 100;
+    return null;
+  }
+  if (tgt === 'us/cm') {
+    const m = /^(us|umho|ms|mmho)\/cm/.exec(src);
+    return m ? (m[1].startsWith('m') ? v => v * 1000 : v => v) : null;
+  }
+  if (tgt === 'ntu') return /^(ntu|fnu|ntru|fnru)$/.test(src) ? v => v : null;
+  if (tgt === 'cfu/100ml') return /^(cfu|mpn|#)\s*\/\s*100\s*ml$/.test(src) ? v => v : null;
+
+  // Concentrations: mass per liter, perhaps "as" some species
+  const parse = (u: string) => {
+    const m = /^(ng|ug|mg|g)\/l(?:\s*(?:as\s*)?([a-z0-9]+))?$/.exec(u);
+    return m ? { mass: MASS[m[1]], basis: m[2] || '' } : null;
+  };
+  const s = parse(src), t = parse(tgt);
+  if (!s || !t) return null;
+  const scale = s.mass / t.mass;
+  if (t.basis === 'n' || t.basis === 'p') {
+    const table = t.basis === 'n' ? TO_N : TO_P;
+    const basis = s.basis || (IMPLIED_BASIS.has(code) ? t.basis : '');
+    const ratio = table[basis];
+    return ratio === undefined ? null : v => v * scale * ratio;
+  }
+  if (s.basis && !(OWN_BASIS[code] || []).includes(s.basis)) return null;
+  return scale === 1 ? v => v : v => v * scale;
+}
 
 // ============================================================================
 // URL building & HTTP
@@ -258,7 +318,7 @@ export function buildCharacteristicMap(catalog: ParameterCatalog): Characteristi
   for (const [code, param] of Object.entries(catalog.parameters)) {
     const cn = param.wqp?.characteristicName;
     if (!cn) continue;
-    map.set(cn.toLowerCase(), { code, preferredFraction: param.wqp.sampleFraction });
+    map.set(cn.toLowerCase(), { code, preferredFraction: param.wqp.sampleFraction, unit: param.unit });
   }
   return map;
 }
@@ -291,9 +351,13 @@ export function dedupWqpResults(
     kept: 0,
     droppedNonNumeric: 0,
     droppedFractionMismatch: 0,
+    droppedUnits: 0,
     droppedDuplicates: 0,
     details: [],
   };
+  // Counted per parameter and unit, for the details list
+  const unitDrops = new Map<string, number>();
+  const unitConversions = new Map<string, number>();
 
   const kept: WqpResult[] = [];
   const seen = new Set<string>();
@@ -318,16 +382,37 @@ export function dedupWqpResults(
       }
     }
 
-    // Step 2: take-first dedup
+    // Step 2: the catalog's unit
+    const convert = wqpUnitConverter(entry.code, r.unit, entry.unit);
+    if (!convert) {
+      report.droppedUnits++;
+      const k = `${entry.code}|${r.unit || '(none)'}|${entry.unit}`;
+      unitDrops.set(k, (unitDrops.get(k) || 0) + 1);
+      continue;
+    }
+    if (norm(r.unit) !== norm(entry.unit)) {
+      const k = `${entry.code}|${r.unit}|${entry.unit}`;
+      unitConversions.set(k, (unitConversions.get(k) || 0) + 1);
+    }
+
+    // Step 3: take-first dedup
     const key = `${r.siteId}|${r.date}|${entry.code}`;
     if (seen.has(key)) {
       report.droppedDuplicates++;
       continue;
     }
     seen.add(key);
-    kept.push(r);
+    kept.push({ ...r, value: Math.round(convert(r.value) * 1e6) / 1e6, unit: entry.unit });
   }
 
+  for (const [k, n] of unitDrops) {
+    const [code, from, to] = k.split('|');
+    addDetail(report.details, `${n} ${code} result${n === 1 ? '' : 's'} in "${from}" dropped: no certain conversion to ${to}`);
+  }
+  for (const [k, n] of unitConversions) {
+    const [code, from, to] = k.split('|');
+    addDetail(report.details, `${n} ${code} result${n === 1 ? '' : 's'} converted from ${from} to ${to}`);
+  }
   report.kept = kept.length;
   return { kept, report };
 }

@@ -5,13 +5,24 @@ import { fetchWithTimeout } from './http';
 const KNOWN_CRS: Record<string, string> = {
   'EPSG:4326': '+proj=longlat +datum=WGS84 +no_defs',
   'EPSG:3857': '+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs',
-  'EPSG:32601': '+proj=utm +zone=1 +datum=WGS84 +units=m +no_defs',
-  // JAD2001 / Jamaica Metric Grid — LCC 1SP form from epsg.io
-  'EPSG:3448': '+proj=lcc +lat_1=18 +lat_0=18 +lon_0=-77 +k_0=1 +x_0=750000 +y_0=650000 +ellps=WGS84 +units=m +no_defs',
 };
 
+// WGS 84 / UTM zones (EPSG:326zz north, 327zz south) are built here rather than fetched
+function utmProj4(code: string): string | null {
+  const m = /^EPSG:32([67])(\d{2})$/.exec(code);
+  if (!m) return null;
+  const zone = parseInt(m[2], 10);
+  if (zone < 1 || zone > 60) return null;
+  return `+proj=utm +zone=${zone}${m[1] === '7' ? ' +south' : ''} +datum=WGS84 +units=m +no_defs`;
+}
+
+function utmName(code: string): string {
+  const m = /^EPSG:32([67])(\d{2})$/.exec(code);
+  return m ? `WGS 84 / UTM zone ${parseInt(m[2], 10)}${m[1] === '6' ? 'N' : 'S'}` : code;
+}
+
 // Dropdown options for the importer's CRS picker. Keep this short — common
-// cases only, with a Custom proj4-string option for advanced users.
+// cases only; any other system is entered by its EPSG code.
 export interface CrsOption {
   code: string;        // identifier or "custom"
   label: string;
@@ -21,8 +32,16 @@ export interface CrsOption {
 export const COMMON_CRS_OPTIONS: CrsOption[] = [
   { code: 'EPSG:4326', label: 'WGS84 — latitude / longitude (default)' },
   { code: 'EPSG:3857', label: 'EPSG:3857 — Web Mercator' },
-  { code: 'EPSG:3448', label: 'EPSG:3448 — JAD2001 / Jamaica Metric Grid' },
 ];
+
+/** The common options plus the UTM zone of the region's center, a frequent
+ *  system for well coordinates. bounds is [minLat, minLng, maxLat, maxLng]. */
+export function crsOptionsFor(bounds: [number, number, number, number]): CrsOption[] {
+  const [minLat, minLng, maxLat, maxLng] = bounds;
+  if (!(maxLat > minLat) || !(maxLng > minLng)) return COMMON_CRS_OPTIONS;
+  const utm = computeUtmEpsg((minLng + maxLng) / 2, (minLat + maxLat) / 2);
+  return [...COMMON_CRS_OPTIONS, { code: utm, label: `${utm} — ${utmName(utm)} (this region)` }];
+}
 
 /**
  * Reproject a single (x, y) point from the given CRS to WGS84 (lng, lat).
@@ -97,7 +116,13 @@ export async function fetchEpsgDefinition(rawCode: string): Promise<EpsgDefiniti
 
   // In-memory shortcut: if proj4 already knows this code we can short-circuit
   if (KNOWN_CRS[code]) {
-    return { code, name: code, proj4: KNOWN_CRS[code] };
+    return { code, name: utmProj4(code) ? utmName(code) : code, proj4: KNOWN_CRS[code] };
+  }
+  const utm = utmProj4(code);
+  if (utm) {
+    KNOWN_CRS[code] = utm;
+    try { proj4.defs(code, utm); } catch {}
+    return { code, name: utmName(code), proj4: utm };
   }
 
   const cached = readEpsgCache(code);
@@ -161,8 +186,7 @@ async function lookupEpsgCandidatesNear(lat: number, lng: number): Promise<strin
 /**
  * Compute the EPSG code for the UTM zone that covers a given WGS84 point.
  * Returns an EPSG identifier like "EPSG:32617" (zone 17 N) or "EPSG:32717"
- * (zone 17 S). UTM defs are not pre-registered; the caller should use
- * fetchEpsgDefinition to resolve.
+ * (zone 17 S). The definition is built locally (utmProj4), with no lookup.
  */
 export function computeUtmEpsg(lng: number, lat: number): string {
   const zone = Math.floor((lng + 180) / 6) + 1;
@@ -244,7 +268,7 @@ export async function autoDetectCrs(
   const wgsResult = await tryCandidate('EPSG:4326', 'WGS84 — latitude / longitude');
   if (wgsResult) return wgsResult;
 
-  // 2. Curated list of common projected CRSes (JAD2001, Web Mercator, etc.)
+  // 2. Curated list of common projected CRSes (Web Mercator)
   for (const opt of COMMON_CRS_OPTIONS) {
     if (candidatesTried.includes(opt.code)) continue;
     const result = await tryCandidate(opt.code, opt.label);
@@ -291,6 +315,8 @@ function isWGS84(crsString: string): boolean {
 
 function getProjection(crsIdentifier: string): string | null {
   if (KNOWN_CRS[crsIdentifier]) return KNOWN_CRS[crsIdentifier];
+  const utm = utmProj4(crsIdentifier);
+  if (utm) { KNOWN_CRS[crsIdentifier] = utm; return utm; }
   // If it looks like a proj4 string, use it directly
   if (crsIdentifier.startsWith('+proj=')) return crsIdentifier;
   return null;
@@ -317,9 +343,12 @@ function transformGeometry(geometry: any, conv: Proj4Converter): any {
 
 /**
  * Detect CRS from GeoJSON `crs` property and reproject to WGS84 if needed.
+ * A code the app doesn't know is looked up on epsg.io; one that can't be
+ * found is an error, since reading projected coordinates as longitude and
+ * latitude puts the outline in the wrong place without any sign of it.
  * Returns { geojson, reprojected, fromCrs }.
  */
-export function reprojectGeoJSON(geojson: any): { geojson: any; reprojected: boolean; fromCrs: string } {
+export async function reprojectGeoJSON(geojson: any): Promise<{ geojson: any; reprojected: boolean; fromCrs: string }> {
   const crsProperty = geojson.crs;
   let fromCrs = '';
 
@@ -335,13 +364,46 @@ export function reprojectGeoJSON(geojson: any): { geojson: any; reprojected: boo
     return { geojson, reprojected: false, fromCrs: fromCrs || 'WGS84' };
   }
 
-  const projection = getProjection(fromCrs);
+  // "EPSG:26912", "urn:ogc:def:crs:EPSG::26912" and the like
+  const epsg = /EPSG:{1,2}(\d{2,6})\s*$/i.exec(fromCrs);
+  const code = epsg ? `EPSG:${epsg[1]}` : fromCrs;
+  let projection = getProjection(code);
+  if (!projection && epsg) {
+    const def = await fetchEpsgDefinition(code);
+    projection = def?.proj4 ?? null;
+  }
   if (!projection) {
-    console.warn(`Unknown CRS: ${fromCrs}, assuming WGS84`);
-    return { geojson, reprojected: false, fromCrs };
+    throw new Error(
+      `the file says its coordinates are in ${fromCrs}, which could not be looked up. ` +
+      'Check your network connection, or save the file in longitude and latitude (WGS 84), ' +
+      'or zip it as a shapefile with its .prj file.'
+    );
   }
 
-  return reprojectWithProj(geojson, projection, fromCrs);
+  return reprojectWithProj(geojson, projection, code);
+}
+
+/** Throws when a GeoJSON's coordinates can't be longitude and latitude, the
+ *  sign of a projected file read without its coordinate system. */
+export function assertLonLat(geojson: any): void {
+  let bad: number[] | null = null;
+  const visit = (c: any) => {
+    if (bad || !Array.isArray(c)) return;
+    if (typeof c[0] === 'number' && typeof c[1] === 'number') {
+      if (Math.abs(c[0]) > 180 || Math.abs(c[1]) > 90) bad = c;
+      return;
+    }
+    for (const x of c) visit(x);
+  };
+  const features = geojson?.type === 'FeatureCollection' ? geojson.features : [geojson];
+  for (const f of features ?? []) visit(f?.geometry?.coordinates ?? f?.coordinates);
+  if (bad) {
+    const [x, y] = bad as number[];
+    throw new Error(
+      `the coordinates are not longitude and latitude (one point is ${x}, ${y}), and the file does not say what system they are in. ` +
+      'Save it in longitude and latitude (WGS 84), or zip it as a shapefile with its .prj file.'
+    );
+  }
 }
 
 /**

@@ -104,7 +104,7 @@ const DataTypeEditor: React.FC<DataTypeEditorProps> = ({
               Standard water quality parameters (nitrate, arsenic, pH, etc.) appear
               automatically when you import data for them — you don't need to add
               them here. This screen is only for <strong>custom types</strong> that
-              aren't in the catalog, like BOD5 or trichloroethane.
+              aren't in the catalog, like trichloroethylene or a lab's own index.
             </p>
             <button
               onClick={() => setShowCatalogBrowser(true)}

@@ -133,14 +133,15 @@ const WellImporter: React.FC<WellImporterProps> = ({
     })();
   }, [regionId]);
 
-  // Load aquifer list for assignment
+  // Load the aquifer outlines: for assignment, and to keep a USGS download to
+  // wells inside them (a single-unit region's one aquifer is its outline)
   useEffect(() => {
-    if (singleUnit) return;
     (async () => {
       try {
         const gj = await readJson(`${regionId}/aquifers.geojson`);
         if (gj) {
           setAquifersGeojson(gj);
+          if (singleUnit) return;
           const features = gj.type === 'FeatureCollection' ? gj.features : [gj];
           const list = features.map((f: any) => ({
             id: String(f.properties?.aquifer_id || ''),
@@ -449,6 +450,25 @@ const WellImporter: React.FC<WellImporterProps> = ({
     }
   };
 
+  // In a region with aquifers, a well that ends up in none of them would be
+  // saved but never shown, so it is skipped, and counted here first
+  const aquiferIds = useMemo(() => new Set(aquiferList.map(a => a.id)), [aquiferList]);
+  const keepsWell = (aquiferId: string) => singleUnit || aquiferIds.size === 0 || aquiferIds.has(aquiferId);
+  const skippedOutside = useMemo(() => {
+    if (!file || singleUnit || aquiferIds.size === 0) return 0;
+    const idCol = file.mapping['well_id'], latCol = file.mapping['lat'], longCol = file.mapping['long'];
+    if (!idCol || !latCol || !longCol) return 0;
+    let n = 0;
+    for (const r of file.data as Record<string, string>[]) {
+      if (!r[idCol]) continue;
+      const { lat, lng } = parseRowCoords(r[latCol], r[longCol]);
+      if (lat === undefined || lng === undefined) continue;
+      if (!keepsWell(resolveAquiferId(r))) n++;
+    }
+    return n;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file, singleUnit, aquiferIds, aquiferAssignment, selectedAquiferId, parseRowCoords, aquifersGeojson]);
+
   const doSave = async () => {
     if (!file) return;
     setIsSaving(true);
@@ -477,7 +497,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
           aquifer_id: aquiferId,
           aquifer_name: aquiferNameById.get(aquiferId) || '',
         };
-      }).filter(w => w.well_id && w.lat && w.long);
+      }).filter(w => w.well_id && w.lat && w.long && keepsWell(w.aquifer_id));
 
       const isAquiferScoped = dataSource === 'usgs' && usgsScope === 'aquifer' && usgsScopeAquiferId;
 
@@ -801,6 +821,19 @@ const WellImporter: React.FC<WellImporterProps> = ({
         {file && dataSource === 'upload' && file.mapping['lat'] && file.mapping['long'] && (
           <div className="mb-4 p-4 bg-sky-50 border border-sky-200 rounded-lg">
             <CrsPickerPanel crs={crs} />
+          </div>
+        )}
+
+        {skippedOutside > 0 && (
+          <div className="flex items-start gap-2 p-3 mb-4 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+            <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+            <span>
+              {skippedOutside} well{skippedOutside === 1 ? '' : 's'}{' '}
+              {aquiferAssignment === 'by-location'
+                ? `${skippedOutside === 1 ? 'falls' : 'fall'} outside every aquifer`
+                : `${skippedOutside === 1 ? 'has' : 'have'} no aquifer ID this region has`}
+              {' '}and will be skipped.
+            </span>
           </div>
         )}
 

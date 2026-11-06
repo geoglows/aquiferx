@@ -13,6 +13,7 @@ import Sidebar from './components/Sidebar';
 import TimeSeriesChart from './components/TimeSeriesChart';
 import ImportDataHub from './components/import/ImportDataHub';
 import DataEditor from './components/DataEditor';
+import { isoDate } from './utils/dates';
 import SpatialAnalysisDialog from './components/SpatialAnalysisDialog';
 import ImputationWizard from './components/ImputationWizard';
 import ModelTimeSeries from './components/ModelTimeSeries';
@@ -989,14 +990,19 @@ const App: React.FC = () => {
 
     if (selectedWellMeasurements.length === 0) return;
 
+    // YYYY-MM-DD dates and the well ID, so the file reads the same in any
+    // locale and can be imported again
     const unit = activeDataType.unit;
-    const headers = ['Date', `${activeDataType.name} (${unit})`, 'Well Name', 'Aquifer ID'];
+    const headers = ['Date', `${activeDataType.name} (${unit})`, 'Well ID', 'Well Name', 'Aquifer ID'];
+    const nameOf = new Map(selectedWells.map(w => [w.id, w.name]));
     const rows = selectedWellMeasurements
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-      .map(m => [
-        new Date(m.date).toLocaleDateString(),
+      .map(m => ({ m, date: isoDate(m.date) }))
+      .sort((a, b) => a.date.localeCompare(b.date) || a.m.wellId.localeCompare(b.m.wellId))
+      .map(({ m, date }) => [
+        date,
         m.value.toString(),
-        m.wellName,
+        m.wellId,
+        m.wellName || nameOf.get(m.wellId) || '',
         m.aquiferId
       ]);
 

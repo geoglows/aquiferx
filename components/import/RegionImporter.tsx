@@ -41,11 +41,12 @@ const RegionImporter: React.FC<RegionImporterProps> = ({ existingRegionIds, onCo
   const handleBoundaryUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setError('');
     try {
       const uploaded = await processUploadedFile(file, 'region');
       setBoundaryFile(uploaded);
     } catch (err) {
-      setError(`Failed to process file: ${err}`);
+      setError(`Could not read ${file.name}: ${err instanceof Error ? err.message : err}`);
     }
   };
 

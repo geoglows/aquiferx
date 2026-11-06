@@ -13,13 +13,41 @@ interface DataEditorProps {
   onSave: (updatedMeasurements: Measurement[]) => void;
 }
 
-function computeOutlierBounds(values: number[], multiplier: number): { lower: number; upper: number } {
-  if (values.length < 4) return { lower: -Infinity, upper: Infinity };
-  const sorted = [...values].sort((a, b) => a - b);
-  const q1 = sorted[Math.floor(sorted.length * 0.25)];
-  const q3 = sorted[Math.floor(sorted.length * 0.75)];
-  const iqr = q3 - q1;
-  return { lower: q1 - multiplier * iqr, upper: q3 + multiplier * iqr };
+/**
+ * Flags each measurement that lies more than `multiplier` interquartile ranges
+ * outside the quartiles of its neighbors in time: the measurements within two
+ * years either side, at least the six nearest, not counting itself. Judging
+ * each value against the whole record instead flags the early or late years
+ * of any well with a long-term rise or decline. `rows` is sorted by date.
+ */
+function computeOutlierFlags(rows: Measurement[], deleted: Set<number>, multiplier: number): boolean[] {
+  const WINDOW = 2 * 365.25 * 86400000, MIN_NEIGHBORS = 6;
+  const flags = rows.map(() => false);
+  const act = rows
+    .map((r, i) => ({ i, t: new Date(r.date).getTime(), v: r.value }))
+    .filter(x => !deleted.has(x.i));
+  if (act.length < 5) return flags;
+  act.forEach((x, j) => {
+    let lo = j, hi = j;
+    while (lo > 0 && x.t - act[lo - 1].t <= WINDOW) lo--;
+    while (hi < act.length - 1 && act[hi + 1].t - x.t <= WINDOW) hi++;
+    while (hi - lo < MIN_NEIGHBORS && (lo > 0 || hi < act.length - 1)) {
+      const left = lo > 0 ? x.t - act[lo - 1].t : Infinity;
+      const right = hi < act.length - 1 ? act[hi + 1].t - x.t : Infinity;
+      if (left <= right) lo--; else hi++;
+    }
+    const vals: number[] = [];
+    for (let m = lo; m <= hi; m++) if (m !== j) vals.push(act[m].v);
+    vals.sort((a, b) => a - b);
+    const q = (p: number) => {
+      const pos = (vals.length - 1) * p, b = Math.floor(pos);
+      return vals[b] + (vals[Math.min(b + 1, vals.length - 1)] - vals[b]) * (pos - b);
+    };
+    const q1 = q(0.25), q3 = q(0.75), iqr = q3 - q1;
+    // Identical neighbors give no spread to judge by
+    if (iqr > 0 && (x.v < q1 - multiplier * iqr || x.v > q3 + multiplier * iqr)) flags[x.i] = true;
+  });
+  return flags;
 }
 
 const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurements, regionId, dataType, onClose, onSave }) => {
@@ -31,14 +59,11 @@ const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurem
   const [isSaving, setIsSaving] = useState(false);
   const [iqrMultiplier, setIqrMultiplier] = useState(3);
 
-  const outlierBounds = useMemo(() => {
-    const activeValues = rows.filter((_, i) => !deletedIndices.has(i)).map(r => r.value);
-    return computeOutlierBounds(activeValues, iqrMultiplier);
-  }, [rows, deletedIndices, iqrMultiplier]);
+  const outlierFlags = useMemo(
+    () => computeOutlierFlags(rows, deletedIndices, iqrMultiplier),
+    [rows, deletedIndices, iqrMultiplier]);
 
-  const outlierCount = useMemo(() =>
-    rows.filter((r, i) => !deletedIndices.has(i) && (r.value < outlierBounds.lower || r.value > outlierBounds.upper)).length,
-  [rows, deletedIndices, outlierBounds]);
+  const outlierCount = useMemo(() => outlierFlags.filter(Boolean).length, [outlierFlags]);
 
   const handleValueChange = (index: number, val: string) => {
     const num = parseFloat(val);
@@ -111,7 +136,7 @@ const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurem
             onChange={e => setIqrMultiplier(parseFloat(e.target.value))}
             className="w-32 accent-blue-600"
           />
-          <span className="text-slate-500 cursor-help" title="Interquartile range: the spread of the middle half of the values, from the 25th to the 75th percentile">{iqrMultiplier}&times; IQR</span>
+          <span className="text-slate-500 cursor-help" title="Interquartile range of the measurements within two years either side: the spread of their middle half, from the 25th to the 75th percentile">{iqrMultiplier}&times; IQR</span>
           <span className="text-red-600 font-medium ml-auto">
             {outlierCount} outlier{outlierCount === 1 ? '' : 's'}
           </span>
@@ -130,7 +155,7 @@ const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurem
             <tbody>
               {rows.map((row, i) => {
                 const isDeleted = deletedIndices.has(i);
-                const isOutlier = !isDeleted && (row.value < outlierBounds.lower || row.value > outlierBounds.upper);
+                const isOutlier = !isDeleted && outlierFlags[i];
                 return (
                   <tr
                     key={`${row.date}-${i}`}
@@ -180,7 +205,7 @@ const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurem
         {/* Outlier legend */}
         {outlierCount > 0 && (
           <div className="px-6 py-2 text-xs text-red-700 bg-red-50 border-t border-red-200">
-            Rows highlighted in red are statistical outliers (outside {iqrMultiplier}&times; IQR).
+            Rows in red are more than {iqrMultiplier}&times; IQR outside the measurements within two years of them.
           </div>
         )}
 

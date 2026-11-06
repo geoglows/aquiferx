@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   reprojectPoint,
   COMMON_CRS_OPTIONS,
+  crsOptionsFor,
   fetchEpsgDefinition,
   autoDetectCrs,
   normalizeEpsgCode,
@@ -58,6 +59,8 @@ export function useCrsPicker({ regionBounds, samples, onCrsChange }: UseCrsPicke
   const [crsLookupError, setCrsLookupError] = useState('');
   const [isLookingUpCrs, setIsLookingUpCrs] = useState(false);
   const [isAutoDetecting, setIsAutoDetecting] = useState(false);
+  // The common systems plus the region's UTM zone
+  const options = useMemo(() => crsOptionsFor(regionBounds), [regionBounds]);
 
   const handleCrsPresetChange = useCallback((value: string) => {
     setCrsLookupError('');
@@ -67,10 +70,10 @@ export function useCrsPicker({ regionBounds, samples, onCrsChange }: UseCrsPicke
     }
     setCrsInputMode('preset');
     setCoordinateCrs(value);
-    const opt = COMMON_CRS_OPTIONS.find(o => o.code === value);
+    const opt = options.find(o => o.code === value);
     setCrsName(opt?.label || value);
     onCrsChange?.();
-  }, [onCrsChange]);
+  }, [onCrsChange, options]);
 
   const handleEpsgLookup = useCallback(async () => {
     const code = normalizeEpsgCode(epsgCodeInput);
@@ -176,6 +179,6 @@ export function useCrsPicker({ regionBounds, samples, onCrsChange }: UseCrsPicke
     handleAutoDetectCrs,
     crsPreview,
     parseRowCoords,
-    COMMON_CRS_OPTIONS,
+    COMMON_CRS_OPTIONS: options,
   };
 }

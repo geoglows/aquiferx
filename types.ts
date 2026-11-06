@@ -11,7 +11,12 @@ export interface CatalogParameter {
   name: string;
   unit: string;
   group: string;
-  mcl: number | null;
+  /** US EPA drinking water standard, in the parameter's unit */
+  epa: number | null;
+  /** What kind of EPA standard: enforceable maximum contaminant level,
+   *  secondary (taste, odor, staining) or the action level for lead and copper */
+  epaKind?: 'mcl' | 'secondary' | 'action';
+  /** WHO guideline value, in the parameter's unit */
   who: number | null;
   wqp?: {
     characteristicName: string;
@@ -28,7 +33,7 @@ export interface RegionMeta {
   name: string;
   lengthUnit: 'ft' | 'm';
   singleUnit: boolean;
-  /** Non-catalog parameters this region uses (BOD5, etc). Catalog
+  /** Non-catalog parameters this region uses (trichloroethylene, etc). Catalog
    *  parameters appear implicitly when their data file exists. Must not
    *  collide with any catalog code. */
   customDataTypes: DataType[];

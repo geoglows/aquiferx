@@ -10,7 +10,7 @@
 
 ## Architecture
 - **Hub-and-spoke data management**: `components/import/ImportDataHub.tsx` is the entry point, launching sub-wizards for Region, Aquifer, Well, and Measurement imports
-- **Data type model**: `public/data/catalog_wq.json` is the global vocabulary of standard water quality parameters. Every region implicitly has every catalog entry — a catalog type "exists" in a region only when its `data_{code}.csv` exists in the region. Region-specific non-catalog parameters (BOD5, trichloroethane, etc.) live in `region.json` as `customDataTypes`. `effectiveDataTypes` (WTE + catalog-with-data + custom-with-data) is computed at load time via `services/catalog.ts#computeEffectiveDataTypes`.
+- **Data type model**: `public/data/catalog_wq.json` is the global vocabulary of standard water quality parameters. Every region implicitly has every catalog entry — a catalog type "exists" in a region only when its `data_{code}.csv` exists in the region. Region-specific non-catalog parameters (trichloroethylene, a lab's own index, etc.) live in `region.json` as `customDataTypes`. `effectiveDataTypes` (WTE + catalog-with-data + custom-with-data) is computed at load time via `services/catalog.ts#computeEffectiveDataTypes`.
 - **Measurements**: use `value` field + `dataType` code. Per-file: `data_{code}.csv` naming (e.g. `data_wte.csv`, `data_nitrate.csv`)
 - **Per-folder metadata**: Each region folder has `region.json` with id, name, lengthUnit, singleUnit, customDataTypes
 - **CRS reprojection**: proj4 library in `services/reprojection.ts`, auto-detects from GeoJSON `crs` property or shapefile `.prj`

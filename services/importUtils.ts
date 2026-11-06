@@ -1,6 +1,6 @@
 import shp from 'shpjs';
 import JSZip from 'jszip';
-import { reprojectGeoJSON, reprojectFromWKT } from './reprojection';
+import { reprojectGeoJSON, reprojectFromWKT, assertLonLat } from './reprojection';
 
 export interface ColumnMapping {
   [targetColumn: string]: string;
@@ -325,6 +325,9 @@ export async function processUploadedFile(
     } catch {
       // Reprojection not critical, continue with original
     }
+    // Without a usable .prj the coordinates are taken as longitude and latitude;
+    // stop here when they can't be
+    if (!reprojected) assertLonLat(geojson);
 
     const features = geojson.type === 'FeatureCollection' ? geojson.features : [geojson];
     const columns = features.length > 0 ? Object.keys(features[0].properties || {}) : [];
@@ -342,8 +345,9 @@ export async function processUploadedFile(
     let geojson = JSON.parse(text);
 
     // Check for CRS property and reproject if needed
-    const { geojson: reprojGj, reprojected, fromCrs } = reprojectGeoJSON(geojson);
+    const { geojson: reprojGj, reprojected, fromCrs } = await reprojectGeoJSON(geojson);
     geojson = reprojGj;
+    if (!reprojected) assertLonLat(geojson);
 
     const features = geojson.type === 'FeatureCollection' ? geojson.features : [geojson];
     const columns = features.length > 0 ? Object.keys(features[0].properties || {}) : [];

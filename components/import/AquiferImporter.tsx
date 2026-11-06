@@ -35,13 +35,14 @@ const AquiferImporter: React.FC<AquiferImporterProps> = ({
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
+    setError('');
     try {
       const uploaded = await processUploadedFile(f, 'aquifer');
       setFile(uploaded);
       setShowMapper(true);
       setSkippedCount(0);
     } catch (err) {
-      setError(`Failed to process file: ${err}`);
+      setError(`Could not read ${f.name}: ${err instanceof Error ? err.message : err}`);
     }
   };
 

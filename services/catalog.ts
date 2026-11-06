@@ -11,6 +11,17 @@ export async function loadCatalog(): Promise<ParameterCatalog> {
   return cachedCatalog;
 }
 
+/** The EPA value for a table cell, marked S for a secondary standard and AL
+ *  for an action level; a plain number is a maximum contaminant level */
+export function epaLabel(param: CatalogParameter): string {
+  if (param.epa == null) return '—';
+  return `${param.epa}${param.epaKind === 'secondary' ? ' S' : param.epaKind === 'action' ? ' AL' : ''}`;
+}
+
+export const EPA_WHO_NOTE =
+  'EPA: US drinking water standard, the maximum contaminant level unless marked S (secondary standard) or AL (action level). ' +
+  'WHO: guideline value. Both in the unit shown.';
+
 /** Compute the effective data type list for a region: WTE + catalog entries
  *  with data on disk + custom types with data on disk. Pass the raw catalog
  *  and the region's server-reported `dataFiles` list. */

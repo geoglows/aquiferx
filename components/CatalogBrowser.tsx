@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, Search, ChevronRight, ChevronDown, Loader2, Info } from 'lucide-react';
 import { ParameterCatalog, CatalogParameter } from '../types';
-import { loadCatalog, groupCatalog } from '../services/catalog';
+import { loadCatalog, groupCatalog, epaLabel, EPA_WHO_NOTE } from '../services/catalog';
 
 interface CatalogBrowserProps {
   onClose: () => void;
@@ -86,8 +86,8 @@ const CatalogBrowser: React.FC<CatalogBrowserProps> = ({ onClose }) => {
             <p>
               These are the standardized water quality parameters every region shares.
               They appear automatically in a region's data type dropdown once you import a
-              column matching one of them — no need to pre-declare. MCL and WHO values,
-              when available, are shown as regulatory references.
+              column matching one of them — no need to pre-declare. Values must be in the
+              unit shown; the app does not convert them.
             </p>
           </div>
         </div>
@@ -107,6 +107,7 @@ const CatalogBrowser: React.FC<CatalogBrowserProps> = ({ onClose }) => {
 
         {/* Groups */}
         <div className="flex-1 overflow-y-auto px-6 py-3">
+          <p className="text-[11px] text-slate-500 mb-2">{EPA_WHO_NOTE}</p>
           {!catalog ? (
             <div className="flex items-center gap-2 text-sm text-slate-500 py-4">
               <Loader2 size={14} className="animate-spin" /> Loading catalog…
@@ -137,7 +138,7 @@ const CatalogBrowser: React.FC<CatalogBrowserProps> = ({ onClose }) => {
                             <th className="py-1.5 pl-3 pr-2 font-medium">Name</th>
                             <th className="py-1.5 pr-2 font-medium">Code</th>
                             <th className="py-1.5 pr-2 font-medium">Unit</th>
-                            <th className="py-1.5 pr-2 font-medium">MCL</th>
+                            <th className="py-1.5 pr-2 font-medium">EPA</th>
                             <th className="py-1.5 pr-3 font-medium">WHO</th>
                           </tr>
                         </thead>
@@ -153,7 +154,7 @@ const CatalogBrowser: React.FC<CatalogBrowserProps> = ({ onClose }) => {
                                   <td className="py-1.5 pl-3 pr-2 text-slate-700">{param.name}</td>
                                   <td className="py-1.5 pr-2 font-mono text-slate-500">{code}</td>
                                   <td className="py-1.5 pr-2 text-slate-600">{param.unit || '—'}</td>
-                                  <td className="py-1.5 pr-2 text-slate-600">{param.mcl ?? '—'}</td>
+                                  <td className="py-1.5 pr-2 text-slate-600">{epaLabel(param)}</td>
                                   <td className="py-1.5 pr-3 text-slate-600">{param.who ?? '—'}</td>
                                 </tr>
                                 {isSelected && param.wqp && (

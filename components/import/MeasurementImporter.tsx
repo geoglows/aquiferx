@@ -152,6 +152,11 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     skippedRows: number;
     duplicatesCollapsed: number;
     duplicateStrategyUsed: DuplicateStrategy;
+    /** New wells not made because they fall outside every aquifer */
+    wellsOutside: number;
+    skippedNonNumeric: number;
+    nonNumericExamples: string[];
+    skippedNoGse: number;
   }
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
 
@@ -364,7 +369,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
   };
 
   // Handle Target dropdown change. The value encodes kind + code:
-  //   "catalog:nitrate", "existingCustom:bod5", "new"
+  //   "catalog:nitrate", "existingCustom:tce", "new"
   const setMappingTarget = (column: string, value: string) => {
     setColumnMappings(prev => prev.map(m => {
       if (m.column !== column) return m;
@@ -1016,6 +1021,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       // Compose identityKey → final wellId (and track aquifer lookup)
       const identityToWellId = new Map<string, string>();
       const newWellRecords: ExistingWell[] = [];
+      let wellsOutside = 0;
       const takenIds = new Set<string>(existingWellsFull.map(w => w.well_id));
 
       if (matchResults && matchResults.length > 0) {
@@ -1030,7 +1036,14 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
 
         // Collect new wells (kind='new' or rejected proximity) and
         // create aqx- records for them
-        const newRows = matchResults.filter(r => (r.kind === 'new' || r.rejected) && r.sourceRow.lat !== undefined && r.sourceRow.lng !== undefined);
+        // In a region with aquifers, a new well outside all of them would be
+        // saved but never shown: leave it out, and its rows with it
+        const candidates = matchResults.filter(r => (r.kind === 'new' || r.rejected) && r.sourceRow.lat !== undefined && r.sourceRow.lng !== undefined);
+        const aquiferOf = (r: MatchResult): string => singleUnit
+          ? '0'
+          : (aquifersGeojson ? (assignWellToAquifer(r.sourceRow.lat!, r.sourceRow.lng!, aquifersGeojson) || '') : '');
+        const newRows = candidates.filter(r => singleUnit || !aquifersGeojson || aquiferOf(r) !== '');
+        wellsOutside = candidates.length - newRows.length;
         if (newRows.length > 0) {
           const gseInput = newRows.map((r, i) => ({
             id: `__new_${i}`,
@@ -1045,11 +1058,12 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
 
           newRows.forEach((r, i) => {
             const srcKey = wellIdentityKey(r.sourceRow.wellId || '', r.sourceRow.wellName || '', r.sourceRow.lat, r.sourceRow.lng);
-            const aqx = generateAqxId(r.sourceRow.wellName || null, r.sourceRow.lat!, r.sourceRow.lng!, takenIds);
+            // The file's own well ID when it has one; an aqx- ID made from the
+            // name and location when it doesn't
+            const ownId = r.sourceRow.wellId && !takenIds.has(r.sourceRow.wellId) ? r.sourceRow.wellId : null;
+            const aqx = ownId ?? generateAqxId(r.sourceRow.wellName || null, r.sourceRow.lat!, r.sourceRow.lng!, takenIds);
             takenIds.add(aqx);
-            const aquiferId = singleUnit
-              ? '0'
-              : (aquifersGeojson ? (assignWellToAquifer(r.sourceRow.lat!, r.sourceRow.lng!, aquifersGeojson) || '') : '');
+            const aquiferId = aquiferOf(r);
             const elev = gse.values.get(`__new_${i}`) ?? 0;
             const rec: ExistingWell = {
               well_id: aqx,
@@ -1123,6 +1137,8 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       const summaryByType: Record<string, number> = {};
       const typeNames: Record<string, string> = {};
       let totalDupsCollapsed = 0;
+      let skippedNonNumeric = 0, skippedNoGse = 0;
+      const nonNumericExamples: string[] = [];
 
       // One unified per-type pipeline for every source — the old separate
       // multi-type/single-type branches duplicated this logic and drifted
@@ -1136,7 +1152,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         const valueCol = typeColumnMapping[typeCode] ?? file.mapping['value'];
         if (!valueCol) continue;
 
-        const built = buildMeasurementRows(rows, {
+        const { rows: built, skipped } = buildMeasurementRows(rows, {
           valueCol,
           dateCol,
           dateFormat,
@@ -1145,6 +1161,11 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
           resolveAquifer,
           gseOf: wid => effectiveGseMap[wid] || 0,
         });
+        skippedNonNumeric += skipped.nonNumeric;
+        skippedNoGse += skipped.noGse;
+        for (const v of skipped.nonNumericExamples) {
+          if (nonNumericExamples.length < 3 && !nonNumericExamples.includes(v)) nonNumericExamples.push(v);
+        }
         const deduped = dedupMeasurements(built, duplicateStrategy);
         totalDupsCollapsed += deduped.collapsed;
         let processed = deduped.rows;
@@ -1158,8 +1179,12 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         // Capture the number of new rows for this type before merge so the
         // summary can show what the user's CSV contributed
         summaryByType[typeCode] = processed.length;
-        const effectiveType = dataTypes.find(d => d.code === typeCode);
-        typeNames[typeCode] = effectiveType?.name || typeCode;
+        // A type new to the region isn't in dataTypes yet
+        typeNames[typeCode] = dataTypes.find(d => d.code === typeCode)?.name
+          || (typeCode === 'wte' ? 'Water Table Elevation' : '')
+          || catalog?.parameters[typeCode]?.name
+          || newCustomTypesToAdd.find(d => d.code === typeCode)?.name
+          || typeCode;
 
         // Merged saves carry an optimistic-lock precondition; a replace,
         // which overwrites on purpose, doesn't.
@@ -1182,9 +1207,12 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       // of writing bogus wells.csv / region.json updates and an empty summary
       const hasDataFiles = filesToSave.some(f => /\/data_.+\.csv$/.test(f.path));
       if (!hasDataFiles) {
-        setError(
-          `No measurements were imported. All ${allRows.length} rows were skipped because they could not be resolved to a well. Check your column mapping and that the "Match wells" step found matches.`
-        );
+        const reasons = [
+          rows.length < allRows.length && `${allRows.length - rows.length} rows have no well that could be found (check the column mapping and the well matching)`,
+          skippedNonNumeric > 0 && `${skippedNonNumeric} values are not numbers, such as ${nonNumericExamples.map(v => `"${v}"`).join(', ')}`,
+          skippedNoGse > 0 && `${skippedNoGse} depths belong to wells with no ground surface elevation`,
+        ].filter(Boolean);
+        setError(`No measurements were imported: ${reasons.length ? reasons.join('; ') : 'the file has no values in the chosen columns'}.`);
         setIsSaving(false);
         return;
       }
@@ -1241,6 +1269,10 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         skippedRows: Math.max(0, allRows.length - rows.length),
         duplicatesCollapsed: totalDupsCollapsed,
         duplicateStrategyUsed: duplicateStrategy,
+        wellsOutside,
+        skippedNonNumeric,
+        nonNumericExamples,
+        skippedNoGse,
       };
       setImportSummary(summary);
     } catch (err) {
@@ -1456,12 +1488,34 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
             </p>
           )}
 
-          {importSummary.skippedRows > 0 && (
-            <p className="text-xs text-amber-700 mb-4">
+          {importSummary.wellsOutside > 0 && (
+            <p className="text-xs text-amber-700 mb-2">
               <AlertTriangle size={12} className="inline mr-1" />
-              {importSummary.skippedRows.toLocaleString()} row{importSummary.skippedRows !== 1 ? 's' : ''} skipped (unmatched or missing identity)
+              {importSummary.wellsOutside.toLocaleString()} new well{importSummary.wellsOutside !== 1 ? 's' : ''} not added because{' '}
+              {importSummary.wellsOutside !== 1 ? 'they fall' : 'it falls'} outside every aquifer
             </p>
           )}
+          {importSummary.skippedRows > 0 && (
+            <p className="text-xs text-amber-700 mb-2">
+              <AlertTriangle size={12} className="inline mr-1" />
+              {importSummary.skippedRows.toLocaleString()} row{importSummary.skippedRows !== 1 ? 's' : ''} skipped because their well could not be found
+            </p>
+          )}
+          {importSummary.skippedNonNumeric > 0 && (
+            <p className="text-xs text-amber-700 mb-2">
+              <AlertTriangle size={12} className="inline mr-1" />
+              {importSummary.skippedNonNumeric.toLocaleString()} value{importSummary.skippedNonNumeric !== 1 ? 's' : ''} skipped because{' '}
+              {importSummary.skippedNonNumeric !== 1 ? 'they are' : 'it is'} not a number, such as{' '}
+              {importSummary.nonNumericExamples.map(v => `"${v}"`).join(', ')}
+            </p>
+          )}
+          {importSummary.skippedNoGse > 0 && (
+            <p className="text-xs text-amber-700 mb-2">
+              <AlertTriangle size={12} className="inline mr-1" />
+              {importSummary.skippedNoGse.toLocaleString()} depth{importSummary.skippedNoGse !== 1 ? 's' : ''} to water skipped because the well has no ground surface elevation to convert {importSummary.skippedNoGse !== 1 ? 'them' : 'it'} with
+            </p>
+          )}
+          <div className="mb-2" />
 
           <div className="flex justify-end">
             <button onClick={onComplete} className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium text-sm hover:bg-blue-700">
@@ -1978,7 +2032,8 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
                   : m.target.kind === 'existingCustom'
                     ? `existingCustom:${m.target.code}`
                     : 'new';
-                const unitMismatch = m.target.kind === 'catalog' && m.headerUnit && resolved && m.headerUnit.toLowerCase() !== resolved.unit.toLowerCase();
+                const unitKey = (u: string) => u.toLowerCase().replace(/[µμ]/g, 'u').replace(/\s+/g, '');
+                const unitMismatch = m.target.kind === 'catalog' && m.headerUnit && resolved && unitKey(m.headerUnit) !== unitKey(resolved.unit);
                 const err = mappingErrors[m.column];
                 return (
                   <div key={m.column} className={`p-2 rounded border ${m.include ? 'border-indigo-200 bg-white' : 'border-slate-200 bg-slate-50 opacity-70'}`}>
@@ -2038,14 +2093,14 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
                             value={m.target.code}
                             onChange={e => updateNewCustom(m.column, 'code', e.target.value)}
                             className="flex-1 px-2 py-0.5 border border-slate-300 rounded font-mono"
-                            placeholder="e.g. bod5"
+                            placeholder="e.g. tce"
                           />
                           <label className="text-slate-500 w-8">Name</label>
                           <input
                             value={m.target.name}
                             onChange={e => updateNewCustom(m.column, 'name', e.target.value)}
                             className="flex-1 px-2 py-0.5 border border-slate-300 rounded"
-                            placeholder="e.g. BOD5"
+                            placeholder="e.g. Trichloroethylene"
                           />
                           <label className="text-slate-500 w-8">Unit</label>
                           <input
@@ -2157,6 +2212,9 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
               {wqpQualityReport.droppedFractionMismatch > 0 && (
                 <div>{wqpQualityReport.droppedFractionMismatch.toLocaleString()} dropped — sample fraction didn't match catalog preference</div>
               )}
+              {wqpQualityReport.droppedUnits > 0 && (
+                <div>{wqpQualityReport.droppedUnits.toLocaleString()} dropped — unit could not be converted to the catalog's</div>
+              )}
               {wqpQualityReport.droppedDuplicates > 0 && (
                 <div>{wqpQualityReport.droppedDuplicates.toLocaleString()} duplicates collapsed (same site + date + parameter)</div>
               )}
@@ -2226,8 +2284,8 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
             <div className="flex items-center justify-between">
               <p className="text-xs text-amber-800">
                 <AlertTriangle size={12} className="inline mr-1 -mt-0.5" />
-                <span className="font-medium">{duplicateInfo.duplicateGroups}</span> well{duplicateInfo.duplicateGroups !== 1 ? 's have' : ' has'} multiple
-                samples on the same date (<span className="font-medium">{duplicateInfo.extraRows}</span> extra row{duplicateInfo.extraRows !== 1 ? 's' : ''}).
+                More than one sample for a well on the same date, on <span className="font-medium">{duplicateInfo.duplicateGroups}</span>{' '}
+                date{duplicateInfo.duplicateGroups !== 1 ? 's' : ''} (<span className="font-medium">{duplicateInfo.extraRows}</span> extra row{duplicateInfo.extraRows !== 1 ? 's' : ''}).
               </p>
               <select
                 value={duplicateStrategy}
