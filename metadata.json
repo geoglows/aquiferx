@@ -1,8 +1,0 @@
-
-{
-  "name": "Aquifer Analyst",
-  "description": "A comprehensive tool for visualizing and managing regional groundwater data, aquifers, and well water table elevation time-series with PCHIP interpolation.",
-  "requestFramePermissions": [
-    "geolocation"
-  ]
-}

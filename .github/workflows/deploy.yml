@@ -1,0 +1,27 @@
+name: Deploy
+
+# Builds this app and publishes it to apps.geoglows, the same way the GRACE app does
+# Needs variable APP_PATH (the app's path in apps.json); bucket, distribution and AWS secrets come from the org
+# Runs only in the geoglows org, so pushes to a personal fork do nothing
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or tag to deploy (default: main)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: github.repository_owner == 'geoglows'
+    uses: geoglows/apps.geoglows/.github/workflows/deploy-app.yml@main
+    with:
+      app_path: ${{ vars.APP_PATH }}
+      ref: ${{ inputs.ref }}
+    secrets: inherit

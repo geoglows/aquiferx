@@ -1,6 +1,6 @@
 # Release 1: getting Aquifer Analyst ready for apps.geoglows.org
 
-Goal: a static build that deploys the way webapp-grace-groundwater does (Vercel, `vercel.json`), with docs on
+Goal: a static build that deploys the way webapp-grace-groundwater does (the apps.geoglows deploy workflow), with docs on
 training.geoglows.org written after the code settles. Storage stays simple: the user's data lives in the browser,
 and a downloaded zip is the backup they restore from. The BYOS / Supabase plans in `plan_data_mgmt.md` and
 `user_and_data_strategy.md` are deferred past this release.
@@ -125,15 +125,25 @@ From the review on 2026-10-27, in order:
 Later, if time allows: sample values in the column mappers, region boundary from the data extent or a drawn box,
 USGS water levels finding their own wells, a well list with delete.
 
-## Phase 6: production
+## Phase 6: production (local work done 2026-11-06; the push to geoglows is still to do)
 
-- Vite `base` for the deploy path, `vercel.json` as in GRACE.
-- WQP called directly; progress uses row counts from the response instead of the hidden count headers.
+GRACE moved from Vercel to the shared apps.geoglows workflow (S3 and CloudFront), so this app follows it and
+`vercel.json` is not needed.
+
+- `.github/workflows/deploy.yml` calls `geoglows/apps.geoglows/.github/workflows/deploy-app.yml`, as GRACE does. It
+  runs only when the repo owner is geoglows, so pushes to `njones61/aquiferx` do nothing. That script builds with
+  `npx vite build --base=<APP_PATH>/`: the base comes from the deploy and every app URL already uses
+  `import.meta.env.BASE_URL`. `npm run build` does not run there, so `public/data/index.json` must be committed
+  up to date. A build at `/aquifer-analyst/` was checked in headless Chrome: sample regions, wells and Leaflet
+  CSS load, with no console errors.
+- WQP called directly; the size preview uses the POST count endpoints (done before this phase).
 - Imputation reads CPC soil moisture v2 (1948 on) from `cdn.apps.geoglows.org/aqx/cpc-soil-moisture-0.5-v1.zarr`,
   built by `scripts/soil_moisture_store.py` and read with zarrita (done 2026-10-27; the THREDDS proxy is gone).
   Rebuild monthly-ish to a new `-vN` prefix and bump `VITE_SOIL_MOISTURE_URL`.
-- Remove the esm.sh importmap and unpkg Leaflet CSS left in `index.html` from the original scaffold.
-- Push to the geoglows org repo; development continues there after the fork.
+- Removed the esm.sh importmap and unpkg Leaflet CSS from `index.html` (Leaflet's CSS is now bundled from npm),
+  the unused Gemini/USGS key `define`s in `vite.config.ts`, and AI Studio's `metadata.json`.
+- Still to do: push to the geoglows org repo, set its `APP_PATH` variable, and add the app to `apps.json` in
+  `geoglows/apps.geoglows`. Development continues there after the fork.
 
 ## Phase 7: documentation
 

@@ -76,11 +76,6 @@ export default defineConfig(({ mode }) => {
         host: '0.0.0.0',
       },
       plugins: [react(), shipOnlySampleData(), ...(env.LOCAL_ZARR_DIR ? [serveLocalZarr(env.LOCAL_ZARR_DIR)] : [])],
-      define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.USGS_API_KEY': JSON.stringify(env.USGS_API_KEY || '')
-      },
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),

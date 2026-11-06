@@ -54,3 +54,4 @@
 - `npm run dev` — rebuild the sample index, start dev server on port 3000
 - `npx tsc --noEmit` — type check
 - `npm run build` — production build (`npx vite build` skips the sample index)
+- Deploy: `.github/workflows/deploy.yml` runs the shared apps.geoglows workflow (geoglows org only), which builds with `npx vite build --base=<APP_PATH>/`, so commit `public/data/index.json` whenever the sample regions change
