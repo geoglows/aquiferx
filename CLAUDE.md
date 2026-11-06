@@ -58,3 +58,4 @@
 - `npx tsc --noEmit` — type check
 - `npm run build` — production build (`npx vite build` skips the sample index)
 - Deploy: `.github/workflows/deploy.yml` runs the shared apps.geoglows workflow (geoglows org only), which builds with `npx vite build --base=<APP_PATH>/`, so commit `public/data/index.json` whenever the sample regions change
+- Every push to `main` deploys (APP_PATH is `/previews/aquiferx`), so work on a branch and merge by pull request. The deploy runs `npm ci` with the latest npm; test with `npx npm@latest ci` from a clean copy. npm 12 needs `allow-git=root` (`.npmrc`) and `allowScripts` (`package.json`) for `@geoglows/geoglows-auth`

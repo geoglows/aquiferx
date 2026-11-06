@@ -1101,6 +1101,13 @@ const App: React.FC = () => {
     }
   };
 
+  // The chart's title, shared by the chart panel and the expanded chart window
+  const wellsChartTitle = `${activeDataType.name}: ${
+    selectedWells.length <= 3
+      ? selectedWells.map(w => showWellIdsOnMap ? `${w.name} (${w.id})` : w.name).join(', ')
+      : `${selectedWells.length} wells selected`
+  }`;
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-slate-50 font-sans">
       {/* Sidebar */}
@@ -1484,17 +1491,14 @@ const App: React.FC = () => {
                     </div>
                   )}
                   <div className={`px-4 pb-4 pt-2 flex-1 flex flex-col ${showTabs ? 'border-t border-[var(--border)]' : 'pt-4'}`}>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center space-x-3">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    {/* min-w-0 lets a long title shrink to one cut-off line instead of wrapping and squeezing the chart */}
+                    <div className="flex items-center space-x-3 min-w-0">
                       {effectiveTab === 'waterLevel' ? (
                         <>
-                          {!showTabs && <Activity size={18} className="text-[#60a5fa]" />}
-                          <h3 className="font-bold text-[var(--text)]">
-                            {activeDataType.name}: {
-                              selectedWells.length <= 3
-                                ? selectedWells.map(w => showWellIdsOnMap ? `${w.name} (${w.id})` : w.name).join(', ')
-                                : `${selectedWells.length} wells selected`
-                            }
+                          {!showTabs && <Activity size={18} className="text-[#60a5fa] flex-shrink-0" />}
+                          <h3 className="font-bold text-[var(--text)] truncate" title={wellsChartTitle}>
+                            {wellsChartTitle}
                           </h3>
                         </>
                       ) : effectiveTab === 'storageChange' ? (
@@ -1523,7 +1527,8 @@ const App: React.FC = () => {
                         <h3 className="font-bold text-[var(--text)]">{rasterResult.title}</h3>
                       ) : null}
                     </div>
-                    <div className="flex items-center space-x-4">
+                    {/* The controls keep their size and stay on one line; the title gives way */}
+                    <div className="flex items-center space-x-4 flex-shrink-0 whitespace-nowrap">
                       {effectiveTab === 'waterLevel' ? (
                         <>
                           {activeDataType.code === 'wte' && (
@@ -1761,8 +1766,9 @@ const App: React.FC = () => {
                             tickFormatter={(t: number) => new Date(t).getFullYear().toString()}
                             stroke="var(--chart-axis)" fontSize={10}
                           />
+                          {/* Compact ticks (-1.5M) leave room for the unit label; the tooltip gives full values */}
                           <YAxis stroke="var(--chart-axis)" fontSize={10}
-                            tickFormatter={(v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                            tickFormatter={(v: number) => v.toLocaleString(undefined, { notation: 'compact', maximumFractionDigits: 1 })}
                             label={allRasterResults.length === 1 ? { value: storageVolumeUnit, angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: 'var(--chart-text)', fontSize: 10 } } : undefined}
                           />
                           <Tooltip
@@ -1953,11 +1959,7 @@ const App: React.FC = () => {
       {isChartExpanded && selectedWells.length > 0 && (
         <ExpandedChartWindow
           onClose={() => setIsChartExpanded(false)}
-          title={`${activeDataType.name}: ${
-            selectedWells.length <= 3
-              ? selectedWells.map(w => showWellIdsOnMap ? `${w.name} (${w.id})` : w.name).join(', ')
-              : `${selectedWells.length} wells selected`
-          }`}
+          title={wellsChartTitle}
           subtitle={`Units: ${activeDataType.unit === 'm' ? 'Meters' : activeDataType.unit === 'ft' ? 'Feet' : activeDataType.unit} (${activeDataType.code.toUpperCase()})`}
         >
           <RasterFrame>{frame => (
