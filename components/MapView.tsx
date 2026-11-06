@@ -469,12 +469,18 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
   // changes size without a window resize: the layout settling after load, the
   // chart panel opening and closing, the split being dragged. Without this a
   // part of the map stays blank grey.
+  // Debounced, so a refit never lands in the middle of a fly animation (which
+  // leaves the final view's tiles unrequested), only after the size settles.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const observer = new ResizeObserver(() => map.invalidateSize({ pan: false }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = new ResizeObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => map.invalidateSize({ pan: false }), 200);
+    });
     observer.observe(map.getContainer());
-    return () => observer.disconnect();
+    return () => { clearTimeout(timer); observer.disconnect(); };
   }, []);
 
   // Handle basemap changes
