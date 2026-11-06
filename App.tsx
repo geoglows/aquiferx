@@ -1328,7 +1328,7 @@ const App: React.FC = () => {
             />
             {/* Well legend — shown when aquifer selected, wells visible, and trends not active */}
             {selectedAquifer && showWellsOnMap && !(showTrends && (trendColors || aquiferTrendColors)) && (
-              <div className="rfs-card absolute top-20 left-2 z-[90] p-3" style={{ width: '180px' }}>
+              <div className="rfs-card absolute top-[124px] left-2 z-[90] p-3" style={{ width: '180px' }}>
                 <div className="text-xs font-semibold text-[var(--text)] mb-2">Wells</div>
                 {wellTimeRanges ? (
                   <>
@@ -1368,7 +1368,7 @@ const App: React.FC = () => {
                 ? (unit === 'm' ? AQUIFER_TREND_THRESHOLDS_M : AQUIFER_TREND_THRESHOLDS_FT)
                 : (unit === 'm' ? TREND_THRESHOLDS_M : TREND_THRESHOLDS_FT);
               return (
-                <div className="rfs-card absolute top-20 left-2 z-[90] p-3" style={{ width: '210px' }}>
+                <div className="rfs-card absolute top-[124px] left-2 z-[90] p-3" style={{ width: '210px' }}>
                   <div className="text-xs font-semibold text-[var(--text)] mb-0.5">
                     {isAquiferMode ? 'Aquifer Trend (median)' : 'Well Trend'} ({unit}/yr)
                   </div>

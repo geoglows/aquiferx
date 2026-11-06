@@ -174,6 +174,25 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
   const visibleWellsRef = useRef<Well[]>([]);
   const prevSelectedAquiferIdRef = useRef<string | null>(null);
   const prevSelectedRegionIdRef = useRef<string | null>(null);
+
+  // What the map was last framed on (all regions, a region or an aquifer), kept
+  // as a function so it can refit for the map's current size, and whether the
+  // user has moved the map since. The chart panel opening shrinks the map;
+  // refitting then keeps the framed area in view without undoing a zoom the
+  // user made.
+  const frameRef = useRef<((animate: boolean) => void) | null>(null);
+  const userMovedRef = useRef(false);
+  const programmaticMoveRef = useRef(false);
+  const programmaticTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const frameView = (fit: (animate: boolean) => void, animate: boolean) => {
+    frameRef.current = fit;
+    userMovedRef.current = false;
+    programmaticMoveRef.current = true;
+    // moveend clears the flag; the timer covers a fit that does not move the map at all
+    clearTimeout(programmaticTimerRef.current);
+    programmaticTimerRef.current = setTimeout(() => { programmaticMoveRef.current = false; }, animate ? 2500 : 300);
+    fit(animate);
+  };
   const wellJustClickedRef = useRef(false);
   const mouseDownPosRef = useRef<{ x: number; y: number } | null>(null);
   const aquifersRef = useRef(aquifers);
@@ -378,7 +397,35 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
 
   useEffect(() => {
     if (!mapRef.current) {
-      mapRef.current = L.map('map-container', { boxZoom: false, zoomSnap: 0.5, zoomDelta: 0.5 }).setView([39, -98], 4);
+      mapRef.current = L.map('map-container', { boxZoom: false, zoomSnap: 0.25, zoomDelta: 0.5 }).setView([39, -98], 4);
+
+      // Any move the app did not start (drag, wheel, zoom buttons, search) means the
+      // user has their own view, which a later refit must not undo
+      mapRef.current.on('movestart', () => { if (!programmaticMoveRef.current) userMovedRef.current = true; });
+      mapRef.current.on('moveend', () => { programmaticMoveRef.current = false; });
+
+      // Frame button under + and -: back to the open aquifer, region, or all regions
+      const FrameControl = L.Control.extend({
+        onAdd() {
+          const bar = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+          const a = L.DomUtil.create('a', '', bar);
+          a.href = '#';
+          a.title = 'Zoom to fit what is open';
+          a.setAttribute('role', 'button');
+          a.setAttribute('aria-label', 'Zoom to fit');
+          a.style.display = 'flex';
+          a.style.alignItems = 'center';
+          a.style.justifyContent = 'center';
+          a.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
+          L.DomEvent.disableClickPropagation(bar);
+          L.DomEvent.on(a, 'click', e => {
+            L.DomEvent.preventDefault(e);
+            if (frameRef.current) frameView(frameRef.current, true);
+          });
+          return bar;
+        },
+      });
+      new FrameControl({ position: 'topleft' }).addTo(mapRef.current);
 
       const basemap = BASEMAPS[currentBasemap];
       basemapLayerRef.current = L.tileLayer(basemap.url, {
@@ -479,7 +526,11 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
     let timer: ReturnType<typeof setTimeout> | undefined;
     const observer = new ResizeObserver(() => {
       clearTimeout(timer);
-      timer = setTimeout(() => map.invalidateSize({ pan: false }), 200);
+      timer = setTimeout(() => {
+        map.invalidateSize({ pan: false });
+        // Keep the framed area in view, unless the user has moved the map since
+        if (frameRef.current && !userMovedRef.current) frameView(frameRef.current, false);
+      }, 200);
     });
     observer.observe(map.getContainer());
     return () => { clearTimeout(timer); observer.disconnect(); };
@@ -532,8 +583,11 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
         ]).flat()
       );
       if (allBounds.isValid()) {
-        const zoom = Math.max(mapRef.current.getBoundsZoom(allBounds, false, L.point(20, 20)), 2.5);
-        mapRef.current.setView(allBounds.getCenter(), zoom, { animate: false });
+        const map = mapRef.current;
+        frameView(animate => {
+          const zoom = Math.max(map.getBoundsZoom(allBounds, false, L.point(20, 20)), 2.5);
+          map.setView(allBounds.getCenter(), zoom, { animate });
+        }, false);
       }
     }
   }, [regions, selectedRegion]);
@@ -585,7 +639,10 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
           [selectedRegion.bounds[0], selectedRegion.bounds[1]],
           [selectedRegion.bounds[2], selectedRegion.bounds[3]]
         );
-        mapRef.current.flyToBounds(rBounds, { padding: [40, 40], duration: 1.5 });
+        const map = mapRef.current;
+        frameView(animate => animate
+          ? map.flyToBounds(rBounds, { padding: [20, 20], duration: 1.5 })
+          : map.fitBounds(rBounds, { padding: [20, 20], animate: false }), true);
       }
       prevSelectedRegionIdRef.current = selectedRegion.id;
     } else {
@@ -667,7 +724,10 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
           [selectedAquifer.bounds[0], selectedAquifer.bounds[1]],
           [selectedAquifer.bounds[2], selectedAquifer.bounds[3]]
         );
-        mapRef.current.flyToBounds(aBounds, { padding: [40, 40], duration: 1 });
+        const map = mapRef.current;
+        frameView(animate => animate
+          ? map.flyToBounds(aBounds, { padding: [20, 20], duration: 1 })
+          : map.fitBounds(aBounds, { padding: [20, 20], animate: false }), true);
       }
       prevSelectedAquiferIdRef.current = selectedAquifer.id;
     } else {
