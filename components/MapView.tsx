@@ -18,11 +18,6 @@ const BasemapIcon = () => (
 export const WELL_COUNT_COLORS = { none: '#ef4444', one: '#6b7280', many: '#0000ff' };
 
 const BASEMAPS = {
-  'OpenStreetMap': {
-    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    thumbnail: 'https://www.arcgis.com/sharing/rest/content/items/b834a68d7a484c5fb473d4ba90571f26/info/thumbnail/ago_downloaded.png'
-  },
   'Topographic (Esri)': {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri',
@@ -52,6 +47,13 @@ const BASEMAPS = {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri',
     thumbnail: 'https://www.arcgis.com/sharing/rest/content/items/c61ad8ab017d49e1a82f580ee1298571/info/thumbnail/ago_downloaded.png'
+  },
+  // Offered but not the default: OpenStreetMap's tile servers are volunteer-run, and their
+  // usage policy discourages apps from relying on them for heavy traffic
+  'OpenStreetMap': {
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    thumbnail: 'https://www.arcgis.com/sharing/rest/content/items/b834a68d7a484c5fb473d4ba90571f26/info/thumbnail/ago_downloaded.png'
   }
 };
 
@@ -189,7 +191,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
   const onAquiferClickRef = useRef(onAquiferClick);
   onAquiferClickRef.current = onAquiferClick;
 
-  const [currentBasemap, setCurrentBasemap] = useState<keyof typeof BASEMAPS>('OpenStreetMap');
+  const [currentBasemap, setCurrentBasemap] = useState<keyof typeof BASEMAPS>('Topographic (Esri)');
   const [isBasemapMenuOpen, setIsBasemapMenuOpen] = useState(false);
   const basemapRef = useRef<HTMLDivElement>(null);
 
