@@ -14,6 +14,9 @@ const BasemapIcon = () => (
   </svg>
 );
 
+/** Well marker fill by how many measurements of the current data type a well has. App's legend uses the same values. */
+export const WELL_COUNT_COLORS = { none: '#ef4444', one: '#6b7280', many: '#0000ff' };
+
 const BASEMAPS = {
   'OpenStreetMap': {
     url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -612,10 +615,9 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
         if (dateFilterPassingWells && !dateFilterPassingWells.has(wellKey)) return;
         visible.push(w);
         const trendColor = wellColors?.get(w.id);
-        // Color by measurement count: 0=red, 1=gray, 2+=blue
-        const defaultColor = measurementCount === 0 ? '#ef4444'
-          : measurementCount === 1 ? '#6b7280'
-          : '#0000ff';
+        const defaultColor = measurementCount === 0 ? WELL_COUNT_COLORS.none
+          : measurementCount === 1 ? WELL_COUNT_COLORS.one
+          : WELL_COUNT_COLORS.many;
         const marker = L.circleMarker([w.lat, w.lng], {
           radius: 6,
           fillColor: trendColor || defaultColor,
@@ -666,9 +668,9 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
         ? (rasterActiveWellIds.has(wellId) ? '#22c55e' : '#4b5563')
         : null;
       const measurementCount = wellMeasurementCounts.get(wellKeyMap.get(wellId) || '') || 0;
-      const defaultFill = measurementCount === 0 ? '#ef4444'
-        : measurementCount === 1 ? '#6b7280'
-        : '#0000ff';
+      const defaultFill = measurementCount === 0 ? WELL_COUNT_COLORS.none
+        : measurementCount === 1 ? WELL_COUNT_COLORS.one
+        : WELL_COUNT_COLORS.many;
       marker.setStyle({
         radius: isSelected ? 8 : 6,
         fillColor: hasTrend ? wellColors!.get(wellId)! : rasterFill || defaultFill,
@@ -826,7 +828,8 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
 
       {/* Well Search */}
       {selectedAquifer && (
-        <div className="absolute top-3 left-14 z-[90]" style={{ width: '260px' }}>
+        // z-[100]: its matches open over the wells legend (z-[90] in App), which is drawn later
+        <div className="absolute top-3 left-14 z-[100]" style={{ width: '260px' }}>
           <div className="relative">
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-faint)] pointer-events-none" />
             <input

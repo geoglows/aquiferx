@@ -8,7 +8,7 @@ import { saveFiles, deleteFile, deleteFolder, readJson, renameAnalysis, download
 import SettingsDialog from './components/SettingsDialog';
 import ConfirmDialog from './components/import/ConfirmDialog';
 import { slugify } from './utils/strings';
-import MapView, { MapViewHandle } from './components/MapView';
+import MapView, { MapViewHandle, WELL_COUNT_COLORS } from './components/MapView';
 import Sidebar from './components/Sidebar';
 import TimeSeriesChart from './components/TimeSeriesChart';
 import ImportDataHub from './components/import/ImportDataHub';
@@ -1337,15 +1337,15 @@ const App: React.FC = () => {
                 ) : (
                   <>
                     <div className="flex items-center gap-2 py-0.5">
-                      <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#3b82f6' }} />
+                      <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: WELL_COUNT_COLORS.many }} />
                       <span className="text-xs text-[var(--text-dim)]">2+ observations</span>
                     </div>
                     <div className="flex items-center gap-2 py-0.5">
-                      <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#6b7280' }} />
+                      <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: WELL_COUNT_COLORS.one }} />
                       <span className="text-xs text-[var(--text-dim)]">1 observation</span>
                     </div>
                     <div className="flex items-center gap-2 py-0.5">
-                      <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#ef4444' }} />
+                      <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: WELL_COUNT_COLORS.none }} />
                       <span className="text-xs text-[var(--text-dim)]">No data</span>
                     </div>
                   </>
