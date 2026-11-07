@@ -16,6 +16,8 @@ export interface USGSWell {
   lat: number;
   lng: number;
   gse: number;
+  /** USGS well_constructed_depth, feet below land surface */
+  depthFt?: number;
 }
 
 export interface USGSMeasurement {
@@ -134,12 +136,16 @@ export async function fetchUSGSWells(
 
       // USGS OGC API property names (with fallbacks for older schemas)
       const altFt = parseFloat(String(props.altitude ?? props.altitude_of_gage_or_measuring_point ?? 0)) || 0;
+      // The depth of the finished well. Its hole depth is no stand-in: nested
+      // wells built in one borehole all share the hole's depth
+      const depthFt = parseFloat(String(props.well_constructed_depth ?? ''));
       wells.push({
         siteId: props.id || props.monitoring_location_identifier || '',
         siteName: props.monitoring_location_name || '',
         lat: coords[1],
         lng: coords[0],
         gse: altFt ? altFt * 0.3048 : 0, // USGS altitude is in feet; convert to meters
+        ...(Number.isFinite(depthFt) ? { depthFt } : {}),
       });
     }
 

@@ -72,6 +72,8 @@ export interface Well {
   lat: number;
   lng: number;
   gse: number; // Ground Surface Elevation
+  /** Depth of the finished well below the ground, in the region's length unit; undefined when unknown */
+  depth?: number;
   aquiferId: string;
   aquiferName: string;
   regionId: string;
@@ -169,6 +171,17 @@ export interface RasterOptions {
     idw: IdwOptions;
   };
   general: GeneralInterpolationOptions;
+  /** Set when the map used only wells in a depth range */
+  wellDepth?: WellDepthFilter;
+}
+
+/** Wells whose depth is from min to max (either may be open), and whether wells with no depth join them */
+export interface WellDepthFilter {
+  min: number | null;
+  max: number | null;
+  includeNoDepth: boolean;
+  /** The region's length unit, which the depths are in */
+  unit: 'ft' | 'm';
 }
 
 export interface RasterFrameStats {

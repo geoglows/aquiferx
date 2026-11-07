@@ -703,7 +703,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
           opacity: 1,
           fillOpacity: 0.9
         });
-        marker.bindTooltip(`Well: ${w.name}<br/>ID: ${w.id}${w.gse ? `<br/>GSE: ${w.gse}` : ''}<br/>Observations: ${measurementCount}`, { direction: 'top' });
+        marker.bindTooltip(`Well: ${w.name}<br/>ID: ${w.id}${w.gse ? `<br/>GSE: ${w.gse}` : ''}${w.depth != null ? `<br/>Well depth: ${w.depth}` : ''}<br/>Observations: ${measurementCount}`, { direction: 'top' });
         marker.on('click', (e) => {
           // Stop the native DOM event from reaching the map container
           const ne = (e as any).originalEvent;

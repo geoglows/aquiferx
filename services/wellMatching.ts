@@ -55,6 +55,8 @@ export interface ExistingWell {
   lng: number;
   aquifer_id: string;
   gse: number;
+  /** A new well's depth as wells.csv stores it ('' or a number) */
+  well_depth?: string;
 }
 
 export interface SourceWellRow {

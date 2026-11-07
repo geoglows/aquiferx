@@ -1,6 +1,7 @@
 import React from 'react';
 import { X } from 'lucide-react';
 import { RasterAnalysisMeta } from '../types';
+import { describeDepthFilter } from '../utils/wellDepth';
 
 interface RasterInfoDialogProps {
   meta: RasterAnalysisMeta;
@@ -46,6 +47,9 @@ const RasterInfoDialog: React.FC<RasterInfoDialogProps> = ({ meta, onClose }) =>
                 <div className={rowCls}><span className={labelCls}>Method</span><span className={valueCls}>{opts.temporal.method === 'pchip' ? 'PCHIP' : opts.temporal.method === 'linear' ? 'Linear' : `Moving Average (${opts.temporal.maWindow}mo)`}</span></div>
                 <div className={rowCls}><span className={labelCls}>Min Observations</span><span className={valueCls}>{opts.temporal.minObservations}</span></div>
                 <div className={rowCls}><span className={labelCls}>Min Time Span</span><span className={valueCls}>{opts.temporal.minTimeSpan} years</span></div>
+                {opts.wellDepth && (
+                  <div className={rowCls}><span className={labelCls}>Well Depth</span><span className={valueCls}>{describeDepthFilter(opts.wellDepth)}</span></div>
+                )}
               </div>
             ) : (
               <div className="space-y-0">

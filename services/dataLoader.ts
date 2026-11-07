@@ -264,6 +264,7 @@ export async function loadWells(regionPath: string, regionId: string): Promise<W
       const lat = parseFloat(row['lat'] || '0');
       const lng = parseFloat(row['long'] || '0');
       const gse = parseFloat(row['gse'] || '0');
+      const depth = parseFloat(row['well_depth'] ?? '');
       const aquiferId = row['aquifer_id'] || '';
       const aquiferName = row['aquifer_name'] || '';
 
@@ -274,6 +275,7 @@ export async function loadWells(regionPath: string, regionId: string): Promise<W
           lat,
           lng,
           gse,
+          ...(Number.isFinite(depth) ? { depth } : {}),
           aquiferId,
           aquiferName,
           regionId
