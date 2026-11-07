@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import { Measurement, Well, DataType } from '../types';
 import { interpolatePCHIP, kernelSmooth } from '../utils/interpolation';
+import { dateTime } from '../utils/dates';
 
 // Tailwind 400s. These were the 500s, chosen when the plot sat on white; on a
 // dark ground that whole rank reads muddy. Lifted as a set rather than one at a
@@ -124,12 +125,12 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     for (const wellId of orderedWellIds) {
       const wellMeasurements = byWell.get(wellId)!;
       const sorted = [...wellMeasurements]
-        .filter(m => !isNaN(new Date(m.date).getTime()))
-        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        .filter(m => !isNaN(dateTime(m.date)))
+        .sort((a, b) => dateTime(a.date) - dateTime(b.date));
 
       if (sorted.length === 0) continue;
 
-      const xValues = sorted.map(m => new Date(m.date).getTime());
+      const xValues = sorted.map(m => dateTime(m.date));
       const yValues = sorted.map(m => m.value);
       const actualSet = new Set(xValues);
       const interpMap = new Map<number, number>();
@@ -195,7 +196,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
 
     const byWell = new Map<string, { x: number; y: number }[]>();
     for (const m of measurements) {
-      const t = new Date(m.date).getTime();
+      const t = dateTime(m.date);
       if (isNaN(t)) continue;
       // When trendWindowStart is set, only use points within the window for fitting
       if (trendWindowStart !== undefined && t < trendWindowStart) continue;
@@ -258,11 +259,11 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
       if (!wellMeas) continue;
 
       const sorted = [...wellMeas]
-        .filter(m => !isNaN(new Date(m.date).getTime()))
-        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        .filter(m => !isNaN(dateTime(m.date)))
+        .sort((a, b) => dateTime(a.date) - dateTime(b.date));
       if (sorted.length < 2) continue;
 
-      const xValues = sorted.map(m => new Date(m.date).getTime());
+      const xValues = sorted.map(m => dateTime(m.date));
       const yValues = sorted.map(m => m.value);
 
       // Monthly output grid spanning the well's data range

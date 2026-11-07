@@ -13,7 +13,7 @@ import Sidebar from './components/Sidebar';
 import TimeSeriesChart from './components/TimeSeriesChart';
 import ImportDataHub from './components/import/ImportDataHub';
 import DataEditor from './components/DataEditor';
-import { isoDate } from './utils/dates';
+import { isoDate, dateTime } from './utils/dates';
 import SpatialAnalysisDialog from './components/SpatialAnalysisDialog';
 import ImputationWizard from './components/ImputationWizard';
 import ModelTimeSeries from './components/ModelTimeSeries';
@@ -1025,7 +1025,7 @@ const App: React.FC = () => {
   const handleChartEditMeasurement = async (wellId: string, date: number, newValue: number) => {
     const well = selectedWells.find(w => w.id === wellId);
     const updatedMeasurements = measurements.map(m =>
-      m.wellId === wellId && m.regionId === well?.regionId && m.aquiferId === well?.aquiferId && new Date(m.date).getTime() === date && m.dataType === selectedDataType
+      m.wellId === wellId && m.regionId === well?.regionId && m.aquiferId === well?.aquiferId && dateTime(m.date) === date && m.dataType === selectedDataType
         ? { ...m, value: newValue }
         : m
     );
@@ -1035,7 +1035,7 @@ const App: React.FC = () => {
   const handleChartDeleteMeasurement = async (wellId: string, date: number) => {
     const well = selectedWells.find(w => w.id === wellId);
     const updatedMeasurements = measurements.filter(m =>
-      !(m.wellId === wellId && m.regionId === well?.regionId && m.aquiferId === well?.aquiferId && new Date(m.date).getTime() === date && m.dataType === selectedDataType)
+      !(m.wellId === wellId && m.regionId === well?.regionId && m.aquiferId === well?.aquiferId && dateTime(m.date) === date && m.dataType === selectedDataType)
     );
     await handleDataEditorSave(updatedMeasurements);
   };

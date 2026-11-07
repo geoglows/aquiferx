@@ -2,6 +2,7 @@
 import React, { useState, useMemo } from 'react';
 import { X, Trash2, Save } from 'lucide-react';
 import { Well, Measurement, DataType } from '../types';
+import { dateTime, formatDate } from '../utils/dates';
 
 interface DataEditorProps {
   well: Well;
@@ -24,7 +25,7 @@ function computeOutlierFlags(rows: Measurement[], deleted: Set<number>, multipli
   const WINDOW = 2 * 365.25 * 86400000, MIN_NEIGHBORS = 6;
   const flags = rows.map(() => false);
   const act = rows
-    .map((r, i) => ({ i, t: new Date(r.date).getTime(), v: r.value }))
+    .map((r, i) => ({ i, t: dateTime(r.date), v: r.value }))
     .filter(x => !deleted.has(x.i));
   if (act.length < 5) return flags;
   act.forEach((x, j) => {
@@ -53,7 +54,7 @@ function computeOutlierFlags(rows: Measurement[], deleted: Set<number>, multipli
 const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurements, regionId, dataType, onClose, onSave }) => {
   // Local editable copy, sorted by date ascending
   const [rows, setRows] = useState<Measurement[]>(() =>
-    [...measurements].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    [...measurements].sort((a, b) => dateTime(a.date) - dateTime(b.date))
   );
   const [deletedIndices, setDeletedIndices] = useState<Set<number>>(new Set());
   const [isSaving, setIsSaving] = useState(false);
@@ -165,7 +166,7 @@ const DataEditor: React.FC<DataEditorProps> = ({ well, measurements, allMeasurem
                     }`}
                   >
                     <td className="py-1.5 pr-4 text-slate-700">
-                      {new Date(row.date).toLocaleDateString()}
+                      {formatDate(row.date)}
                     </td>
                     <td className="py-1.5 pr-4">
                       <input

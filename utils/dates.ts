@@ -11,3 +11,17 @@ export function isoDate(date: string): string {
   if (isNaN(d.getTime())) return s;
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+
+// A stored measurement date as milliseconds at local midnight, so that local
+// date methods (toLocaleDateString, getMonth) give back the same day. NaN when
+// the date can't be read.
+export function dateTime(date: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate(date));
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : NaN;
+}
+
+// A stored measurement date in the browser's date format
+export function formatDate(date: string): string {
+  const t = dateTime(date);
+  return isNaN(t) ? date : new Date(t).toLocaleDateString();
+}

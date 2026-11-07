@@ -4,6 +4,7 @@ import {
 } from 'recharts';
 import { Settings } from 'lucide-react';
 import { RasterFrameStats } from '../types';
+import { dateTime } from '../utils/dates';
 
 interface RasterStatsChartProps {
   stats: RasterFrameStats[];
@@ -38,7 +39,7 @@ const RasterStatsChart: React.FC<RasterStatsChartProps> = ({
       const stdLow = Math.round((s.mean - s.std) * 100) / 100;
       const stdHigh = Math.round((s.mean + s.std) * 100) / 100;
       return {
-        date: new Date(s.date).getTime(),
+        date: dateTime(s.date),
         mean: s.mean,
         median: s.median,
         count: s.count,
