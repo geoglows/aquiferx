@@ -55,6 +55,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
   const [gseInterpolated, setGseInterpolated] = useState(false);
   const [gseProgress, setGseProgress] = useState({ current: 0, total: 0 });
   const [gseSource, setGseSource] = useState('');
+  const [gseFallback, setGseFallback] = useState(0);
   const [gseIsRunning, setGseIsRunning] = useState(false);
 
   // USGS download
@@ -398,12 +399,13 @@ const WellImporter: React.FC<WellImporterProps> = ({
     setGseSource(allInUS ? 'USGS 3DEP (~10 m)' : 'Copernicus DEM via Open-Meteo (~90 m)');
 
     try {
-      const { values } = await fetchGseBatch(wells, {
+      const { values, fallbackCount } = await fetchGseBatch(wells, {
         lengthUnit,
         onProgress: (current, total) => { if (run === gseRunRef.current) setGseProgress({ current, total }); },
       });
       if (run !== gseRunRef.current) return;
       setGseValues(values);
+      setGseFallback(fallbackCount);
       setGseInterpolated(true);
     } catch (err) {
       if (run === gseRunRef.current) setGseError(String(err instanceof Error ? err.message : err));
@@ -861,6 +863,11 @@ const WellImporter: React.FC<WellImporterProps> = ({
                   <p className="text-xs flex items-center gap-2 text-green-700">
                     <CheckCircle2 size={14} className="shrink-0" /> Found for {gseValues.size} well{gseValues.size === 1 ? '' : 's'}, from {gseSource}.
                   </p>
+                  {gseFallback > 0 && (
+                    <p className="text-xs mt-1 text-slate-600">
+                      3DEP did not answer for {gseFallback} of them, which have the Copernicus DEM value via Open-Meteo (~90 m) instead.
+                    </p>
+                  )}
                   {missing > 0 && (
                     <p className="text-xs flex items-center gap-2 mt-1 text-amber-700">
                       <AlertTriangle size={14} className="shrink-0" />
