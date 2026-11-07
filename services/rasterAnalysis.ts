@@ -5,7 +5,7 @@ import {
   SpatialMethod, KrigingOptions, IdwOptions, GeneralInterpolationOptions, TemporalOptions, RasterOptions,
   ImputationModelResult,
 } from '../types';
-import { isPointInGeoJSON } from '../utils/geo';
+import { isPointInGeoJSON, groupNearbyPoints, COLOCATED_METERS } from '../utils/geo';
 import { interpolatePCHIP, interpolateLinear, kernelSmooth, smoothModelCombined } from '../utils/interpolation';
 import { krigGrid, estimateVariogramParams } from './kriging';
 import { idwGrid } from './idw';
@@ -291,7 +291,38 @@ export async function runRasterAnalysis(
     }
   }
 
-  // Step 4: Compute variogram from all wells' mean values (kriging only)
+  // Step 4: Group wells within COLOCATED_METERS of each other, such as nested
+  // wells at different depths. Kriging can't solve with two wells at one spot,
+  // and IDW would count the spot twice, so each group is averaged into one
+  // point at every timestep, for both methods.
+  const entries = [...wellInterp.values()].filter(e => e.values.some(v => v !== null && Number.isFinite(v)));
+  const groups = groupNearbyPoints(entries.map(e => e.well.lat), entries.map(e => e.well.lng), COLOCATED_METERS)
+    .map(g => g.map(i => entries[i]));
+  const shared = groups.filter(g => g.length > 1);
+  const colocated = { wells: shared.reduce((s, g) => s + g.length, 0), places: shared.length };
+  if (colocated.places > 0) {
+    console.log(`[RasterAnalysis] ${colocated.wells} wells at ${colocated.places} places within ${COLOCATED_METERS} m of each other, averaged`);
+  }
+
+  // One point per group: the mean location and value of the members that have
+  // a value (all of them with ti undefined, each member's mean value)
+  const groupPoint = (g: typeof entries, ti?: number) => {
+    let lat = 0, lng = 0, val = 0, n = 0;
+    for (const { well, values } of g) {
+      let v: number | null;
+      if (ti === undefined) {
+        const valid = values.filter((x): x is number => x !== null && Number.isFinite(x));
+        v = valid.length > 0 ? valid.reduce((a, b) => a + b, 0) / valid.length : null;
+      } else {
+        v = values[ti];
+      }
+      if (v === null || !Number.isFinite(v)) continue;
+      lat += well.lat; lng += well.lng; val += v; n++;
+    }
+    return n > 0 ? { lat: lat / n, lng: lng / n, value: val / n } : null;
+  };
+
+  // Variogram from each point's mean value (kriging only)
   let variogramParams: { sill: number; range: number; nugget: number } | undefined;
 
   if (spatial.method === 'kriging') {
@@ -299,12 +330,12 @@ export async function runRasterAnalysis(
     const allWellLngs: number[] = [];
     const allWellMeanValues: number[] = [];
 
-    for (const [, { well, values }] of wellInterp) {
-      const validValues = values.filter((v): v is number => v !== null && Number.isFinite(v));
-      if (validValues.length > 0) {
-        allWellLats.push(well.lat);
-        allWellLngs.push(well.lng);
-        allWellMeanValues.push(validValues.reduce((a, b) => a + b, 0) / validValues.length);
+    for (const g of groups) {
+      const p = groupPoint(g);
+      if (p) {
+        allWellLats.push(p.lat);
+        allWellLngs.push(p.lng);
+        allWellMeanValues.push(p.value);
       }
     }
 
@@ -313,7 +344,7 @@ export async function runRasterAnalysis(
       rangeMode: spatial.kriging.rangeMode,
       rangeValue: spatial.kriging.rangeValue,
     });
-    console.log(`[RasterAnalysis] Using single variogram for all ${intervalDates.length} timesteps, ${allWellLats.length} wells total`);
+    console.log(`[RasterAnalysis] Using single variogram for all ${intervalDates.length} timesteps, ${allWellLats.length} points total`);
   }
 
   // Step 5: Spatial interpolation per timestep
@@ -324,21 +355,21 @@ export async function runRasterAnalysis(
     onProgress(`${methodLabel} timestep ${ti + 1}/${intervalDates.length}...`, 30 + (ti / intervalDates.length) * 50);
     await tick();
 
-    // Collect wells that have a value at this timestep
+    // Collect the points that have a value at this timestep
     const activeLats: number[] = [];
     const activeLngs: number[] = [];
     const activeValues: number[] = [];
 
-    for (const [, { well, values }] of wellInterp) {
-      const val = values[ti];
-      if (val !== null && Number.isFinite(val)) {
-        activeLats.push(well.lat);
-        activeLngs.push(well.lng);
-        activeValues.push(val);
+    for (const g of groups) {
+      const p = groupPoint(g, ti);
+      if (p) {
+        activeLats.push(p.lat);
+        activeLngs.push(p.lng);
+        activeValues.push(p.value);
       }
     }
 
-    console.log(`[RasterAnalysis] Timestep ${intervalDates[ti]}: ${activeValues.length} wells, values [${Math.min(...activeValues).toFixed(1)}, ${Math.max(...activeValues).toFixed(1)}]`);
+    console.log(`[RasterAnalysis] Timestep ${intervalDates[ti]}: ${activeValues.length} points, values [${Math.min(...activeValues).toFixed(1)}, ${Math.max(...activeValues).toFixed(1)}]`);
 
     let gridValues: (number | null)[];
     if (activeValues.length >= 2) {
@@ -497,6 +528,7 @@ export async function runRasterAnalysis(
     options,
     generatedAt: new Date().toISOString(),
     stats,
+    colocated,
   };
 
   // Save to My Data — per-aquifer subfolder with raster_ prefix.

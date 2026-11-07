@@ -1897,6 +1897,7 @@ const App: React.FC = () => {
               createdAt: result.createdAt,
               options: result.options,
               generatedAt: result.generatedAt,
+              colocated: result.colocated,
             }]);
             setRasterDialogOpen(false);
           }}

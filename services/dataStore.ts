@@ -167,6 +167,7 @@ function summarize(path: string, text: string): SummaryRecord | null {
         createdAt: data.createdAt || '',
         options: data.options || undefined,
         generatedAt: data.generatedAt || undefined,
+        colocated: data.colocated || undefined,
       },
     };
   }

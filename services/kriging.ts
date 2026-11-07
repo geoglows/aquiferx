@@ -1,4 +1,4 @@
-import { haversineDistance } from '../utils/geo';
+import { haversineDistance, groupNearbyPoints, COLOCATED_METERS } from '../utils/geo';
 import type { VariogramModel, KrigingRangeMode } from '../types';
 
 // Spatial covariance function — supports multiple variogram models
@@ -144,42 +144,22 @@ function luSolve(LU: Float64Array[], perm: Int32Array, b: number[], pivotTol: nu
   return x;
 }
 
-// Deduplicate wells within a minimum distance (meters), averaging co-located values
+// Average wells within minDist meters of each other into one point. The
+// raster pipeline groups wells before calling krigGrid; this keeps the
+// matrix solvable for any other caller.
 function deduplicateWells(
   lats: number[], lngs: number[], values: number[], minDist: number
 ): { lats: number[]; lngs: number[]; values: number[] } {
-  const n = lats.length;
-  const used = new Array(n).fill(false);
-  const outLats: number[] = [];
-  const outLngs: number[] = [];
-  const outValues: number[] = [];
-
-  for (let i = 0; i < n; i++) {
-    if (used[i]) continue;
-    // Find all wells within minDist of well i
-    let sumLat = lats[i], sumLng = lngs[i], sumVal = values[i], count = 1;
-    used[i] = true;
-    for (let j = i + 1; j < n; j++) {
-      if (used[j]) continue;
-      const d = haversineDistance(lats[i], lngs[i], lats[j], lngs[j]);
-      if (d < minDist) {
-        sumLat += lats[j];
-        sumLng += lngs[j];
-        sumVal += values[j];
-        count++;
-        used[j] = true;
-      }
-    }
-    outLats.push(sumLat / count);
-    outLngs.push(sumLng / count);
-    outValues.push(sumVal / count);
+  const groups = groupNearbyPoints(lats, lngs, minDist);
+  const mean = (a: number[], g: number[]) => g.reduce((s, i) => s + a[i], 0) / g.length;
+  if (groups.length < lats.length) {
+    console.log(`[Kriging] Deduplicated ${lats.length} wells → ${groups.length} (merged co-located within ${minDist}m)`);
   }
-
-  if (outLats.length < n) {
-    console.log(`[Kriging] Deduplicated ${n} wells → ${outLats.length} (merged co-located within ${minDist}m)`);
-  }
-
-  return { lats: outLats, lngs: outLngs, values: outValues };
+  return {
+    lats: groups.map(g => mean(lats, g)),
+    lngs: groups.map(g => mean(lngs, g)),
+    values: groups.map(g => mean(values, g)),
+  };
 }
 
 // Estimate variogram parameters heuristically from well data
@@ -264,8 +244,8 @@ export async function krigGrid(
     return mask.map(m => m === 1 ? wellValues[0] : null);
   }
 
-  // Deduplicate co-located wells (within 10m) to prevent singular matrix
-  const deduped = deduplicateWells(wellLats, wellLngs, wellValues, 10);
+  // Two wells at one spot give the matrix two identical rows
+  const deduped = deduplicateWells(wellLats, wellLngs, wellValues, COLOCATED_METERS);
   const wLats = deduped.lats;
   const wLngs = deduped.lngs;
   const wValues = deduped.values;

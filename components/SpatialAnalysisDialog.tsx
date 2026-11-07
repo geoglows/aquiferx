@@ -889,6 +889,12 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                 <p>{result.frames.length} timesteps &bull; {result.params.startDate} to {result.params.endDate}</p>
                 <p>{result.aquiferName}</p>
               </div>
+              {result.colocated && result.colocated.places > 0 && (
+                <p className="text-xs text-slate-500 text-center max-w-sm">
+                  {result.colocated.wells} wells at {result.colocated.places} place{result.colocated.places !== 1 ? 's' : ''} were
+                  within 10 m of each other. Each place is one point in the map, with the average of its wells' values.
+                </p>
+              )}
             </div>
           )}
         </div>

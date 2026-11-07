@@ -45,6 +45,33 @@ export function haversineDistance(lat1: number, lng1: number, lat2: number, lng2
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+/** Wells closer together than this are one point to the spatial interpolation. */
+export const COLOCATED_METERS = 10;
+
+/**
+ * Splits points into groups: each group is the first point not yet grouped
+ * and every later ungrouped point within `minDist` meters of it. Every point
+ * is in exactly one group, most of them alone.
+ */
+export function groupNearbyPoints(lats: number[], lngs: number[], minDist: number): number[][] {
+  const n = lats.length;
+  const used = new Array<boolean>(n).fill(false);
+  const groups: number[][] = [];
+  for (let i = 0; i < n; i++) {
+    if (used[i]) continue;
+    used[i] = true;
+    const group = [i];
+    for (let j = i + 1; j < n; j++) {
+      if (!used[j] && haversineDistance(lats[i], lngs[i], lats[j], lngs[j]) < minDist) {
+        used[j] = true;
+        group.push(j);
+      }
+    }
+    groups.push(group);
+  }
+  return groups;
+}
+
 // Area of one grid cell at a given latitude, in m²
 // dx, dy are in degrees
 export function cellAreaM2(lat: number, dxDeg: number, dyDeg: number): number {

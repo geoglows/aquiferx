@@ -198,6 +198,8 @@ export interface RasterAnalysisResult {
   options?: RasterOptions;
   generatedAt?: string;
   stats?: RasterFrameStats[];
+  /** Wells within 10 m of another, and the places they share, averaged into one point each */
+  colocated?: { wells: number; places: number };
 }
 
 export interface CrossSectionProfile {
@@ -222,6 +224,7 @@ export interface RasterAnalysisMeta {
   createdAt: string;
   options?: RasterOptions;
   generatedAt?: string;
+  colocated?: { wells: number; places: number };
 }
 
 export interface ImputationParams {

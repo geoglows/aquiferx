@@ -63,6 +63,9 @@ const RasterInfoDialog: React.FC<RasterInfoDialogProps> = ({ meta, onClose }) =>
               <div className="space-y-0">
                 <div className={rowCls}><span className={labelCls}>Method</span><span className={valueCls}>{opts.spatial.method === 'kriging' ? 'Kriging' : 'IDW'}</span></div>
                 <div className={rowCls}><span className={labelCls}>Resolution</span><span className={valueCls}>{opts.spatial.resolution} cols</span></div>
+                {meta.colocated && meta.colocated.places > 0 && (
+                  <div className={rowCls}><span className={labelCls}>Wells within 10 m</span><span className={valueCls}>{meta.colocated.wells} at {meta.colocated.places} place{meta.colocated.places !== 1 ? 's' : ''}, averaged</span></div>
+                )}
                 {opts.spatial.method === 'kriging' && (
                   <>
                     <div className={rowCls}><span className={labelCls}>Variogram</span><span className={valueCls}>{opts.spatial.kriging.variogramModel}</span></div>
