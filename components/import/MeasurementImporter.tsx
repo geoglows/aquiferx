@@ -5,7 +5,7 @@ import { fetchUSGSMeasurements, validateUSGSMeasurements, USGSDataQualityReport,
 import { loadCatalog } from '../../services/catalog';
 import { compareNames } from '../../utils/strings';
 import {
-  MeasurementRow, MEASUREMENT_CSV_HEADERS,
+  MeasurementRow, MEASUREMENT_CSV_HEADERS, ImportReportRow, IMPORT_REPORT_HEADERS,
   buildMeasurementRows, dedupMeasurements, mergeAppend, mergeFullRefresh,
 } from '../../services/measurementImport';
 import CatalogBrowser from '../CatalogBrowser';
@@ -157,6 +157,11 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     skippedNonNumeric: number;
     nonNumericExamples: string[];
     skippedNoGse: number;
+    /** Measurements for a well and date the region already had: skipped (Add new only) or overwritten (Add and update) */
+    existingSkipped: number;
+    existingUpdated: number;
+    /** Every row counted above, for the downloadable report */
+    report: ImportReportRow[];
   }
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
 
@@ -1034,6 +1039,8 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       const identityToWellId = new Map<string, string>();
       const newWellRecords: ExistingWell[] = [];
       let wellsOutside = 0;
+      // The identity keys of new wells left out for falling outside every aquifer
+      const outsideKeys = new Set<string>();
       const takenIds = new Set<string>(existingWellsFull.map(w => w.well_id));
 
       if (matchResults && matchResults.length > 0) {
@@ -1056,6 +1063,9 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
           : (aquifersGeojson ? (assignWellToAquifer(r.sourceRow.lat!, r.sourceRow.lng!, aquifersGeojson) || '') : '');
         const newRows = candidates.filter(r => singleUnit || !aquifersGeojson || aquiferOf(r) !== '');
         wellsOutside = candidates.length - newRows.length;
+        for (const r of candidates) {
+          if (!newRows.includes(r)) outsideKeys.add(wellIdentityKey(r.sourceRow.wellId || '', r.sourceRow.wellName || '', r.sourceRow.lat, r.sourceRow.lng));
+        }
         if (newRows.length > 0) {
           const gseInput = newRows.map((r, i) => ({
             id: `__new_${i}`,
@@ -1141,6 +1151,31 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         }
       };
 
+      // --- The import report: every row left out or changed, with the row
+      // number a spreadsheet shows for it (the header is row 1; the parser
+      // drops blank lines, so a file with blank lines in it numbers off)
+      const report: ImportReportRow[] = [];
+      const fromFile = dataSource === 'upload';
+      const rowNumber = new Map<Record<string, string>, number>();
+      allRows.forEach((r, i) => rowNumber.set(r, i + 2));
+      const rowNo = (r: Record<string, string> | undefined) => fromFile && r ? String(rowNumber.get(r) ?? '') : '';
+      const wellNames = new Map<string, string>([
+        ...existingWellsFull.map(w => [w.well_id, w.well_name] as [string, string]),
+        ...newWellRecords.map(w => [w.well_id, w.well_name] as [string, string]),
+      ]);
+      const keptRows = new Set(rows);
+      for (const r of allRows) {
+        if (keptRows.has(r)) continue;
+        report.push({
+          issue: outsideKeys.has(rowIdentityKey(r)) ? 'Well outside every aquifer' : 'Well not found',
+          row: rowNo(r),
+          well_id: wellIdCol ? r[wellIdCol] || '' : '',
+          well_name: wellNameCol ? r[wellNameCol] || '' : '',
+          date: dateCol ? r[dateCol] || '' : '',
+          data_type: '', value: '', result: 'skipped',
+        });
+      }
+
       // Effective GSE lookup used by depth→elevation conversion (new wells
       // included)
       const effectiveGseMap: Record<string, number> = { ...wellGseMap };
@@ -1151,6 +1186,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       const typeNames: Record<string, string> = {};
       let totalDupsCollapsed = 0;
       let skippedNonNumeric = 0, skippedNoGse = 0;
+      let existingSkipped = 0, existingUpdated = 0;
       const nonNumericExamples: string[] = [];
 
       // One unified per-type pipeline for every source — the old separate
@@ -1165,7 +1201,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         const valueCol = typeColumnMapping[typeCode] ?? file.mapping['value'];
         if (!valueCol) continue;
 
-        const { rows: built, skipped } = buildMeasurementRows(rows, {
+        const { rows: built, skipped, sourceOf } = buildMeasurementRows(rows, {
           valueCol,
           dateCol,
           dateFormat,
@@ -1183,6 +1219,26 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         totalDupsCollapsed += deduped.collapsed;
         let processed = deduped.rows;
 
+        const typeName = dataTypes.find(d => d.code === typeCode)?.name
+          || (typeCode === 'wte' ? 'Water Table Elevation' : '')
+          || catalog?.parameters[typeCode]?.name
+          || newCustomTypesToAdd.find(d => d.code === typeCode)?.name
+          || typeCode;
+        const reportRow = (issue: string, source: Record<string, string> | undefined, wellId: string, date: string, value: string, result: string): ImportReportRow => ({
+          issue, row: rowNo(source), well_id: wellId, well_name: wellNames.get(wellId) || '', date,
+          data_type: typeName, value, result,
+        });
+        for (const x of skipped.nonNumericRows) {
+          report.push(reportRow('Not a number', x.source, x.wellId, x.source[dateCol] || '', x.value, 'skipped'));
+        }
+        for (const x of skipped.noGseRows) {
+          report.push(reportRow('Depth with no ground surface elevation', x.source, x.wellId, x.source[dateCol] || '', x.value, 'skipped'));
+        }
+        for (const g of deduped.groups) {
+          const result = duplicateStrategy === 'maximum' ? `kept the largest, ${g.value}` : `averaged to ${g.value}`;
+          for (const m of g.rows) report.push(reportRow('Same well and date', sourceOf.get(m), m.well_id, m.date, m.value, result));
+        }
+
         // Skip writing anything for this type if the CSV contributed no
         // rows — don't leave behind empty header-only files or phantom
         // type declarations. (If every type ends up empty, the no-data
@@ -1193,11 +1249,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         // summary can show what the user's CSV contributed
         summaryByType[typeCode] = processed.length;
         // A type new to the region isn't in dataTypes yet
-        typeNames[typeCode] = dataTypes.find(d => d.code === typeCode)?.name
-          || (typeCode === 'wte' ? 'Water Table Elevation' : '')
-          || catalog?.parameters[typeCode]?.name
-          || newCustomTypesToAdd.find(d => d.code === typeCode)?.name
-          || typeCode;
+        typeNames[typeCode] = typeName;
 
         // Merged saves carry an optimistic-lock precondition; a replace,
         // which overwrites on purpose, doesn't.
@@ -1207,6 +1259,24 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
           const merged = await mergeTypeWithExisting(typeCode, processed, mergeMode);
           processed = merged.rows;
           precondition = { ifVersion: merged.ifVersion, mustNotExist: merged.mustNotExist };
+          if (merged.overlaps.length > 0) {
+            // A collapsed row stands for its group: report the first of them
+            const firstSource = new Map<string, Record<string, string>>();
+            for (const b of built) {
+              const k = `${b.well_id}|${b.date}`;
+              if (!firstSource.has(k)) firstSource.set(k, sourceOf.get(b)!);
+            }
+            for (const o of merged.overlaps) {
+              report.push(reportRow('Already in the region', firstSource.get(`${o.row.well_id}|${o.row.date}`), o.row.well_id, o.row.date, o.row.value,
+                mergeMode === 'append' ? `skipped; the region keeps ${o.old}` : `replaced ${o.old}`));
+            }
+            if (mergeMode === 'append') {
+              existingSkipped += merged.overlaps.length;
+              summaryByType[typeCode] -= merged.overlaps.length;
+            } else {
+              existingUpdated += merged.overlaps.length;
+            }
+          }
         }
 
         filesToSave.push({
@@ -1287,6 +1357,9 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         skippedNonNumeric,
         nonNumericExamples,
         skippedNoGse,
+        existingSkipped,
+        existingUpdated,
+        report,
       };
       setImportSummary(summary);
     } catch (err) {
@@ -1304,21 +1377,28 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     typeCode: string,
     newRows: MeasurementRow[],
     mode: 'append' | 'full-refresh'
-  ): Promise<{ rows: MeasurementRow[]; ifVersion?: number; mustNotExist?: boolean }> => {
+  ): Promise<{ rows: MeasurementRow[]; ifVersion?: number; mustNotExist?: boolean; overlaps: { row: MeasurementRow; old: string }[] }> => {
     try {
       const file = await readFile(`${regionId}/data_${typeCode}.csv`);
       if (file) {
         const { rows: existingRows } = parseCSV(file.text);
+        // New rows for a well and date the region already has: skipped by
+        // append, overwritten by full refresh
+        const existingValue = new Map(existingRows.map(r => [`${r.well_id}|${r.date}`, r.value]));
+        const overlaps = newRows
+          .filter(r => existingValue.has(`${r.well_id}|${r.date}`))
+          .map(r => ({ row: r, old: existingValue.get(`${r.well_id}|${r.date}`)! }));
         return {
           rows: mode === 'append'
             ? mergeAppend(existingRows, newRows)
             : mergeFullRefresh(existingRows, newRows),
           ifVersion: file.version,
+          overlaps,
         };
       }
-      return { rows: newRows, mustNotExist: true };
+      return { rows: newRows, mustNotExist: true, overlaps: [] };
     } catch {
-      return { rows: newRows };
+      return { rows: newRows, overlaps: [] };
     }
   };
 
@@ -1528,6 +1608,34 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
               <AlertTriangle size={12} className="inline mr-1" />
               {importSummary.skippedNoGse.toLocaleString()} depth{importSummary.skippedNoGse !== 1 ? 's' : ''} to water skipped because the well has no ground surface elevation to convert {importSummary.skippedNoGse !== 1 ? 'them' : 'it'} with
             </p>
+          )}
+          {importSummary.existingSkipped > 0 && (
+            <p className="text-xs text-amber-700 mb-2">
+              <AlertTriangle size={12} className="inline mr-1" />
+              {importSummary.existingSkipped.toLocaleString()} measurement{importSummary.existingSkipped !== 1 ? 's' : ''} skipped because the region already has one for that well and date
+            </p>
+          )}
+          {importSummary.existingUpdated > 0 && (
+            <p className="text-xs text-slate-600 mb-2">
+              {importSummary.existingUpdated.toLocaleString()} measurement{importSummary.existingUpdated !== 1 ? 's' : ''} already in the region updated with the file's value{importSummary.existingUpdated !== 1 ? 's' : ''}
+            </p>
+          )}
+          {importSummary.report.length > 0 && (
+            <button
+              onClick={() => {
+                const blob = new Blob([toCsv(IMPORT_REPORT_HEADERS, importSummary.report)], { type: 'text/csv' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `import-report-${regionId}.csv`;
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+              }}
+              title="A CSV with a line for each of these rows: its row in the file, well, date, value and what happened to it"
+              className="flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline mb-2"
+            >
+              <Download size={13} />
+              Download the details, row by row (CSV)
+            </button>
           )}
           <div className="mb-2" />
 

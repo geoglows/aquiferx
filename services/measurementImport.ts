@@ -34,7 +34,27 @@ export interface SkippedRows {
   nonNumericExamples: string[];
   /** Depths to water whose well has no ground surface elevation to convert them with */
   noGse: number;
+  /** The source rows behind each count, for the import report */
+  nonNumericRows: { source: Record<string, string>; wellId: string; value: string }[];
+  noGseRows: { source: Record<string, string>; wellId: string; value: string }[];
 }
+
+/**
+ * One line of the import report: a row of the file that was left out, or
+ * whose value was combined with others or met one already in the region.
+ */
+export type ImportReportRow = {
+  issue: string;
+  /** The row's number as a spreadsheet shows it, the header being row 1 */
+  row: string;
+  well_id: string;
+  well_name: string;
+  date: string;
+  data_type: string;
+  value: string;
+  result: string;
+};
+export const IMPORT_REPORT_HEADERS = ['issue', 'row', 'well_id', 'well_name', 'date', 'data_type', 'value', 'result'];
 
 /**
  * Build normalized measurement rows for one data type from source CSV rows.
@@ -54,9 +74,10 @@ export function buildMeasurementRows(
     resolveAquifer: (row: Record<string, string>) => string;
     gseOf: (wellId: string) => number;
   }
-): { rows: MeasurementRow[]; skipped: SkippedRows } {
+): { rows: MeasurementRow[]; skipped: SkippedRows; sourceOf: Map<MeasurementRow, Record<string, string>> } {
   const out: MeasurementRow[] = [];
-  const skipped: SkippedRows = { nonNumeric: 0, nonNumericExamples: [], noGse: 0 };
+  const sourceOf = new Map<MeasurementRow, Record<string, string>>();
+  const skipped: SkippedRows = { nonNumeric: 0, nonNumericExamples: [], noGse: 0, nonNumericRows: [], noGseRows: [] };
   for (const r of sourceRows) {
     const wid = opts.rowToWellId(r);
     const raw = (r[opts.valueCol] || '').trim();
@@ -65,6 +86,7 @@ export function buildMeasurementRows(
     const num = Number(raw);
     if (!isFinite(num)) {
       skipped.nonNumeric++;
+      skipped.nonNumericRows.push({ source: r, wellId: wid, value: raw });
       if (skipped.nonNumericExamples.length < 3 && !skipped.nonNumericExamples.includes(raw)) {
         skipped.nonNumericExamples.push(raw);
       }
@@ -73,29 +95,32 @@ export function buildMeasurementRows(
     let value = raw;
     if (opts.convertDepthToWte) {
       const gse = opts.gseOf(wid);
-      if (!(gse > 0)) { skipped.noGse++; continue; }
+      if (!(gse > 0)) { skipped.noGse++; skipped.noGseRows.push({ source: r, wellId: wid, value: raw }); continue; }
       value = depthToWte(num, gse);
     }
-    out.push({
+    const row: MeasurementRow = {
       well_id: wid,
       date: parseDate(r[opts.dateCol], opts.dateFormat),
       value,
       aquifer_id: opts.resolveAquifer(r),
-    });
+    };
+    out.push(row);
+    sourceOf.set(row, r);
   }
-  return { rows: out, skipped };
+  return { rows: out, skipped, sourceOf };
 }
 
 /**
  * Collapse in-batch duplicates (same well_id + date) according to the
- * user-selected strategy. Returns the surviving rows and how many were
- * collapsed (for the import summary).
+ * user-selected strategy. Returns the surviving rows, how many were
+ * collapsed (for the import summary), and each set of rows combined with
+ * the value they became (for the import report).
  */
 export function dedupMeasurements(
   rows: MeasurementRow[],
   strategy: DuplicateStrategy
-): { rows: MeasurementRow[]; collapsed: number } {
-  if (strategy === 'keep-all') return { rows, collapsed: 0 };
+): { rows: MeasurementRow[]; collapsed: number; groups: { rows: MeasurementRow[]; value: string }[] } {
+  if (strategy === 'keep-all') return { rows, collapsed: 0, groups: [] };
 
   const groups = new Map<string, MeasurementRow[]>();
   for (const r of rows) {
@@ -106,6 +131,7 @@ export function dedupMeasurements(
 
   let collapsed = 0;
   const result: MeasurementRow[] = [];
+  const combined: { rows: MeasurementRow[]; value: string }[] = [];
   for (const [, group] of groups) {
     if (group.length === 1) { result.push(group[0]); continue; }
     collapsed += group.length - 1;
@@ -120,8 +146,9 @@ export function dedupMeasurements(
       finalVal = String(Math.max(...nums));
     }
     result.push({ ...group[0], value: finalVal });
+    combined.push({ rows: group, value: finalVal });
   }
-  return { rows: result, collapsed };
+  return { rows: result, collapsed, groups: combined };
 }
 
 /**
