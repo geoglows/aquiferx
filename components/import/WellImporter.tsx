@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload, RefreshCw } from 'lucide-react';
 import { processUploadedFile, UploadedFile, saveFiles, deleteFile, isInUS, assignWellToAquifer, parseCSV, toCsv, WELLS_CSV_HEADERS, cleanDepth } from '../../services/importUtils';
 import { fetchUSGSWells, getUSGSApiKey, setUSGSApiKey } from '../../services/usgsApi';
-import { fetchGseBatch } from '../../services/gseLookup';
+import { fetchGseBatch, GSE_SOURCE_US, GSE_SOURCE_GLOBAL } from '../../services/gseLookup';
 import { compareNames } from '../../utils/strings';
 import { SampleCoord } from '../../services/reprojection';
 import { useCrsPicker } from '../../hooks/useCrsPicker';
@@ -403,15 +403,16 @@ const WellImporter: React.FC<WellImporterProps> = ({
 
     setGseProgress({ current: 0, total: wells.length });
     const allInUS = wells.every(w => isInUS(w.lat, w.lng));
-    setGseSource(allInUS ? 'USGS 3DEP (~10 m)' : 'Copernicus DEM via Open-Meteo (~90 m)');
+    setGseSource(allInUS ? GSE_SOURCE_US : GSE_SOURCE_GLOBAL);
 
     try {
-      const { values, fallbackCount } = await fetchGseBatch(wells, {
+      const { values, source, fallbackCount } = await fetchGseBatch(wells, {
         lengthUnit,
         onProgress: (current, total) => { if (run === gseRunRef.current) setGseProgress({ current, total }); },
       });
       if (run !== gseRunRef.current) return;
       setGseValues(values);
+      setGseSource(source);
       setGseFallback(fallbackCount);
       setGseInterpolated(true);
     } catch (err) {
@@ -883,7 +884,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
                   </p>
                   {gseFallback > 0 && (
                     <p className="text-xs mt-1 text-slate-600">
-                      3DEP did not answer for {gseFallback} of them, which have the Copernicus DEM value via Open-Meteo (~90 m) instead.
+                      The terrain tiles did not answer for {gseFallback} of them, which have the Copernicus DEM value via Open-Meteo (~90 m) instead.
                     </p>
                   )}
                   {missing > 0 && (

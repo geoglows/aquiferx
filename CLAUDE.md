@@ -15,7 +15,7 @@
 - **Per-folder metadata**: Each region folder has `region.json` with id, name, lengthUnit, singleUnit, customDataTypes
 - **CRS reprojection**: proj4 library in `services/reprojection.ts`, auto-detects from GeoJSON `crs` property or shapefile `.prj`
 - **USGS API**: `services/usgsApi.ts` for downloading wells and measurements from USGS Water Data API
-- **Smart well discovery**: `services/wellMatching.ts` provides ID → name → proximity matching for CSV imports, plus per-column catalog-aware data type detection and `aqx-` ID generation for new wells. `services/gseLookup.ts` batches USGS 3DEP / Open-Meteo elevation fetches.
+- **Smart well discovery**: `services/wellMatching.ts` provides ID → name → proximity matching for CSV imports, plus per-column catalog-aware data type detection and `aqx-` ID generation for new wells. `services/gseLookup.ts` looks up well elevations: US wells from USGS 3DEP via AWS Terrain Tiles (a few tiles per batch), others and any the tiles miss from Open-Meteo.
 
 ## Key Files
 - `App.tsx` — main component, state management, data type selector
@@ -24,7 +24,7 @@
 - `services/dataLoader.ts` — loads every region from the store, computes effectiveDataTypes, loads measurements from each `data_{code}.csv`
 - `services/catalog.ts` — `loadCatalog()`, `computeEffectiveDataTypes()`, `groupCatalog()`
 - `services/wellMatching.ts` — matchWells (ID/name/proximity), generateAqxId, suggestDataTypesFromColumns
-- `services/gseLookup.ts` — batched elevation lookup (USGS 3DEP / Open-Meteo)
+- `services/gseLookup.ts` — batched elevation lookup (USGS 3DEP via AWS Terrain Tiles / Open-Meteo)
 - `services/importUtils.ts` — CSV parsing, file processing, point-in-polygon (re-exports saveFiles/deleteFile from dataStore)
 - `services/reprojection.ts` — proj4 coordinate reprojection
 - `services/usgsApi.ts` — USGS Water Data API integration
