@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload, RefreshCw } from 'lucide-react';
-import { processUploadedFile, UploadedFile, saveFiles, deleteFile, isInUS, assignWellToAquifer, parseCSV, toCsv, WELLS_CSV_HEADERS, cleanDepth } from '../../services/importUtils';
+import { processUploadedFile, UploadedFile, saveFiles, deleteFile, isInUS, assignWellToAquifer, parseCSV, toCsv, WELLS_CSV_HEADERS } from '../../services/importUtils';
 import { fetchUSGSWells, getUSGSApiKey, setUSGSApiKey } from '../../services/usgsApi';
 import { fetchGseBatch, GSE_SOURCE_US, GSE_SOURCE_GLOBAL } from '../../services/gseLookup';
 import { compareNames } from '../../utils/strings';
@@ -165,17 +165,12 @@ const WellImporter: React.FC<WellImporterProps> = ({
     ? (wellCountsByAquifer[usgsScopeAquiferId] || 0)
     : existingWellCount;
 
-  // USGS depths are in feet below land surface
-  const usgsDepth = (ft?: number) => ft == null ? ''
-    : String(lengthUnit === 'ft' ? ft : Math.round(ft * 0.3048 * 100) / 100);
-
   const fieldDefs = [
     { key: 'well_id', label: 'Well ID', required: true },
     { key: 'well_name', label: 'Well Name', required: false },
     { key: 'lat', label: 'Latitude', required: true },
     { key: 'long', label: 'Longitude', required: true },
     { key: 'gse', label: 'Ground surface elevation (GSE)', required: false },
-    { key: 'well_depth', label: 'Well depth', required: false },
     ...(!singleUnit && aquiferAssignment === 'csv-field'
       ? [{ key: 'aquifer_id', label: 'Aquifer ID', required: false }] : []),
   ];
@@ -278,15 +273,14 @@ const WellImporter: React.FC<WellImporterProps> = ({
         lat: String(w.lat),
         long: String(w.lng),
         gse: w.gse ? String(lengthUnit === 'ft' ? Math.round(w.gse * 3.28084 * 100) / 100 : Math.round(w.gse * 100) / 100) : '',
-        well_depth: usgsDepth(w.depthFt),
         aquifer_id: aquiferId,
       }));
-      const columns = ['well_id', 'well_name', 'lat', 'long', 'gse', 'well_depth', 'aquifer_id'];
+      const columns = ['well_id', 'well_name', 'lat', 'long', 'gse', 'aquifer_id'];
       setFile({
         name: 'USGS Wells',
         data: rows,
         columns,
-        mapping: { well_id: 'well_id', well_name: 'well_name', lat: 'lat', long: 'long', gse: 'gse', well_depth: 'well_depth', aquifer_id: 'aquifer_id' },
+        mapping: { well_id: 'well_id', well_name: 'well_name', lat: 'lat', long: 'long', gse: 'gse', aquifer_id: 'aquifer_id' },
         type: 'csv'
       });
     } catch (err) {
@@ -356,15 +350,14 @@ const WellImporter: React.FC<WellImporterProps> = ({
           lat: String(w.lat),
           long: String(w.lng),
           gse: w.gse ? String(lengthUnit === 'ft' ? Math.round(w.gse * 3.28084 * 100) / 100 : Math.round(w.gse * 100) / 100) : '',
-          well_depth: usgsDepth(w.depthFt),
           aquifer_id: aquiferId,
         }));
-        const columns = ['well_id', 'well_name', 'lat', 'long', 'gse', 'well_depth', 'aquifer_id'];
+        const columns = ['well_id', 'well_name', 'lat', 'long', 'gse', 'aquifer_id'];
         setFile({
           name: 'USGS Wells (New)',
           data: rows,
           columns,
-          mapping: { well_id: 'well_id', well_name: 'well_name', lat: 'lat', long: 'long', gse: 'gse', well_depth: 'well_depth', aquifer_id: 'aquifer_id' },
+          mapping: { well_id: 'well_id', well_name: 'well_name', lat: 'lat', long: 'long', gse: 'gse', aquifer_id: 'aquifer_id' },
           type: 'csv'
         });
         setImportMode('append');
@@ -490,7 +483,6 @@ const WellImporter: React.FC<WellImporterProps> = ({
       const latCol = file.mapping['lat'];
       const longCol = file.mapping['long'];
       const gseCol = file.mapping['gse'];
-      const depthCol = file.mapping['well_depth'];
 
       // Reproject lat/long through the selected CRS so the CSV always
       // stores WGS84 values, even when the user's source data was in a
@@ -505,20 +497,12 @@ const WellImporter: React.FC<WellImporterProps> = ({
           lat: lat !== undefined ? String(lat) : '',
           long: lng !== undefined ? String(lng) : '',
           gse: gseCol ? w[gseCol] || '' : (gseValues.get(w[wellIdCol])?.toString() ?? ''),
-          well_depth: depthCol ? cleanDepth(w[depthCol]) : '',
           aquifer_id: aquiferId,
           aquifer_name: aquiferNameById.get(aquiferId) || '',
         };
       }).filter(w => w.well_id && w.lat && w.long && keepsWell(w.aquifer_id));
 
       const isAquiferScoped = dataSource === 'usgs' && usgsScope === 'aquifer' && usgsScopeAquiferId;
-
-      // Append keeps the wells already in the region, but takes their depth
-      // from the file when it gives one: the only way to add depths later
-      // without Replace All deleting the measurements
-      const depthById = new Map(processedWells.filter(w => w.well_depth).map(w => [w.well_id, w.well_depth]));
-      const withFileDepths = (existing: Record<string, string>[]) =>
-        existing.map(r => depthById.has(r.well_id) ? { ...r, well_depth: depthById.get(r.well_id)! } : r);
 
       if (isAquiferScoped) {
         // Aquifer-scoped: always merge with other aquifers' wells
@@ -540,7 +524,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
         const existingIds = new Set(keptExisting.map(r => r.well_id));
         const toAdd = processedWells.filter(w => !existingIds.has(w.well_id));
 
-        const csv = toCsv(WELLS_CSV_HEADERS, [...withFileDepths(keptExisting), ...toAdd]);
+        const csv = toCsv(WELLS_CSV_HEADERS, [...keptExisting, ...toAdd]);
         await saveFiles([{ path: `${regionId}/wells.csv`, content: csv }]);
       } else if (importMode === 'append' && existingWellCount > 0) {
         // Load existing wells, skip duplicates
@@ -554,7 +538,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
         const toAdd = processedWells.filter(w => !existingIds.has(w.well_id));
 
         // Merge: keep existing + add new
-        const csv = toCsv(WELLS_CSV_HEADERS, [...withFileDepths(existingRows), ...toAdd]);
+        const csv = toCsv(WELLS_CSV_HEADERS, [...existingRows, ...toAdd]);
         await saveFiles([{ path: `${regionId}/wells.csv`, content: csv }]);
       } else {
         // Region-wide replace: delete measurements then write
@@ -648,9 +632,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
             </div>
             <p className="text-xs text-slate-400 mt-1">
               {importMode === 'append'
-                ? (file?.mapping['well_depth']
-                    ? 'New wells will be added. Wells already in the region (by ID) are kept, with the well depth from the file where it gives one.'
-                    : 'New wells will be added. Duplicates (by ID) are skipped.')
+                ? 'New wells will be added. Duplicates (by ID) are skipped.'
                 : usgsScope === 'aquifer' && usgsScopeAquiferId
                   ? 'Existing wells in this aquifer will be replaced. Other aquifers are not affected.'
                   : 'All existing wells and measurements will be deleted first.'}

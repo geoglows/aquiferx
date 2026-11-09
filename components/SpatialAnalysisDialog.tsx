@@ -7,14 +7,13 @@ import {
 import {
   Aquifer, Region, Well, Measurement, DataType, RasterAnalysisResult,
   VariogramModel, KrigingRangeMode, IdwNodalFunction, IdwNeighborMode, SpatialMethod,
-  ImputationModelMeta, WellDepthFilter,
+  ImputationModelMeta,
 } from '../types';
 import { RasterPipelineInput } from '../services/rasterAnalysis';
 import { startRasterAnalysis, AnalysisRun } from '../services/analysisClient';
 import { isPipelineCancelled } from '../services/pipelineCancel';
 import { slugify } from '../utils/strings';
 import PchipPreviewCanvas from './PchipPreviewCanvas';
-import { passesDepthFilter, describeDepthFilter } from '../utils/wellDepth';
 
 interface SpatialAnalysisDialogProps {
   aquifer: Aquifer;
@@ -33,7 +32,7 @@ type Step = 1 | 2 | 3 | 'running' | 'complete';
 const STEP_LABELS = ['Temporal', 'Spatial', 'Title & Run'];
 
 const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
-  aquifer, region, wells: aquiferWells, measurements, dataType, existingCodes, onClose, onComplete, availableModels,
+  aquifer, region, wells, measurements, dataType, existingCodes, onClose, onComplete, availableModels,
 }) => {
   const [step, setStep] = useState<Step>(1);
   const [progressText, setProgressText] = useState('');
@@ -74,26 +73,6 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
 
   // --- Title (Step 3) ---
   const [title, setTitle] = useState('');
-
-  // --- Well depth (Step 1): offered when some of the aquifer's wells have one ---
-  const [depthMode, setDepthMode] = useState<'all' | 'range'>('all');
-  const [depthMin, setDepthMin] = useState('');
-  const [depthMax, setDepthMax] = useState('');
-  const [includeNoDepth, setIncludeNoDepth] = useState(false);
-  const withDepthCount = useMemo(() => aquiferWells.filter(w => w.depth != null).length, [aquiferWells]);
-  const depthFilter: WellDepthFilter | null = useMemo(() => {
-    if (depthMode !== 'range') return null;
-    const num = (s: string) => { const v = parseFloat(s); return Number.isFinite(v) ? v : null; };
-    return { min: num(depthMin), max: num(depthMax), includeNoDepth, unit: region.lengthUnit };
-  }, [depthMode, depthMin, depthMax, includeNoDepth, region.lengthUnit]);
-  const depthRangeValid = !depthFilter || depthFilter.min == null || depthFilter.max == null || depthFilter.min <= depthFilter.max;
-  // Every other part of the dialog, and the run, uses only these wells
-  const wells = useMemo(
-    () => depthFilter && depthRangeValid ? aquiferWells.filter(w => passesDepthFilter(w, depthFilter)) : aquiferWells,
-    [aquiferWells, depthFilter, depthRangeValid]);
-  const inRangeCount = useMemo(
-    () => depthFilter ? aquiferWells.filter(w => w.depth != null && passesDepthFilter(w, depthFilter)).length : 0,
-    [aquiferWells, depthFilter]);
 
   // Build well key set for fast lookup (regionId:aquiferId:wellId for global uniqueness)
   const wellKeySet = useMemo(() => new Set(wells.map(w => `${w.regionId}:${w.aquiferId}:${w.id}`)), [wells]);
@@ -261,7 +240,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
   const hasConflict = existingCodes.includes(code);
 
   // Validation
-  const step1Valid = startDate && endDate && startDate < endDate && wells.length > 0 && depthRangeValid;
+  const step1Valid = startDate && endDate && startDate < endDate && wells.length > 0;
   const step2Valid = (() => {
     if (spatialMethod === 'idw' && nodalFunction === 'quadratic' && neighborMode === 'nearest' && neighborCount < 6) return false;
     if (rangeMode === 'custom' && (rangeValue <= 0)) return false;
@@ -311,7 +290,6 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
         logInterpolation,
       },
       title,
-      ...(depthFilter ? { wellDepth: depthFilter } : {}),
     };
 
     try {
@@ -485,49 +463,6 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                       )
                     )}
                   </div>
-                </div>
-              )}
-
-              {/* Well depth */}
-              {withDepthCount > 0 && (
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700 mb-2">Well Depth</h3>
-                  <div className="flex flex-wrap items-center gap-3">
-                    <div className="flex gap-2">
-                      <button onClick={() => setDepthMode('all')} className={radioCls(depthMode === 'all')}>All depths</button>
-                      <button onClick={() => setDepthMode('range')} className={radioCls(depthMode === 'range')}>Depth range</button>
-                    </div>
-                    {depthMode === 'range' && (
-                      <>
-                        <label className="flex items-center gap-1.5 text-xs text-slate-600">
-                          From
-                          <input type="number" min={0} value={depthMin} placeholder="0"
-                            onChange={e => setDepthMin(e.target.value)}
-                            className="w-20 px-2 py-1 border border-slate-300 rounded-md text-xs focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
-                          to
-                          <input type="number" min={0} value={depthMax} placeholder="any"
-                            onChange={e => setDepthMax(e.target.value)}
-                            className="w-20 px-2 py-1 border border-slate-300 rounded-md text-xs focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
-                          {region.lengthUnit}
-                        </label>
-                        <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
-                          <input type="checkbox" checked={includeNoDepth} onChange={e => setIncludeNoDepth(e.target.checked)} />
-                          Include wells with no depth
-                        </label>
-                      </>
-                    )}
-                  </div>
-                  <p className={`text-xs mt-1 ${depthRangeValid ? 'text-slate-500' : 'text-red-600'}`}>
-                    {!depthRangeValid
-                      ? 'The first depth must not be greater than the second.'
-                      : depthMode === 'all'
-                        ? `${withDepthCount} of the aquifer's ${aquiferWells.length} wells have a depth.`
-                        : `${inRangeCount} well${inRangeCount !== 1 ? 's' : ''} in the range${aquiferWells.length - withDepthCount > 0
-                            ? includeNoDepth
-                              ? `, and ${aquiferWells.length - withDepthCount} with no depth`
-                              : `; ${aquiferWells.length - withDepthCount} with no depth left out`
-                            : ''}.`}
-                  </p>
                 </div>
               )}
 
@@ -904,9 +839,6 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                     `MA ${smoothingMonths}mo`
                   }</div>
                   <div><span className="text-slate-400">Wells:</span> {qualifiedWellCount} qualified</div>
-                  {depthFilter && (
-                    <div className="col-span-2"><span className="text-slate-400">Well depth:</span> {describeDepthFilter(depthFilter)}</div>
-                  )}
                   <div><span className="text-slate-400">Method:</span> {spatialMethod === 'kriging' ? `Kriging (${variogramModel})` : `IDW (p=${idwExponent})`}</div>
                   {spatialMethod === 'kriging' && (
                     <>

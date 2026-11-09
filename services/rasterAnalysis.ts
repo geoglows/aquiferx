@@ -1,7 +1,7 @@
 import { readJson, saveFiles } from './dataStore';
 import {
   Aquifer, Region, Well, Measurement,
-  RasterAnalysisParams, RasterAnalysisResult, WellDepthFilter, RasterGrid, RasterFrame, RasterFrameStats,
+  RasterAnalysisParams, RasterAnalysisResult, RasterGrid, RasterFrame, RasterFrameStats,
   SpatialMethod, KrigingOptions, IdwOptions, GeneralInterpolationOptions, TemporalOptions, RasterOptions,
   ImputationModelResult,
 } from '../types';
@@ -22,8 +22,6 @@ export interface RasterPipelineInput {
   };
   general: GeneralInterpolationOptions;
   title: string;
-  /** Recorded with the raster; the caller passes only the wells that pass it */
-  wellDepth?: WellDepthFilter;
 }
 
 // Generate interval dates between start and end (inclusive) as ISO strings.
@@ -513,7 +511,6 @@ export async function runRasterAnalysis(
     temporal: { ...temporal },
     spatial: { ...spatial },
     general: { ...general },
-    ...(input.wellDepth ? { wellDepth: { ...input.wellDepth } } : {}),
   };
 
   const result: RasterAnalysisResult = {

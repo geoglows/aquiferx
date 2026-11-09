@@ -135,21 +135,7 @@ export function toCsv(headers: string[], rows: Record<string, string>[]): string
 
 // Canonical wells.csv column set — every writer must use this so the
 // schema can't drift between importers
-export const WELLS_CSV_HEADERS = ['well_id', 'well_name', 'lat', 'long', 'gse', 'well_depth', 'aquifer_id', 'aquifer_name'];
-
-/** A well depth cell as wells.csv stores it: a number, or '' when the cell
- *  is empty or not a number. A negative depth is read as below the ground,
- *  as depths to water are. */
-export function cleanDepth(cell: string | undefined): string {
-  const n = parseFloat((cell ?? '').trim());
-  return Number.isFinite(n) ? String(Math.abs(n)) : '';
-}
-
-/** A column that holds the depth of the well itself (not a depth to water). */
-export function isWellDepthColumn(column: string): boolean {
-  const s = column.toLowerCase().replace(/\(.*?\)|\[.*?\]/g, '').replace(/[_\s.-]+/g, ' ').trim();
-  return ['depth', 'well depth', 'welldepth', 'total depth', 'well total depth', 'total well depth', 'depth of well', 'well constructed depth'].includes(s);
-}
+export const WELLS_CSV_HEADERS = ['well_id', 'well_name', 'lat', 'long', 'gse', 'aquifer_id', 'aquifer_name'];
 
 // Parse date based on format
 export function parseDate(dateStr: string, format: string): string {
@@ -268,14 +254,12 @@ export function autoMapColumns(columns: string[], fileType: string): ColumnMappi
     const longIdx = lowerColumns.findIndex(c => c === 'long' || c === 'lng' || c.includes('longitude') || c === 'long_dec' || c === 'easting' || c === 'x');
     const gseIdx = lowerColumns.findIndex(c => c === 'gse' || c === 'ground_surface_elevation' || c === 'elevation' || c === 'surface_elevation');
     const aqIdIdx = lowerColumns.findIndex(c => c.includes('aquifer') && c.includes('id') || c === 'aquifer_id');
-    const depthIdx = columns.findIndex(isWellDepthColumn);
 
     if (wellIdIdx >= 0) mapping['well_id'] = columns[wellIdIdx];
     if (wellNameIdx >= 0) mapping['well_name'] = columns[wellNameIdx];
     if (latIdx >= 0) mapping['lat'] = columns[latIdx];
     if (longIdx >= 0) mapping['long'] = columns[longIdx];
     if (gseIdx >= 0) mapping['gse'] = columns[gseIdx];
-    if (depthIdx >= 0) mapping['well_depth'] = columns[depthIdx];
     if (aqIdIdx >= 0) mapping['aquifer_id'] = columns[aqIdIdx];
   } else if (fileType === 'measurements') {
     // Only auto-map structural columns. Data columns (including WTE's
@@ -289,14 +273,12 @@ export function autoMapColumns(columns: string[], fileType: string): ColumnMappi
     const latIdx = lowerColumns.findIndex(c => c === 'lat' || c.includes('latitude') || c === 'lat_dec' || c === 'northing' || c === 'y');
     const longIdx = lowerColumns.findIndex(c => c === 'long' || c === 'lng' || c.includes('longitude') || c === 'long_dec' || c === 'lon' || c === 'easting' || c === 'x');
     const aqIdIdx = lowerColumns.findIndex(c => c.includes('aquifer') && c.includes('id') || c === 'aquifer_id');
-    const depthIdx = columns.findIndex(isWellDepthColumn);
 
     if (wellIdIdx >= 0) mapping['well_id'] = columns[wellIdIdx];
     if (wellNameIdx >= 0) mapping['well_name'] = columns[wellNameIdx];
     if (dateIdx >= 0) mapping['date'] = columns[dateIdx];
     if (latIdx >= 0) mapping['lat'] = columns[latIdx];
     if (longIdx >= 0) mapping['long'] = columns[longIdx];
-    if (depthIdx >= 0) mapping['well_depth'] = columns[depthIdx];
     if (aqIdIdx >= 0) mapping['aquifer_id'] = columns[aqIdIdx];
   }
 

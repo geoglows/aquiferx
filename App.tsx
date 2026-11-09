@@ -932,7 +932,6 @@ const App: React.FC = () => {
       lat: String(w.lat),
       long: String(w.lng),
       gse: String(w.gse),
-      well_depth: w.depth != null ? String(w.depth) : '',
       aquifer_id: w.aquiferId,
       aquifer_name: w.aquiferName,
     })));
