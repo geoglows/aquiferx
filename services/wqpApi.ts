@@ -50,6 +50,8 @@ export interface WqpStation {
   siteType: string;
   /** `OrganizationFormalName`. */
   organization: string;
+  /** `WellDepthMeasure`, in feet, when the station gives it */
+  depthFt?: number;
 }
 
 export interface WqpResult {
@@ -244,6 +246,8 @@ export async function fetchWqpStations(params: WqpQueryParams): Promise<WqpStati
   const iLng = idx('LongitudeMeasure');
   const iType = idx('MonitoringLocationTypeName');
   const iOrg = idx('OrganizationFormalName');
+  const iDepth = idx('WellDepthMeasure/MeasureValue');
+  const iDepthUnit = idx('WellDepthMeasure/MeasureUnitCode');
 
   const stations: WqpStation[] = [];
   for (const row of rows) {
@@ -251,6 +255,12 @@ export async function fetchWqpStations(params: WqpQueryParams): Promise<WqpStati
     const lat = iLat >= 0 ? parseFloat(row[headers[iLat]]) : NaN;
     const lng = iLng >= 0 ? parseFloat(row[headers[iLng]]) : NaN;
     if (!siteId || isNaN(lat) || isNaN(lng)) continue;
+    const depth = iDepth >= 0 ? parseFloat(row[headers[iDepth]]) : NaN;
+    const depthUnit = iDepthUnit >= 0 ? (row[headers[iDepthUnit]] || '').trim().toLowerCase() : '';
+    const depthFt = !Number.isFinite(depth) ? undefined
+      : depthUnit === 'm' || depthUnit === 'meters' ? depth / 0.3048
+      : depthUnit === 'ft' || depthUnit === 'feet' || depthUnit === '' ? depth
+      : undefined;
     stations.push({
       siteId,
       siteName: iName >= 0 ? row[headers[iName]] || '' : '',
@@ -258,6 +268,7 @@ export async function fetchWqpStations(params: WqpQueryParams): Promise<WqpStati
       lng,
       siteType: iType >= 0 ? row[headers[iType]] || '' : '',
       organization: iOrg >= 0 ? row[headers[iOrg]] || '' : '',
+      ...(depthFt != null ? { depthFt: Math.abs(depthFt) } : {}),
     });
   }
   return stations;

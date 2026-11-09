@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload, Calendar, MapPin, Wand2, BookOpen, FlaskConical } from 'lucide-react';
-import { processUploadedFile, UploadedFile, saveFiles, SaveFileEntry, parseDate, detectDateFormat, parseCSV, toCsv, WELLS_CSV_HEADERS, isInUS, assignWellToAquifer, DATE_FORMATS } from '../../services/importUtils';
+import { processUploadedFile, UploadedFile, saveFiles, SaveFileEntry, parseDate, detectDateFormat, parseCSV, toCsv, downloadCsv, WELLS_CSV_HEADERS, isInUS, assignWellToAquifer, aquifersContaining, DATE_FORMATS } from '../../services/importUtils';
+import {
+  PlacedWell, KeepRule, WellRecordFacts, findSharedLocations, sharedLocationRows, SHARED_LOCATION_HEADERS,
+  chooseWells, keepReportRows, KEEP_REPORT_HEADERS, leftOutIds,
+} from '../../services/sharedLocations';
+import { COLOCATED_METERS } from '../../utils/geo';
 import { fetchUSGSMeasurements, validateUSGSMeasurements, USGSDataQualityReport, USGSMeasurement, USGSDataSpan, computeDataSpan, filterByDateRange, getUSGSApiKey, setUSGSApiKey } from '../../services/usgsApi';
 import { loadCatalog } from '../../services/catalog';
 import { compareNames } from '../../utils/strings';
@@ -133,6 +138,9 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
   const [wqpIsCounting, setWqpIsCounting] = useState(false);
   const [wqpIsDownloading, setWqpIsDownloading] = useState(false);
   const [wqpQualityReport, setWqpQualityReport] = useState<WqpDataQualityReport | null>(null);
+  // Each WQP station's well depth (ft), and which well a shared location keeps
+  const [wqpDepths, setWqpDepths] = useState<Map<string, number>>(new Map());
+  const [keepRule, setKeepRule] = useState<KeepRule>('shallowest');
   const [showWqpPicker, setShowWqpPicker] = useState(false);
   const [wqpScope, setWqpScope] = useState<'region' | 'aquifer'>('region');
   const [wqpScopeAquiferId, setWqpScopeAquiferId] = useState('');
@@ -154,6 +162,8 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     duplicateStrategyUsed: DuplicateStrategy;
     /** New wells not made because they fall outside every aquifer */
     wellsOutside: number;
+    /** New wells of a download left out for sharing a location with another well */
+    wellsLeftOut: number;
     skippedNonNumeric: number;
     nonNumericExamples: string[];
     skippedNoGse: number;
@@ -823,6 +833,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       // stations outside the chosen polygon(s); cascade the drop to
       // their results.
       const stationMap = new Map<string, { lat: number; lng: number; name: string }>();
+      const depths = new Map<string, number>();
       let droppedStations = 0;
       for (const s of stations) {
         if (aquifersGeojson) {
@@ -831,8 +842,10 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
           if (wqpScope === 'aquifer' && aq !== wqpScopeAquiferId) { droppedStations++; continue; }
         }
         stationMap.set(s.siteId, { lat: s.lat, lng: s.lng, name: s.siteName });
+        if (s.depthFt != null) depths.set(s.siteId, s.depthFt);
       }
       const inScopeResults = results.filter(r => stationMap.has(r.siteId));
+      setWqpDepths(depths);
 
       const charMap = buildCharacteristicMap(catalog);
       const { kept, report } = dedupWqpResults(inScopeResults, charMap);
@@ -996,6 +1009,69 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     }
   };
 
+  // The new wells this import would make, placed in their aquifers by
+  // location as doSave places them, checked against each other and the
+  // region's wells for wells of one aquifer at one location. A file with
+  // any is refused; a WQP download keeps one well at each. With aquifers
+  // that share an outline, a file's new well inside both can't be placed.
+  const newWellPlacement = useMemo(() => {
+    const empty = { shared: [] as ReturnType<typeof findSharedLocations>, ambiguous: [] as PlacedWell[] };
+    if (!matchResults || (dataSource !== 'upload' && dataSource !== 'wqp')) return empty;
+    const fresh: PlacedWell[] = [];
+    const ambiguous: PlacedWell[] = [];
+    for (const r of matchResults) {
+      if (!(r.kind === 'new' || r.rejected)) continue;
+      const { lat, lng, wellId, wellName } = r.sourceRow;
+      if (lat === undefined || lng === undefined) continue;
+      const inside = singleUnit ? ['0'] : aquifersGeojson ? aquifersContaining(lat, lng, aquifersGeojson) : [''];
+      if (inside.length === 0) continue;
+      const w: PlacedWell = {
+        id: wellId || wellName || `${lat.toFixed(5)}, ${lng.toFixed(5)}`, name: wellName || '', lat, lng,
+        aquiferId: inside[0], row: dataSource === 'upload' ? r.sourceRow.sourceIndex + 2 : undefined,
+      };
+      if (dataSource === 'upload' && inside.length > 1) ambiguous.push(w);
+      else fresh.push(w);
+    }
+    const existing: PlacedWell[] = existingWellsFull.map(w => ({
+      id: w.well_id, name: w.well_name, lat: w.lat, lng: w.lng, aquiferId: singleUnit ? '0' : w.aquifer_id, existing: true,
+    }));
+    return { shared: findSharedLocations([...fresh, ...existing]), ambiguous };
+  }, [matchResults, dataSource, singleUnit, aquifersGeojson, existingWellsFull]);
+
+  const sharedWellCount = newWellPlacement.shared.reduce((n, g) => n + g.wells.length, 0);
+  const measRefused = dataSource === 'upload' && (newWellPlacement.shared.length > 0 || newWellPlacement.ambiguous.length > 0);
+  const aquiferNameOf = (id: string) => singleUnit ? regionName : (aquiferList.find(a => a.id === id)?.name || '');
+
+  // A WQP download: depth from the stations, samples counted by date
+  const wqpFacts = useMemo(() => {
+    const facts = new Map<string, WellRecordFacts>();
+    if (dataSource !== 'wqp' || newWellPlacement.shared.length === 0 || !file) return facts;
+    const samples = new Map<string, number>();
+    for (const r of file.data as Record<string, string>[]) samples.set(r.well_id, (samples.get(r.well_id) || 0) + 1);
+    for (const g of newWellPlacement.shared) {
+      for (const w of g.wells) facts.set(w.id, { depthFt: wqpDepths.get(w.id), samples: samples.get(w.id) || 0 });
+    }
+    return facts;
+  }, [dataSource, newWellPlacement.shared, file, wqpDepths]);
+  const wqpChoices = useMemo(
+    () => dataSource === 'wqp' ? chooseWells(newWellPlacement.shared, keepRule, wqpFacts, 'samples') : [],
+    [dataSource, newWellPlacement.shared, keepRule, wqpFacts]);
+  const wqpLeftOut = useMemo(() => leftOutIds(wqpChoices), [wqpChoices]);
+
+  const downloadSharedList = () => {
+    const rows: Record<string, string>[] = sharedLocationRows(newWellPlacement.shared, aquiferNameOf)
+      .map(r => ({ problem: 'more than one well at this location', ...r }));
+    for (const w of newWellPlacement.ambiguous) {
+      rows.push({
+        problem: 'inside more than one aquifer outline', location: '',
+        aquifer_id: aquifersContaining(w.lat, w.lng, aquifersGeojson).join('; '), aquifer_name: '',
+        well_id: w.id, well_name: w.name, latitude: String(w.lat), longitude: String(w.lng),
+        meters_from_first: '', row: w.row != null ? String(w.row) : '', already_in_region: '',
+      });
+    }
+    downloadCsv(`wells-to-fix-${regionId}.csv`, ['problem', ...SHARED_LOCATION_HEADERS], rows);
+  };
+
   const doSave = async () => {
     if (!file) return;
     setIsSaving(true);
@@ -1029,6 +1105,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       let wellsOutside = 0;
       // The identity keys of new wells left out for falling outside every aquifer
       const outsideKeys = new Set<string>();
+      const leftOutKeys = new Set<string>();
       const takenIds = new Set<string>(existingWellsFull.map(w => w.well_id));
 
       if (matchResults && matchResults.length > 0) {
@@ -1049,10 +1126,15 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         const aquiferOf = (r: MatchResult): string => singleUnit
           ? '0'
           : (aquifersGeojson ? (assignWellToAquifer(r.sourceRow.lat!, r.sourceRow.lng!, aquifersGeojson) || '') : '');
-        const newRows = candidates.filter(r => singleUnit || !aquifersGeojson || aquiferOf(r) !== '');
-        wellsOutside = candidates.length - newRows.length;
+        const inAquifer = candidates.filter(r => singleUnit || !aquifersGeojson || aquiferOf(r) !== '');
+        wellsOutside = candidates.length - inAquifer.length;
         for (const r of candidates) {
-          if (!newRows.includes(r)) outsideKeys.add(wellIdentityKey(r.sourceRow.wellId || '', r.sourceRow.wellName || '', r.sourceRow.lat, r.sourceRow.lng));
+          if (!inAquifer.includes(r)) outsideKeys.add(wellIdentityKey(r.sourceRow.wellId || '', r.sourceRow.wellName || '', r.sourceRow.lat, r.sourceRow.lng));
+        }
+        // A download's wells left out for sharing a location with another well
+        const newRows = inAquifer.filter(r => !(dataSource === 'wqp' && wqpLeftOut.has(r.sourceRow.wellId || '')));
+        for (const r of inAquifer) {
+          if (!newRows.includes(r)) leftOutKeys.add(wellIdentityKey(r.sourceRow.wellId || '', r.sourceRow.wellName || '', r.sourceRow.lat, r.sourceRow.lng));
         }
         if (newRows.length > 0) {
           const gseInput = newRows.map((r, i) => ({
@@ -1154,7 +1236,9 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       for (const r of allRows) {
         if (keptRows.has(r)) continue;
         report.push({
-          issue: outsideKeys.has(rowIdentityKey(r)) ? 'Well outside every aquifer' : 'Well not found',
+          issue: outsideKeys.has(rowIdentityKey(r)) ? 'Well outside every aquifer'
+            : leftOutKeys.has(rowIdentityKey(r)) ? 'Well left out: another well at its location'
+            : 'Well not found',
           row: rowNo(r),
           well_id: wellIdCol ? r[wellIdCol] || '' : '',
           well_name: wellNameCol ? r[wellNameCol] || '' : '',
@@ -1336,10 +1420,11 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         wellsMatchedByProximity: matchSummary?.byProximity || 0,
         measurementsByType: summaryByType,
         typeNames,
-        skippedRows: Math.max(0, allRows.length - rows.length),
+        skippedRows: report.filter(r => r.issue === 'Well not found').length,
         duplicatesCollapsed: totalDupsCollapsed,
         duplicateStrategyUsed: duplicateStrategy,
         wellsOutside,
+        wellsLeftOut: wqpLeftOut.size,
         skippedNonNumeric,
         nonNumericExamples,
         skippedNoGse,
@@ -1501,7 +1586,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     selectedTypes.every(code => typeColumnMapping[code]) &&
     (singleUnit || aquiferAssignment !== 'single' || selectedAquiferId) &&
     (!unmatchedInfo || unmatchedInfo.matchedCount > 0 || hasMatchResults) &&
-    !hasMappingErrors;
+    !hasMappingErrors && !measRefused;
 
   // Post-save summary panel — rendered instead of the form once the save
   // succeeds. User dismisses with "Done" which fires onComplete to refresh
@@ -1573,6 +1658,13 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
               <AlertTriangle size={12} className="inline mr-1" />
               {importSummary.wellsOutside.toLocaleString()} new well{importSummary.wellsOutside !== 1 ? 's' : ''} not added because{' '}
               {importSummary.wellsOutside !== 1 ? 'they fall' : 'it falls'} outside every aquifer
+            </p>
+          )}
+          {importSummary.wellsLeftOut > 0 && (
+            <p className="text-xs text-amber-700 mb-2">
+              <AlertTriangle size={12} className="inline mr-1" />
+              {importSummary.wellsLeftOut.toLocaleString()} new well{importSummary.wellsLeftOut !== 1 ? 's' : ''} left out because
+              another well is at the same location
             </p>
           )}
           {importSummary.skippedRows > 0 && (
@@ -2102,6 +2194,65 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
                     <Loader2 size={10} className="animate-spin" />
                     Fetching elevation for new wells ({newWellsGseProgress.done}/{newWellsGseProgress.total})
                   </p>
+                )}
+                {measRefused && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 space-y-2">
+                    {newWellPlacement.shared.length > 0 && (
+                      <p className="flex items-start gap-2">
+                        <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                        <span>
+                          The new wells would put more than one well in the same aquifer at {newWellPlacement.shared.length}{' '}
+                          location{newWellPlacement.shared.length === 1 ? '' : 's'} ({sharedWellCount} wells within {COLOCATED_METERS} m of
+                          each other, counting wells already in the region). A map would average them into one value that belongs to
+                          none of them, so each location in an aquifer can have only one well. Keep one well at each location, or
+                          put wells at different depths in separate aquifers, and import the file again.
+                        </span>
+                      </p>
+                    )}
+                    {newWellPlacement.ambiguous.length > 0 && (
+                      <p className="flex items-start gap-2">
+                        <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                        <span>
+                          {newWellPlacement.ambiguous.length} new well{newWellPlacement.ambiguous.length === 1 ? ' falls' : 's fall'} inside
+                          more than one aquifer's outline, so the import can't tell which aquifer {newWellPlacement.ambiguous.length === 1 ? 'it is' : 'they are'} in.
+                          Add {newWellPlacement.ambiguous.length === 1 ? 'it' : 'them'} with Add Wells and an Aquifer ID column first.
+                        </span>
+                      </p>
+                    )}
+                    <button onClick={downloadSharedList} className="flex items-center gap-1.5 font-medium text-blue-700 hover:text-blue-900 hover:underline">
+                      <Download size={13} /> Download the list of wells (CSV)
+                    </button>
+                  </div>
+                )}
+                {dataSource === 'wqp' && newWellPlacement.shared.length > 0 && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900">
+                    <p className="mb-2">
+                      {newWellPlacement.shared.length} location{newWellPlacement.shared.length === 1 ? ' has' : 's have'} more than one
+                      well in the same aquifer ({sharedWellCount} wells within {COLOCATED_METERS} m of each other). A map would average
+                      them into one value, so one well is kept at each.
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 mb-2">
+                      {([['shallowest', 'Shallowest well'], ['deepest', 'Deepest well'], ['record', 'Most samples']] as [KeepRule, string][]).map(([rule, label]) => (
+                        <label key={rule} className="flex items-center gap-1.5 cursor-pointer">
+                          <input type="radio" name="keep-rule" checked={keepRule === rule} onChange={() => setKeepRule(rule)} className="text-blue-600" />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-amber-800 mb-2">
+                      {keepRule !== 'record' && 'Where the depths are missing or the same, the well with the most samples is kept.'}
+                      {newWellPlacement.shared.some(g => g.wells.some(w => w.existing)) && ' Where a well is already in the region, it stays and the downloaded ones are left out.'}
+                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">{wqpLeftOut.size} well{wqpLeftOut.size === 1 ? '' : 's'} and their samples will be left out.</span>
+                      <button
+                        onClick={() => downloadCsv(`wells-left-out-${regionId}.csv`, KEEP_REPORT_HEADERS, keepReportRows(wqpChoices, wqpFacts, aquiferNameOf, 'samples'))}
+                        className="flex items-center gap-1.5 font-medium text-blue-700 hover:text-blue-900 hover:underline"
+                      >
+                        <Download size={13} /> Download the list (CSV)
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}

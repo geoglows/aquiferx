@@ -400,9 +400,25 @@ export function assignWellToAquifer(
   lng: number,
   aquifersGeojson: any
 ): string | null {
+  return aquifersContaining(lat, lng, aquifersGeojson, true)[0] ?? null;
+}
+
+/**
+ * The IDs of the aquifers whose outlines hold the point, in file order. Two
+ * aquifers can share an outline (deep and shallow wells kept apart), and a
+ * well inside both can't be placed by its location. With `firstOnly`, stops
+ * at the first.
+ */
+export function aquifersContaining(
+  lat: number,
+  lng: number,
+  aquifersGeojson: any,
+  firstOnly = false,
+): string[] {
   const features = aquifersGeojson?.type === 'FeatureCollection'
     ? aquifersGeojson.features
     : [aquifersGeojson];
+  const ids: string[] = [];
 
   for (const feature of features) {
     if (!feature?.geometry) continue;
@@ -425,8 +441,22 @@ export function assignWellToAquifer(
       if (rings.length === 0) continue;
       if (!pointInPolygon([lng, lat], rings[0])) continue;
       const inHole = rings.slice(1).some(hole => pointInPolygon([lng, lat], hole));
-      if (!inHole) return aquiferId;
+      if (!inHole) {
+        ids.push(aquiferId);
+        if (firstOnly) return ids;
+        break;
+      }
     }
   }
-  return null;
+  return ids;
+}
+
+/** Download rows as a CSV file. */
+export function downloadCsv(filename: string, headers: string[], rows: Record<string, string>[]): void {
+  const blob = new Blob([toCsv(headers, rows)], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }

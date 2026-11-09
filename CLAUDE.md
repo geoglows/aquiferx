@@ -25,6 +25,7 @@
 - `services/catalog.ts` — `loadCatalog()`, `computeEffectiveDataTypes()`, `groupCatalog()`
 - `services/wellMatching.ts` — matchWells (ID/name/proximity), generateAqxId, suggestDataTypesFromColumns
 - `services/gseLookup.ts` — batched elevation lookup (USGS 3DEP via AWS Terrain Tiles / Open-Meteo)
+- `services/sharedLocations.ts` — wells of one aquifer within 10 m of each other (`COLOCATED_METERS`): a file with any is refused with a list; a USGS or WQP download keeps one well per location (shallowest / deepest / longest record or most samples)
 - `services/importUtils.ts` — CSV parsing, file processing, point-in-polygon (re-exports saveFiles/deleteFile from dataStore)
 - `services/reprojection.ts` — proj4 coordinate reprojection
 - `services/usgsApi.ts` — USGS Water Data API integration

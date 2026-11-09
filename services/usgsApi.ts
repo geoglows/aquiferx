@@ -171,6 +171,37 @@ export async function fetchUSGSWells(
 }
 
 /**
+ * The first and last water level reading (depth to water, 72019) of every
+ * well in a bounding box, keyed by monitoring location ID (`USGS-…`). One
+ * request for most regions: the field measurements metadata gives each
+ * well's record period, with no count of readings.
+ */
+export async function fetchUSGSLevelRecords(
+  bbox: [number, number, number, number], // [minLng, minLat, maxLng, maxLat]
+): Promise<Map<string, { begin: string; end: string }>> {
+  const records = new Map<string, { begin: string; end: string }>();
+  const limit = 10000;
+  for (let offset = 0; offset <= 40_000; offset += limit) {
+    const url = `${BASE_URL}/collections/field-measurements-metadata/items?bbox=${bbox.join(',')}` +
+      `&parameter_code=72019&properties=monitoring_location_id,begin,end&skipGeometry=true&limit=${limit}&offset=${offset}&f=json`;
+    const data = await (await fetchWithRetry(url)).json();
+    const features = data.features || [];
+    for (const f of features) {
+      const p = f.properties || {};
+      const id = p.monitoring_location_id;
+      if (!id) continue;
+      const prev = records.get(id);
+      // A well can have more than one series (sublocations); take the span of all
+      records.set(id, prev
+        ? { begin: p.begin < prev.begin ? p.begin : prev.begin, end: p.end > prev.end ? p.end : prev.end }
+        : { begin: p.begin || '', end: p.end || '' });
+    }
+    if (features.length < limit) break;
+  }
+  return records;
+}
+
+/**
  * Validate and clean USGS measurement data.
  * Fixes obvious date issues, drops unfixable records, and reports what happened.
  */
