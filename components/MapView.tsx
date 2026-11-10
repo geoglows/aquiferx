@@ -678,6 +678,26 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
   // Build well markers — only when wells/aquifer/filter changes, NOT on selection change
   const wellMarkerMapRef = useRef<Map<string, L.CircleMarker>>(new Map());
 
+  // Wells drawn on top of each other (nested wells): a click on them opens a
+  // list to pick from, at the click's position in the map
+  const [wellPicker, setWellPicker] = useState<{ x: number; y: number; wells: Well[] } | null>(null);
+  const OVERLAP_PX = 8;
+  const wellsUnderPoint = (pt: L.Point): Well[] => {
+    const map = mapRef.current;
+    if (!map) return [];
+    return visibleWellsRef.current.filter(o => map.latLngToContainerPoint(L.latLng(o.lat, o.lng)).distanceTo(pt) <= OVERLAP_PX);
+  };
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !wellPicker) return;
+    const close = () => setWellPicker(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    map.on('movestart zoomstart click', close);
+    document.addEventListener('keydown', onKey);
+    return () => { map.off('movestart zoomstart click', close); document.removeEventListener('keydown', onKey); };
+  }, [wellPicker]);
+  useEffect(() => { setWellPicker(null); }, [wells, selectedAquifer]);
+
   useEffect(() => {
     if (!wellLayerRef.current || !mapRef.current) return;
     wellLayerRef.current.clearLayers();
@@ -704,7 +724,14 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
           fillOpacity: 0.9
         });
         const unit = selectedRegion?.lengthUnit ? ` ${selectedRegion.lengthUnit}` : '';
-        marker.bindTooltip(`Well: ${w.name}<br/>ID: ${w.id}${w.gse ? `<br/>GSE: ${w.gse}${unit}` : ''}${w.depth != null ? `<br/>Well depth: ${w.depth}${unit}` : ''}<br/>Observations: ${measurementCount}`, { direction: 'top' });
+        // Content is a function, so the count of wells drawn under this one
+        // is taken when the popup opens, at the zoom of the moment
+        marker.bindTooltip(() => {
+          const map = mapRef.current;
+          const others = map ? wellsUnderPoint(map.latLngToContainerPoint(L.latLng(w.lat, w.lng))).length - 1 : 0;
+          return `Well: ${w.name}<br/>ID: ${w.id}${w.gse ? `<br/>GSE: ${w.gse}${unit}` : ''}${w.depth != null ? `<br/>Well depth: ${w.depth}${unit}` : ''}<br/>Observations: ${measurementCount}`
+            + (others > 0 ? `<br/><i>${others} more well${others === 1 ? '' : 's'} here; click to choose</i>` : '');
+        }, { direction: 'top' });
         marker.on('click', (e) => {
           // Stop the native DOM event from reaching the map container
           const ne = (e as any).originalEvent;
@@ -713,6 +740,14 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
           wellJustClickedRef.current = true;
           setTimeout(() => { wellJustClickedRef.current = false; }, 50);
           const shiftKey = ne?.shiftKey ?? false;
+          const under = shiftKey ? [] : wellsUnderPoint((e as L.LeafletMouseEvent).containerPoint);
+          if (under.length > 1) {
+            const pt = (e as L.LeafletMouseEvent).containerPoint;
+            marker.closeTooltip();
+            setWellPicker({ x: pt.x, y: pt.y, wells: under });
+            return;
+          }
+          setWellPicker(null);
           onWellClick(w, shiftKey);
         });
         wellLayerRef.current?.addLayer(marker);
@@ -906,6 +941,46 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
           )}
         </div>
       )}
+
+      {/* Wells drawn on top of each other: pick one, or all of them */}
+      {wellPicker && (() => {
+        const size = mapRef.current?.getSize();
+        const W = 280;
+        const left = size && wellPicker.x + 12 + W > size.x ? Math.max(4, wellPicker.x - 12 - W) : wellPicker.x + 12;
+        const top = size ? Math.max(4, Math.min(wellPicker.y - 12, size.y - 60 - wellPicker.wells.length * 44)) : wellPicker.y;
+        const unit = selectedRegion?.lengthUnit || '';
+        const sorted = [...wellPicker.wells].sort((a, b) =>
+          (a.depth ?? Infinity) - (b.depth ?? Infinity) || a.name.localeCompare(b.name));
+        return (
+          <div className="absolute z-[1000] bg-white border border-slate-200 rounded-lg shadow-lg text-xs overflow-hidden"
+            style={{ left, top, width: W }} onClick={e => e.stopPropagation()}>
+            <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200 text-slate-500 flex items-center justify-between">
+              <span>{wellPicker.wells.length} wells here</span>
+              <button onClick={() => { onWellBoxSelect(sorted); setWellPicker(null); }}
+                className="font-medium text-blue-700 hover:text-blue-900 hover:underline">Select all</button>
+            </div>
+            <ul className="max-h-72 overflow-y-auto">
+              {sorted.map(w => {
+                const n = wellMeasurementCounts.get(`${w.regionId}:${w.aquiferId}:${w.id}`) || 0;
+                return (
+                  <li key={w.id}>
+                    <button onClick={() => { onWellClick(w, false); setWellPicker(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-100 border-b border-slate-100 last:border-0">
+                      <div className="truncate">
+                        <span className="font-medium text-slate-800">{w.name || w.id}</span>
+                        {w.name && w.name !== w.id && <span className="ml-1.5 font-mono text-[10px] text-slate-400">{w.id}</span>}
+                      </div>
+                      <div className="text-slate-500 truncate">
+                        {w.depth != null ? `${w.depth.toLocaleString()} ${unit} deep · ` : ''}{n.toLocaleString()} observation{n === 1 ? '' : 's'}
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        );
+      })()}
 
       {/* Well Search */}
       {selectedAquifer && (
