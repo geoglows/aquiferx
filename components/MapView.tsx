@@ -703,7 +703,8 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
           opacity: 1,
           fillOpacity: 0.9
         });
-        marker.bindTooltip(`Well: ${w.name}<br/>ID: ${w.id}${w.gse ? `<br/>GSE: ${w.gse}` : ''}<br/>Observations: ${measurementCount}`, { direction: 'top' });
+        const unit = selectedRegion?.lengthUnit ? ` ${selectedRegion.lengthUnit}` : '';
+        marker.bindTooltip(`Well: ${w.name}<br/>ID: ${w.id}${w.gse ? `<br/>GSE: ${w.gse}${unit}` : ''}${w.depth != null ? `<br/>Well depth: ${w.depth}${unit}` : ''}<br/>Observations: ${measurementCount}`, { direction: 'top' });
         marker.on('click', (e) => {
           // Stop the native DOM event from reaching the map container
           const ne = (e as any).originalEvent;
@@ -734,7 +735,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
       prevSelectedAquiferIdRef.current = null;
     }
     visibleWellsRef.current = visible;
-  }, [wells, selectedAquifer, wellMeasurementCounts, minObs, dateFilterPassingWells, wellColors]);
+  }, [wells, selectedAquifer, wellMeasurementCounts, minObs, dateFilterPassingWells, wellColors, selectedRegion?.lengthUnit]);
 
   // Update marker styles when selection or raster active wells change — no clearing/recreation
   useEffect(() => {

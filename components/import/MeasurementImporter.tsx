@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload, Calendar, MapPin, Wand2, BookOpen, FlaskConical } from 'lucide-react';
-import { processUploadedFile, UploadedFile, saveFiles, SaveFileEntry, parseDate, detectDateFormat, parseCSV, toCsv, downloadCsv, WELLS_CSV_HEADERS, isInUS, assignWellToAquifer, aquifersContaining, DATE_FORMATS } from '../../services/importUtils';
+import { processUploadedFile, UploadedFile, saveFiles, SaveFileEntry, parseDate, detectDateFormat, parseCSV, toCsv, downloadCsv, WELLS_CSV_HEADERS, isInUS, assignWellToAquifer, aquifersContaining, DATE_FORMATS, cleanDepth } from '../../services/importUtils';
 import { PlacedWell } from '../../services/sharedLocations';
 import { fetchUSGSMeasurements, validateUSGSMeasurements, USGSDataQualityReport, USGSMeasurement, USGSDataSpan, computeDataSpan, filterByDateRange, getUSGSApiKey, setUSGSApiKey } from '../../services/usgsApi';
 import { loadCatalog } from '../../services/catalog';
@@ -277,6 +277,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         { key: 'well_name', label: 'Well Name', required: false },
         { key: 'lat', label: 'Latitude', required: false },
         { key: 'long', label: 'Longitude', required: false },
+        { key: 'well_depth', label: 'Well depth', required: false },
       ]
     : [];
   // Structural fields only — no Value field. Data columns (including WTE)
@@ -707,7 +708,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
   // mapping editor.
   const buildWqpFile = (
     deduped: { siteId: string; date: string; characteristicName: string; value: number }[],
-    stationMap: Map<string, { lat: number; lng: number; name: string }>,
+    stationMap: Map<string, { lat: number; lng: number; name: string; depth: string }>,
     selectedCodes: string[]
   ) => {
     if (!catalog) return;
@@ -733,6 +734,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
           well_name: station?.name || '',
           lat: station ? String(station.lat) : '',
           long: station ? String(station.lng) : '',
+          well_depth: station?.depth || '',
           date: r.date,
         };
         grouped.set(key, row);
@@ -741,7 +743,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     }
 
     const rows = Array.from(grouped.values());
-    const columns = ['well_id', 'well_name', 'lat', 'long', 'date', ...selectedCodes];
+    const columns = ['well_id', 'well_name', 'lat', 'long', 'well_depth', 'date', ...selectedCodes];
 
     setFile({
       name: 'WQP Download',
@@ -752,6 +754,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         well_name: 'well_name',
         lat: 'lat',
         long: 'long',
+        well_depth: 'well_depth',
         date: 'date',
       },
       type: 'csv',
@@ -823,7 +826,11 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       // expects results inside the actual aquifer polygons. Drop
       // stations outside the chosen polygon(s); cascade the drop to
       // their results.
-      const stationMap = new Map<string, { lat: number; lng: number; name: string }>();
+      // A station's well depth, in feet below land surface, goes into a new
+      // well in the region's unit
+      const stationMap = new Map<string, { lat: number; lng: number; name: string; depth: string }>();
+      const depthInUnit = (ft?: number) => ft == null ? ''
+        : String(lengthUnit === 'ft' ? ft : Math.round(ft * 0.3048 * 100) / 100);
       let droppedStations = 0;
       for (const s of stations) {
         if (aquifersGeojson) {
@@ -831,7 +838,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
           if (!aq) { droppedStations++; continue; }
           if (wqpScope === 'aquifer' && aq !== wqpScopeAquiferId) { droppedStations++; continue; }
         }
-        stationMap.set(s.siteId, { lat: s.lat, lng: s.lng, name: s.siteName });
+        stationMap.set(s.siteId, { lat: s.lat, lng: s.lng, name: s.siteName, depth: depthInUnit(s.depthFt) });
       }
       const inScopeResults = results.filter(r => stationMap.has(r.siteId));
 
@@ -1054,6 +1061,17 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         return wellIdentityKey(id, name, lat, lng);
       };
 
+      // A new well's depth: the first row of that well with one
+      const depthCol = hasWellColumns ? file.mapping['well_depth'] : undefined;
+      const depthByKey = new Map<string, string>();
+      if (depthCol) {
+        for (const r of file.data as Record<string, string>[]) {
+          const key = rowIdentityKey(r);
+          const d = cleanDepth(r[depthCol]);
+          if (key && d && !depthByKey.has(key)) depthByKey.set(key, d);
+        }
+      }
+
       // Compose identityKey → final wellId (and track aquifer lookup)
       const identityToWellId = new Map<string, string>();
       const newWellRecords: ExistingWell[] = [];
@@ -1113,6 +1131,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
               lng: r.sourceRow.lng!,
               aquifer_id: aquiferId,
               gse: elev,
+              well_depth: depthByKey.get(srcKey) ?? '',
             };
             newWellRecords.push(rec);
             identityToWellId.set(srcKey, aqx);
@@ -1338,6 +1357,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
           lat: String(w.lat),
           long: String(w.lng),
           gse: String(w.gse ?? ''),
+          well_depth: w.well_depth ?? '',
           aquifer_id: w.aquifer_id,
           aquifer_name: aquiferNameById.get(w.aquifer_id) || '',
         }));
