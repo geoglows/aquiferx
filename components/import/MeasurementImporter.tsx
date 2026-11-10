@@ -944,7 +944,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     setIsMatching(true);
     try {
       const sources = buildSourceWells();
-      const results = matchWells(sources, existingWellsFull, { proximityMeters });
+      const results = matchWells(sources, existingWellsFull, { proximityMeters, idOnly: dataSource === 'wqp' });
       setMatchResults(results);
       setMatchSummary(summarizeMatches(results));
     } finally {
@@ -2128,7 +2128,9 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
               <span className="text-sm font-medium text-sky-800">Well matching</span>
             </div>
             <p className="text-xs text-sky-700 mb-3">
-              Match source rows to existing wells by ID, name, or proximity. Unmatched rows with coordinates become new wells.
+              {dataSource === 'wqp'
+                ? 'Stations match wells already in the region by ID (a USGS- ID also matches the same site number without the prefix). Other stations become new wells.'
+                : 'Match source rows to existing wells by ID, name, or proximity. Unmatched rows with coordinates become new wells.'}
             </p>
 
             {/* Coordinate reference system picker */}
@@ -2137,15 +2139,17 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
             </div>
 
             <div className="flex items-center gap-2 mb-3">
-              <label className="text-xs text-slate-600">Proximity threshold (m):</label>
-              <input
-                type="number"
-                value={proximityMeters}
-                min={1}
-                max={5000}
-                onChange={e => setProximityMeters(Math.max(1, parseInt(e.target.value || '100', 10)))}
-                className="w-20 px-2 py-1 border border-sky-200 rounded text-xs"
-              />
+              {dataSource === 'upload' && (<>
+                <label className="text-xs text-slate-600">Proximity threshold (m):</label>
+                <input
+                  type="number"
+                  value={proximityMeters}
+                  min={1}
+                  max={5000}
+                  onChange={e => setProximityMeters(Math.max(1, parseInt(e.target.value || '100', 10)))}
+                  className="w-20 px-2 py-1 border border-sky-200 rounded text-xs"
+                />
+              </>)}
               <button
                 onClick={runWellMatching}
                 disabled={isMatching}
@@ -2157,10 +2161,12 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
             </div>
             {matchSummary && (
               <div className="space-y-2">
-                <div className="grid grid-cols-5 gap-1 text-center text-xs">
+                <div className={`grid ${dataSource === 'wqp' ? 'grid-cols-3' : 'grid-cols-5'} gap-1 text-center text-xs`}>
                   <div className="p-1.5 bg-white rounded border border-slate-200"><div className="font-bold text-slate-800">{matchSummary.byId}</div><div className="text-[10px] text-slate-500">by ID</div></div>
-                  <div className="p-1.5 bg-white rounded border border-slate-200"><div className="font-bold text-slate-800">{matchSummary.byName}</div><div className="text-[10px] text-slate-500">by name</div></div>
-                  <div className="p-1.5 bg-white rounded border border-slate-200"><div className="font-bold text-slate-800">{matchSummary.byProximity}</div><div className="text-[10px] text-slate-500">by proximity</div></div>
+                  {dataSource === 'upload' && (<>
+                    <div className="p-1.5 bg-white rounded border border-slate-200"><div className="font-bold text-slate-800">{matchSummary.byName}</div><div className="text-[10px] text-slate-500">by name</div></div>
+                    <div className="p-1.5 bg-white rounded border border-slate-200"><div className="font-bold text-slate-800">{matchSummary.byProximity}</div><div className="text-[10px] text-slate-500">by proximity</div></div>
+                  </>)}
                   <div className="p-1.5 bg-white rounded border border-slate-200"><div className="font-bold text-green-700">{matchSummary.newWells}</div><div className="text-[10px] text-slate-500">new</div></div>
                   <div className="p-1.5 bg-white rounded border border-slate-200"><div className={`font-bold ${matchSummary.unmatched > 0 ? 'text-red-600' : 'text-slate-400'}`}>{matchSummary.unmatched}</div><div className="text-[10px] text-slate-500">unmatched</div></div>
                 </div>
@@ -2168,7 +2174,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
                   <details className="text-xs">
                     <summary className="cursor-pointer text-sky-700 hover:text-sky-800">Review proximity matches ({matchResults.filter(r => r.kind === 'proximity' && !r.rejected).length})</summary>
                     <p className="mt-2 text-[11px] text-slate-500">
-                      Each row below shows a {dataSource === 'wqp' ? 'WQP station' : 'source well from your CSV'} that was auto-matched to an existing well based on location. If a match looks wrong, click <span className="font-medium text-red-600">Reject</span> to create a new well instead.
+                      Each row below shows a source well from your CSV that was auto-matched to an existing well based on location. If a match looks wrong, click <span className="font-medium text-red-600">Reject</span> to create a new well instead.
                     </p>
                     <div className="mt-2 space-y-1 max-h-40 overflow-y-auto">
                       {matchResults.filter(r => r.kind === 'proximity' && !r.rejected).map(r => (

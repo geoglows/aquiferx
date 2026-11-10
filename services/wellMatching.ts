@@ -78,6 +78,13 @@ export interface MatchResult {
 
 export interface MatchOptions {
   proximityMeters: number;
+  /**
+   * Match by ID alone (a WQP download). A station whose ID isn't in the
+   * region becomes a new well: matched by location it could be another well
+   * at the same place, such as a deeper well of a nest, and its samples
+   * would go into the record of the well already there.
+   */
+  idOnly?: boolean;
 }
 
 export interface MatchSummary {
@@ -96,12 +103,21 @@ export function matchWells(rows: SourceWellRow[], existing: ExistingWell[], opts
     if (w.well_id) byId.set(w.well_id, w);
     if (w.well_name) byNormName.set(normalizeName(w.well_name), w);
   }
+  // A USGS site number with or without its "USGS-" prefix is one ID: WQP and
+  // the USGS API write the prefix, and many wells files leave it off
+  const findById = (id: string): ExistingWell | undefined => byId.get(id)
+    ?? (/^USGS-\d{8,15}$/.test(id) ? byId.get(id.slice(5)) : /^\d{8,15}$/.test(id) ? byId.get(`USGS-${id}`) : undefined);
   const results: MatchResult[] = [];
   for (const row of rows) {
     // 1. Exact ID match
-    if (row.wellId && byId.has(row.wellId)) {
-      const ex = byId.get(row.wellId)!;
-      results.push({ sourceRow: row, kind: 'id', existingWell: ex, resolvedWellId: ex.well_id });
+    const exById = row.wellId ? findById(row.wellId) : undefined;
+    if (exById) {
+      results.push({ sourceRow: row, kind: 'id', existingWell: exById, resolvedWellId: exById.well_id });
+      continue;
+    }
+    if (opts.idOnly) {
+      const placed = row.lat !== undefined && row.lng !== undefined && !isNaN(row.lat) && !isNaN(row.lng);
+      results.push({ sourceRow: row, kind: placed ? 'new' : 'unmatched', resolvedWellId: null });
       continue;
     }
     // 2. Exact name match
