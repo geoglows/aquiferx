@@ -1,4 +1,7 @@
-import { haversineDistance, groupNearbyPoints, COLOCATED_METERS } from '../utils/geo';
+import { haversineDistance, groupNearbyPoints } from '../utils/geo';
+
+/** Points closer than this are averaged into one, so the kriging matrix stays solvable */
+const KRIGING_MERGE_METERS = 1;
 import type { VariogramModel, KrigingRangeMode } from '../types';
 
 // Spatial covariance function — supports multiple variogram models
@@ -145,8 +148,8 @@ function luSolve(LU: Float64Array[], perm: Int32Array, b: number[], pivotTol: nu
 }
 
 // Average wells within minDist meters of each other into one point. The
-// raster pipeline groups wells before calling krigGrid; this keeps the
-// matrix solvable for any other caller.
+// raster pipeline keeps one well per place before calling krigGrid; this
+// keeps the matrix solvable for any other caller.
 function deduplicateWells(
   lats: number[], lngs: number[], values: number[], minDist: number
 ): { lats: number[]; lngs: number[]; values: number[] } {
@@ -245,7 +248,7 @@ export async function krigGrid(
   }
 
   // Two wells at one spot give the matrix two identical rows
-  const deduped = deduplicateWells(wellLats, wellLngs, wellValues, COLOCATED_METERS);
+  const deduped = deduplicateWells(wellLats, wellLngs, wellValues, KRIGING_MERGE_METERS);
   const wLats = deduped.lats;
   const wLngs = deduped.lngs;
   const wValues = deduped.values;

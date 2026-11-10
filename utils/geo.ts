@@ -45,8 +45,12 @@ export function haversineDistance(lat1: number, lng1: number, lat2: number, lng2
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-/** Wells closer together than this are one point to the spatial interpolation. */
-export const COLOCATED_METERS = 10;
+/**
+ * Wells of one aquifer closer together than this are at one place, such as
+ * nested wells finished at different depths. Spatial Analysis keeps one of
+ * them for a map; the distance can be changed there.
+ */
+export const COLOCATED_METERS = 20;
 
 /**
  * Splits points into groups: each group is the first point not yet grouped

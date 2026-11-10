@@ -25,7 +25,7 @@
 - `services/catalog.ts` — `loadCatalog()`, `computeEffectiveDataTypes()`, `groupCatalog()`
 - `services/wellMatching.ts` — matchWells (ID/name/proximity), generateAqxId, suggestDataTypesFromColumns
 - `services/gseLookup.ts` — batched elevation lookup (USGS 3DEP via AWS Terrain Tiles / Open-Meteo)
-- `services/sharedLocations.ts` — groups wells of one aquifer within `COLOCATED_METERS` of each other (nested wells). Imports take every well; only a new well inside more than one aquifer outline is refused, when placed by location
+- `services/sharedLocations.ts` — wells at one place: wells of one aquifer closer than `COLOCATED_METERS` (20 m, `utils/geo.ts`), mostly nested wells. Imports take every well (only a new well inside more than one aquifer outline is refused, when placed by location). Spatial Analysis' Wells at One Place step (`findPlaces`, `describePlaces`, `chooseWell`) keeps one well per place for a map: agrees best with nearby wells, longest record, most readings, shallowest or deepest, or picked by hand
 - `services/importUtils.ts` — CSV parsing, file processing, point-in-polygon (re-exports saveFiles/deleteFile from dataStore)
 - `services/reprojection.ts` — proj4 coordinate reprojection
 - `services/usgsApi.ts` — USGS Water Data API integration

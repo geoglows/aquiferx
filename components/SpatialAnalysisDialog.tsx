@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
-import { X, ChevronLeft, ChevronRight, Play, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, Play, Loader2, CheckCircle2, AlertTriangle, Download } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, Cell
@@ -7,12 +7,19 @@ import {
 import {
   Aquifer, Region, Well, Measurement, DataType, RasterAnalysisResult,
   VariogramModel, KrigingRangeMode, IdwNodalFunction, IdwNeighborMode, SpatialMethod,
-  ImputationModelMeta,
+  ImputationModelMeta, ImputationModelResult, PlaceKeepRule,
 } from '../types';
 import { RasterPipelineInput } from '../services/rasterAnalysis';
 import { startRasterAnalysis, AnalysisRun } from '../services/analysisClient';
 import { isPipelineCancelled } from '../services/pipelineCancel';
 import { slugify } from '../utils/strings';
+import { COLOCATED_METERS } from '../utils/geo';
+import { readJson } from '../services/dataStore';
+import { downloadCsv } from '../services/importUtils';
+import {
+  findPlaces, describePlaces, chooseWell, placeReportRows, KeepChoice, Place, PlacePoint, Reading,
+  KEEP_RULE_LABELS, PLACE_REPORT_HEADERS, NEIGHBOR_COMPARISON,
+} from '../services/sharedLocations';
 import PchipPreviewCanvas from './PchipPreviewCanvas';
 
 interface SpatialAnalysisDialogProps {
@@ -27,9 +34,8 @@ interface SpatialAnalysisDialogProps {
   availableModels?: ImputationModelMeta[];
 }
 
-type Step = 1 | 2 | 3 | 'running' | 'complete';
-
-const STEP_LABELS = ['Temporal', 'Spatial', 'Title & Run'];
+// 2 is shown only when the aquifer has wells at one place
+type Step = 1 | 2 | 3 | 4 | 'running' | 'complete';
 
 const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
   aquifer, region, wells, measurements, dataType, existingCodes, onClose, onComplete, availableModels,
@@ -71,7 +77,13 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
   const [truncateHighValue, setTruncateHighValue] = useState(0);
   const [logInterpolation, setLogInterpolation] = useState(false);
 
-  // --- Title (Step 3) ---
+  // --- Wells at one place (Step 2) ---
+  const [placeMeters, setPlaceMeters] = useState(COLOCATED_METERS);
+  const [keepRule, setKeepRule] = useState<PlaceKeepRule>('neighbors');
+  // Places where the user picked the well: place key → well ID
+  const [byHand, setByHand] = useState<Map<string, string>>(new Map());
+
+  // --- Title (Step 4) ---
   const [title, setTitle] = useState('');
 
   // Build well key set for fast lookup (regionId:aquiferId:wellId for global uniqueness)
@@ -241,13 +253,13 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
 
   // Validation
   const step1Valid = startDate && endDate && startDate < endDate && wells.length > 0;
-  const step2Valid = (() => {
+  const spatialValid = (() => {
     if (spatialMethod === 'idw' && nodalFunction === 'quadratic' && neighborMode === 'nearest' && neighborCount < 6) return false;
     if (rangeMode === 'custom' && (rangeValue <= 0)) return false;
     if (rangeMode === 'percentage' && (rangeValue <= 0 || rangeValue > 100)) return false;
     return true;
   })();
-  const step3Valid = title.trim().length > 0 && !hasConflict;
+  const titleValid = title.trim().length > 0 && !hasConflict;
 
   const handleRun = async () => {
     if (step === 'running') return; // a pipeline is already in flight
@@ -290,7 +302,18 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
         logInterpolation,
       },
       title,
+      ...(places.length > 0 ? {
+        places: {
+          meters: placeMeters,
+          rule: keepRule,
+          places: places.length,
+          byHand: choices.filter(c => c.how === 'picked by hand').length,
+          leftOut: choices.flatMap(c => [...c.reasons.keys()].map(id => ({ id, keptId: c.keptId }))),
+        },
+      } : {}),
     };
+    const runWells = wells.filter(w => !leftOutIds.has(w.id));
+    const runWellKeys = new Set(runWells.map(w => `${w.regionId}:${w.aquiferId}:${w.id}`));
 
     try {
       const run = startRasterAnalysis(
@@ -299,8 +322,8 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
           dataType: dataType.code,
           aquifer,
           region,
-          wells,
-          measurements: measurements.filter(m => wellKeySet.has(`${m.regionId}:${m.aquiferId}:${m.wellId}`)),
+          wells: runWells,
+          measurements: measurements.filter(m => runWellKeys.has(`${m.regionId}:${m.aquiferId}:${m.wellId}`)),
         },
         (stepText, pct) => {
           if (!cancelledRef.current) {
@@ -320,7 +343,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
       if (isPipelineCancelled(err)) return;
       console.error('Raster analysis failed:', err);
       setErrorMessage(err instanceof Error ? err.message : String(err));
-      setStep(3);
+      setStep(4);
     } finally {
       runRef.current = null;
     }
@@ -352,8 +375,8 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
     return count;
   }, [wteMeasurements]);
 
-  // Well qualification based on minObs and minSpanYears
-  const { qualifiedWellCount, omittedWellCount } = useMemo(() => {
+  // Well qualification based on minObs and minSpanYears, as the pipeline does it
+  const { qualifiedWellCount, omittedWellCount, qualifiedIds } = useMemo(() => {
     const MS_PER_YEAR = 365.25 * 86400000;
     const byWell = new Map<string, number[]>();
     for (const m of wteMeasurements) {
@@ -364,18 +387,98 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
       }
     }
     let qualified = 0, omitted = 0;
-    for (const [, times] of byWell) {
+    const ids = new Set<string>();
+    for (const [wellId, times] of byWell) {
       if (times.length < 2) { omitted++; continue; } // need >= 2 for PCHIP
       const obsCount = times.length;
       const span = (Math.max(...times) - Math.min(...times)) / MS_PER_YEAR;
       if (obsCount >= minObs && span >= minSpanYears) {
         qualified++;
+        ids.add(wellId);
       } else {
         omitted++;
       }
     }
-    return { qualifiedWellCount: qualified, omittedWellCount: omitted };
+    return { qualifiedWellCount: qualified, omittedWellCount: omitted, qualifiedIds: ids };
   }, [wteMeasurements, minObs, minSpanYears]);
+
+  // ---------------------------------------------------------------------------
+  // Wells at one place: wells less than placeMeters apart among the wells the
+  // map will use. One is kept at each place, by the rule or by hand.
+  // ---------------------------------------------------------------------------
+
+  // A map from a gap-filling model uses the model's wells
+  const [modelWellIds, setModelWellIds] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    if (dataSource !== 'model' || !selectedModelFilePath) { setModelWellIds(null); return; }
+    let live = true;
+    setModelWellIds(null);
+    readJson<ImputationModelResult>(selectedModelFilePath)
+      .then(m => { if (live) setModelWellIds(new Set((m?.data ?? []).map(r => r.well_id))); })
+      .catch(() => { if (live) setModelWellIds(new Set()); });
+    return () => { live = false; };
+  }, [dataSource, selectedModelFilePath]);
+  const placesLoading = dataSource === 'model' && modelWellIds === null;
+
+  // Each well's measurements as sorted readings
+  const readings = useMemo(() => {
+    const out = new Map<string, Reading[]>();
+    for (const m of wteMeasurements) {
+      const t = new Date(m.date).getTime();
+      if (isNaN(t) || !Number.isFinite(m.value)) continue;
+      let list = out.get(m.wellId);
+      if (!list) out.set(m.wellId, list = []);
+      list.push({ t, v: m.value });
+    }
+    for (const list of out.values()) list.sort((a, b) => a.t - b.t);
+    return out;
+  }, [wteMeasurements]);
+
+  const toPoint = (w: Well): PlacePoint => ({ id: w.id, name: w.name, lat: w.lat, lng: w.lng, ...(w.depth != null ? { depth: w.depth } : {}) });
+
+  const placeGroups = useMemo(() => {
+    const use = dataSource === 'model' ? modelWellIds : qualifiedIds;
+    if (!use || !(placeMeters > 0)) return [];
+    return findPlaces(wells.filter(w => use.has(w.id) && Number.isFinite(w.lat) && Number.isFinite(w.lng)).map(toPoint), placeMeters);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wells, dataSource, modelWellIds, qualifiedIds, placeMeters]);
+
+  // The step stays once shown, so a distance that finds no places can be changed back
+  const hasPlaceStep = placeGroups.length > 0 || placeMeters !== COLOCATED_METERS;
+
+  // The facts the rules need, computed once the step is reached: nearby wells
+  // are those with readings that are not at any place themselves
+  const places: Place[] = useMemo(() => {
+    if (step === 1 || placeGroups.length === 0) return [];
+    const withReadings = wells.filter(w => readings.has(w.id) && Number.isFinite(w.lat) && Number.isFinite(w.lng)).map(toPoint);
+    const atPlaces = new Set(findPlaces(withReadings, placeMeters).flat().map(w => w.id));
+    const neighbors = withReadings.filter(w => !atPlaces.has(w.id));
+    const start = new Date(startDate).getTime(), end = new Date(endDate).getTime();
+    return describePlaces(placeGroups, readings, neighbors, start, end);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step === 1, placeGroups, wells, readings, placeMeters, startDate, endDate]);
+
+  const choices = useMemo(() => places.map((place): KeepChoice => {
+    const picked = byHand.get(place.key);
+    if (picked && place.wells.some(w => w.id === picked)) {
+      const reasons = new Map(place.wells.filter(w => w.id !== picked).map(w => [w.id, `${picked} picked by hand`] as [string, string]));
+      return { keptId: picked, how: 'picked by hand', reasons };
+    }
+    return chooseWell(place, keepRule);
+  }), [places, keepRule, byHand]);
+
+  const leftOutIds = useMemo(() => {
+    const out = new Set<string>();
+    for (const c of choices) for (const id of c.reasons.keys()) out.add(id);
+    return out;
+  }, [choices]);
+
+  const visibleSteps: { n: number; label: string }[] = [
+    { n: 1, label: 'Temporal' },
+    ...(hasPlaceStep ? [{ n: 2, label: 'Wells at One Place' }] : []),
+    { n: 3, label: 'Spatial' },
+    { n: 4, label: 'Title & Run' },
+  ];
 
   const stepNumber = typeof step === 'number' ? step : null;
 
@@ -402,10 +505,10 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
             {/* Step indicator */}
             {stepNumber && (
               <div className="flex items-center gap-2 text-xs text-slate-500">
-                {STEP_LABELS.map((label, i) => {
+                {visibleSteps.map(({ n, label }, i) => {
                   const sn = i + 1;
-                  const isActive = sn === stepNumber;
-                  const isDone = sn < stepNumber;
+                  const isActive = n === stepNumber;
+                  const isDone = n < stepNumber;
                   return (
                     <React.Fragment key={i}>
                       {i > 0 && <div className="w-4 h-px bg-slate-300" />}
@@ -639,8 +742,136 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
             </div>
           )}
 
-          {/* ===== STEP 2: Spatial ===== */}
-          {step === 2 && (
+          {/* ===== STEP 2: Wells at one place ===== */}
+          {step === 2 && (() => {
+            const unit = region.lengthUnit;
+            const diffUnit = dataType.unit ? ` ${dataType.unit}` : '';
+            const round1 = (x: number) => (Math.round(x * 10) / 10).toLocaleString();
+            const ruleHelp: Record<PlaceKeepRule, string> = {
+              neighbors: `Each well's readings in the period are compared with those of up to ${NEIGHBOR_COMPARISON.maxNeighbors} nearby wells read within ${NEIGHBOR_COMPARISON.days} days, and the well that differs least is kept. Where too few nearby wells were read at the same times, the well with the most readings is kept.`,
+              record: 'The well whose record, from its first reading to its last, covers more of the period.',
+              count: 'The well with the most readings in the period.',
+              shallowest: 'By well depth. Where a well at the place has no depth, the well with the most readings is kept.',
+              deepest: 'By well depth. Where a well at the place has no depth, the well with the most readings is kept.',
+            };
+            return (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700 mb-1">Wells at One Place</h3>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    {placeGroups.length > 0
+                      ? <>{placeGroups.length} place{placeGroups.length === 1 ? ' has' : 's have'} more than one well, closer together than the distance below. </>
+                      : <>No wells of this aquifer are closer together than the distance below. </>}
+                    They are mostly nested wells, finished at different depths in one borehole or a few feet apart. Averaging
+                    them would mix measurements from different depths, so the map uses one well at each place. The others stay in
+                    the region and are left out of this map only.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    Wells closer than
+                    <input type="number" value={placeMeters} min={1} max={100} step={1}
+                      onChange={e => setPlaceMeters(Math.max(1, Math.min(100, parseFloat(e.target.value) || 0)))}
+                      className="w-16 px-2 py-1 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
+                    m count as one place
+                  </label>
+                </div>
+
+                {placesLoading && (
+                  <p className="flex items-center gap-2 text-xs text-slate-500"><Loader2 size={12} className="animate-spin" /> Reading the model's wells...</p>
+                )}
+
+                {places.length > 0 && (
+                  <>
+                    <div>
+                      <label className={labelCls}>Keep at each place</label>
+                      <div className="flex flex-wrap gap-2">
+                        {(Object.keys(KEEP_RULE_LABELS) as PlaceKeepRule[]).map(rule => (
+                          <button key={rule} onClick={() => { setKeepRule(rule); setByHand(new Map()); }} className={radioCls(keepRule === rule)}>
+                            {KEEP_RULE_LABELS[rule]}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1.5">{ruleHelp[keepRule]} Click another well in the list to keep it instead.</p>
+                    </div>
+
+                    <div className="border border-slate-200 rounded-lg max-h-[42vh] overflow-y-auto">
+                      <table className="w-full text-xs">
+                        <thead className="sticky top-0 bg-slate-100 text-slate-500">
+                          <tr>
+                            <th className="w-8 py-1.5"></th>
+                            <th className="text-left font-medium py-1.5 pr-2">Well</th>
+                            <th className="text-right font-medium py-1.5 pr-3">Depth</th>
+                            <th className="text-right font-medium py-1.5 pr-3">Readings in period</th>
+                            <th className="text-right font-medium py-1.5 pr-3">Record</th>
+                            <th className="text-right font-medium py-1.5 pr-3">Differs from nearby wells</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {places.map((place, k) => {
+                            const c = choices[k];
+                            return (
+                              <React.Fragment key={place.key}>
+                                <tr className="bg-slate-50 border-t border-slate-200">
+                                  <td colSpan={6} className="px-2 py-1 text-slate-500">
+                                    Place {k + 1}
+                                    {' · '}{place.spanMeters < 0.5 ? 'same coordinates' : `${round1(place.spanMeters)} m apart`}
+                                    {' · kept: '}{c.how}
+                                  </td>
+                                </tr>
+                                {place.wells.map(w => {
+                                  const kept = w.id === c.keptId;
+                                  return (
+                                    <tr key={w.id}
+                                      onClick={() => setByHand(prev => {
+                                        const next = new Map(prev);
+                                        if (chooseWell(place, keepRule).keptId === w.id) next.delete(place.key); else next.set(place.key, w.id);
+                                        return next;
+                                      })}
+                                      className={`cursor-pointer ${kept ? 'text-slate-800' : 'text-slate-400 hover:text-slate-600'}`}>
+                                      <td className="text-center py-1">
+                                        <input type="radio" readOnly checked={kept} name={`place-${k}`} className="text-emerald-600 pointer-events-none" />
+                                      </td>
+                                      <td className="py-1 pr-2">
+                                        <span className={kept ? 'font-medium' : ''}>{w.name || w.id}</span>
+                                        {w.name && w.name !== w.id && <span className="ml-1.5 text-[10px] text-slate-400 font-mono">{w.id}</span>}
+                                      </td>
+                                      <td className="text-right py-1 pr-3">{w.depth != null ? `${w.depth.toLocaleString()} ${unit}` : '—'}</td>
+                                      <td className="text-right py-1 pr-3">{w.count.toLocaleString()}</td>
+                                      <td className="text-right py-1 pr-3">{w.first && w.last ? `${w.first.slice(0, 4)}–${w.last.slice(0, 4)}` : '—'}</td>
+                                      <td className="text-right py-1 pr-3" title={w.medianDiff == null ? `${w.compared} reading${w.compared === 1 ? '' : 's'} could be compared; ${NEIGHBOR_COMPARISON.minCompared} are needed` : `median of ${w.compared} readings`}>
+                                        {w.medianDiff != null ? `${round1(w.medianDiff)}${diffUnit}` : '—'}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </React.Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="text-slate-600">
+                        <span className="font-medium">{leftOutIds.size} well{leftOutIds.size === 1 ? '' : 's'}</span> will be left out of this map
+                        {byHand.size > 0 && <>, {byHand.size} place{byHand.size === 1 ? '' : 's'} picked by hand</>}.
+                      </span>
+                      <button
+                        onClick={() => downloadCsv(`wells-at-one-place-${slugify(aquifer.name)}.csv`, PLACE_REPORT_HEADERS, placeReportRows(places, p => choices[places.indexOf(p)]))}
+                        className="flex items-center gap-1.5 font-medium text-blue-700 hover:text-blue-900 hover:underline">
+                        <Download size={13} /> Download the list (CSV)
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ===== STEP 3: Spatial ===== */}
+          {step === 3 && (
             <div className="space-y-5">
               {/* Spatial Method selector */}
               <div>
@@ -793,8 +1024,8 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
             </div>
           )}
 
-          {/* ===== STEP 3: Title & Summary ===== */}
-          {step === 3 && (
+          {/* ===== STEP 4: Title & Summary ===== */}
+          {step === 4 && (
             <div className="space-y-5">
               {errorMessage && (
                 <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2">
@@ -889,10 +1120,18 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                 <p>{result.frames.length} timesteps &bull; {result.params.startDate} to {result.params.endDate}</p>
                 <p>{result.aquiferName}</p>
               </div>
+              {result.options?.places && (
+                <p className="text-xs text-slate-500 text-center max-w-sm">
+                  {result.options.places.places} place{result.options.places.places !== 1 ? 's' : ''} had more than one well
+                  within {result.options.places.meters} m. The map used one well at each and left
+                  out {result.options.places.leftOut.length}.
+                </p>
+              )}
               {result.colocated && result.colocated.places > 0 && (
                 <p className="text-xs text-slate-500 text-center max-w-sm">
                   {result.colocated.wells} wells at {result.colocated.places} place{result.colocated.places !== 1 ? 's' : ''} were
-                  within 10 m of each other. Each place is one point in the map, with the average of its wells' values.
+                  within {result.options?.places?.meters ?? COLOCATED_METERS} m of each other. Each place is one point in the map, with
+                  the average of its wells' values.
                 </p>
               )}
             </div>
@@ -914,7 +1153,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
           {/* Center: Back */}
           <div>
             {stepNumber && stepNumber > 1 && (
-              <button onClick={() => setStep((stepNumber - 1) as Step)}
+              <button onClick={() => setStep(stepNumber === 3 && !hasPlaceStep ? 1 : (stepNumber - 1) as Step)}
                 className="flex items-center gap-1 px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
                 <ChevronLeft size={16} />
                 Back
@@ -925,13 +1164,20 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
           {/* Right: Next / Run / View */}
           <div>
             {step === 1 && (
-              <button onClick={() => setStep(2)} disabled={!step1Valid}
+              <button onClick={() => setStep(hasPlaceStep ? 2 : 3)} disabled={!step1Valid}
                 className="flex items-center gap-1 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 Next
                 <ChevronRight size={16} />
               </button>
             )}
             {step === 2 && (
+              <button onClick={() => setStep(3)} disabled={!(placeMeters > 0) || (places.length > 0 && placesLoading)}
+                className="flex items-center gap-1 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                Next
+                <ChevronRight size={16} />
+              </button>
+            )}
+            {step === 3 && (
               <button onClick={() => {
                   if (!title) {
                     const defaultTitle = spatialMethod === 'kriging' ? 'kriging'
@@ -940,15 +1186,15 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                       : 'idw_quad';
                     setTitle(defaultTitle);
                   }
-                  setStep(3);
-                }} disabled={!step2Valid}
+                  setStep(4);
+                }} disabled={!spatialValid}
                 className="flex items-center gap-1 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 Next
                 <ChevronRight size={16} />
               </button>
             )}
-            {step === 3 && (
-              <button onClick={handleRun} disabled={!step3Valid}
+            {step === 4 && (
+              <button onClick={handleRun} disabled={!titleValid}
                 className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 <Play size={16} />
                 Run Analysis

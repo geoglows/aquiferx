@@ -171,6 +171,22 @@ export interface RasterOptions {
     idw: IdwOptions;
   };
   general: GeneralInterpolationOptions;
+  /** Wells of the aquifer less than `meters` apart: the well each place kept */
+  places?: RasterPlaceOptions;
+}
+
+/** Which well a place keeps: see services/sharedLocations.ts */
+export type PlaceKeepRule = 'neighbors' | 'record' | 'count' | 'shallowest' | 'deepest';
+
+/** How a map handled wells at one place: one kept at each, the others left out */
+export interface RasterPlaceOptions {
+  meters: number;
+  rule: PlaceKeepRule;
+  places: number;
+  /** Places where the well was picked by hand, not by the rule */
+  byHand: number;
+  /** Wells left out of the map, with the well kept at their place */
+  leftOut: { id: string; keptId: string }[];
 }
 
 export interface RasterFrameStats {
@@ -200,7 +216,8 @@ export interface RasterAnalysisResult {
   options?: RasterOptions;
   generatedAt?: string;
   stats?: RasterFrameStats[];
-  /** Wells within 10 m of another, and the places they share, averaged into one point each */
+  /** Wells closer than the place distance, and the places they share, averaged into one point each
+   *  (maps made before Spatial Analysis kept one well per place, at 10 m) */
   colocated?: { wells: number; places: number };
 }
 

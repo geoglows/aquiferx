@@ -1,6 +1,7 @@
 import React from 'react';
 import { X } from 'lucide-react';
 import { RasterAnalysisMeta } from '../types';
+import { KEEP_RULE_LABELS as PLACE_RULE_NAMES } from '../services/sharedLocations';
 
 interface RasterInfoDialogProps {
   meta: RasterAnalysisMeta;
@@ -63,8 +64,14 @@ const RasterInfoDialog: React.FC<RasterInfoDialogProps> = ({ meta, onClose }) =>
               <div className="space-y-0">
                 <div className={rowCls}><span className={labelCls}>Method</span><span className={valueCls}>{opts.spatial.method === 'kriging' ? 'Kriging' : 'IDW'}</span></div>
                 <div className={rowCls}><span className={labelCls}>Resolution</span><span className={valueCls}>{opts.spatial.resolution} cols</span></div>
+                {opts.places && (
+                  <>
+                    <div className={rowCls}><span className={labelCls}>Wells at one place</span><span className={valueCls}>{opts.places.places} place{opts.places.places !== 1 ? 's' : ''} within {opts.places.meters} m, {opts.places.leftOut.length} well{opts.places.leftOut.length !== 1 ? 's' : ''} left out</span></div>
+                    <div className={rowCls}><span className={labelCls}>Kept at each</span><span className={valueCls}>{PLACE_RULE_NAMES[opts.places.rule]}{opts.places.byHand > 0 ? `; ${opts.places.byHand} picked by hand` : ''}</span></div>
+                  </>
+                )}
                 {meta.colocated && meta.colocated.places > 0 && (
-                  <div className={rowCls}><span className={labelCls}>Wells within 10 m</span><span className={valueCls}>{meta.colocated.wells} at {meta.colocated.places} place{meta.colocated.places !== 1 ? 's' : ''}, averaged</span></div>
+                  <div className={rowCls}><span className={labelCls}>Wells within {opts.places?.meters ?? 10} m</span><span className={valueCls}>{meta.colocated.wells} at {meta.colocated.places} place{meta.colocated.places !== 1 ? 's' : ''}, averaged</span></div>
                 )}
                 {opts.spatial.method === 'kriging' && (
                   <>

@@ -3,7 +3,7 @@ import {
   Aquifer, Region, Well, Measurement,
   RasterAnalysisParams, RasterAnalysisResult, RasterGrid, RasterFrame, RasterFrameStats,
   SpatialMethod, KrigingOptions, IdwOptions, GeneralInterpolationOptions, TemporalOptions, RasterOptions,
-  ImputationModelResult,
+  ImputationModelResult, RasterPlaceOptions,
 } from '../types';
 import { isPointInGeoJSON, groupNearbyPoints, COLOCATED_METERS } from '../utils/geo';
 import { interpolatePCHIP, interpolateLinear, kernelSmooth, smoothModelCombined } from '../utils/interpolation';
@@ -22,6 +22,8 @@ export interface RasterPipelineInput {
   };
   general: GeneralInterpolationOptions;
   title: string;
+  /** The wells passed in are already one per place; this records how */
+  places?: RasterPlaceOptions;
 }
 
 // Generate interval dates between start and end (inclusive) as ISO strings.
@@ -291,17 +293,19 @@ export async function runRasterAnalysis(
     }
   }
 
-  // Step 4: Group wells within COLOCATED_METERS of each other, such as nested
-  // wells at different depths. Kriging can't solve with two wells at one spot,
-  // and IDW would count the spot twice, so each group is averaged into one
-  // point at every timestep, for both methods.
+  // Step 4: Group wells closer than the place distance. The dialog has
+  // already kept one well per place, so this finds none; it stays for any
+  // other caller. Kriging can't solve with two wells at one spot, and IDW
+  // would count the spot twice, so a group is averaged into one point at
+  // every timestep, for both methods.
+  const placeMeters = input.places?.meters ?? COLOCATED_METERS;
   const entries = [...wellInterp.values()].filter(e => e.values.some(v => v !== null && Number.isFinite(v)));
-  const groups = groupNearbyPoints(entries.map(e => e.well.lat), entries.map(e => e.well.lng), COLOCATED_METERS)
+  const groups = groupNearbyPoints(entries.map(e => e.well.lat), entries.map(e => e.well.lng), placeMeters)
     .map(g => g.map(i => entries[i]));
   const shared = groups.filter(g => g.length > 1);
   const colocated = { wells: shared.reduce((s, g) => s + g.length, 0), places: shared.length };
   if (colocated.places > 0) {
-    console.log(`[RasterAnalysis] ${colocated.wells} wells at ${colocated.places} places within ${COLOCATED_METERS} m of each other, averaged`);
+    console.log(`[RasterAnalysis] ${colocated.wells} wells at ${colocated.places} places within ${placeMeters} m of each other, averaged`);
   }
 
   // One point per group: the mean location and value of the members that have
@@ -511,6 +515,7 @@ export async function runRasterAnalysis(
     temporal: { ...temporal },
     spatial: { ...spatial },
     general: { ...general },
+    ...(input.places ? { places: input.places } : {}),
   };
 
   const result: RasterAnalysisResult = {
