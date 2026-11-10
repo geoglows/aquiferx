@@ -1,12 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload, RefreshCw } from 'lucide-react';
 import { processUploadedFile, UploadedFile, saveFiles, deleteFile, isInUS, assignWellToAquifer, aquifersContaining, parseCSV, toCsv, downloadCsv, WELLS_CSV_HEADERS } from '../../services/importUtils';
-import { fetchUSGSWells, fetchUSGSLevelRecords, getUSGSApiKey, setUSGSApiKey } from '../../services/usgsApi';
-import {
-  PlacedWell, KeepRule, WellRecordFacts, findSharedLocations, sharedLocationRows, SHARED_LOCATION_HEADERS,
-  chooseWells, keepReportRows, KEEP_REPORT_HEADERS, leftOutIds,
-} from '../../services/sharedLocations';
-import { COLOCATED_METERS } from '../../utils/geo';
+import { fetchUSGSWells, getUSGSApiKey, setUSGSApiKey } from '../../services/usgsApi';
+import { PlacedWell } from '../../services/sharedLocations';
 import { fetchGseBatch, GSE_SOURCE_US, GSE_SOURCE_GLOBAL } from '../../services/gseLookup';
 import { compareNames } from '../../utils/strings';
 import { SampleCoord } from '../../services/reprojection';
@@ -65,13 +61,6 @@ const WellImporter: React.FC<WellImporterProps> = ({
 
   // USGS download
   const [usgsWells, setUsgsWells] = useState<any[] | null>(null);
-  // Where wells share a location: each downloaded well's depth (ft), the
-  // bounding box to ask USGS for their record dates, and the rule
-  const [usgsDepths, setUsgsDepths] = useState<Map<string, number>>(new Map());
-  const [usgsBbox, setUsgsBbox] = useState<[number, number, number, number] | null>(null);
-  const [usgsRecords, setUsgsRecords] = useState<Map<string, { begin: string; end: string }> | null>(null);
-  const [usgsRecordsState, setUsgsRecordsState] = useState<'idle' | 'loading' | 'error'>('idle');
-  const [keepRule, setKeepRule] = useState<KeepRule>('shallowest');
   const [usgsProgress, setUsgsProgress] = useState({ count: 0, done: false });
   const [usgsIsLoading, setUsgsIsLoading] = useState(false);
 
@@ -230,15 +219,6 @@ const WellImporter: React.FC<WellImporterProps> = ({
     return [minLat, minLng, maxLat, maxLng];
   };
 
-  const noteUsgsDownload = (wells: { siteId: string; depthFt?: number }[], bbox: [number, number, number, number]) => {
-    const depths = new Map<string, number>();
-    for (const w of wells) if (w.depthFt != null) depths.set(w.siteId, w.depthFt);
-    setUsgsDepths(depths);
-    setUsgsBbox(bbox);
-    setUsgsRecords(null);
-    setUsgsRecordsState('idle');
-  };
-
   // USGS well download
   const handleUSGSDownload = async () => {
     setUsgsIsLoading(true);
@@ -289,7 +269,6 @@ const WellImporter: React.FC<WellImporterProps> = ({
 
       setUsgsWells(wellsWithAquifer.map(x => x.well));
       setUsgsProgress({ count: wellsWithAquifer.length, done: true });
-      noteUsgsDownload(wellsWithAquifer.map(x => x.well), bbox);
 
       // Convert to UploadedFile format for the save flow
       const rows = wellsWithAquifer.map(({ well: w, aquiferId }) => ({
@@ -366,7 +345,6 @@ const WellImporter: React.FC<WellImporterProps> = ({
 
       setRefreshSummary({ newCount: newWells.length, existingCount });
       setUsgsProgress({ count: wellsWithAquifer.length, done: true });
-      noteUsgsDownload(newWells.map(x => x.well), bbox);
 
       if (newWells.length > 0) {
         // Populate file with only new wells, force append
@@ -507,87 +485,41 @@ const WellImporter: React.FC<WellImporterProps> = ({
     return importMode === 'append' && existingWellCount > 0 ? existingRows : [];
   }, [isAquiferScopedUsgs, importMode, existingRows, usgsScopeAquiferId, existingWellCount]);
 
-  // Wells of one aquifer within COLOCATED_METERS of each other, among the
-  // new wells and the ones that stay; and, placed by location, wells inside
-  // more than one aquifer's outline
-  const placement = useMemo(() => {
-    const empty = { shared: [] as ReturnType<typeof findSharedLocations>, ambiguous: [] as PlacedWell[] };
-    if (!file) return empty;
+  // Placed by location, a new well inside more than one aquifer's outline
+  // (aquifers that share an outline keep deep and shallow wells apart) can't
+  // be told which aquifer it is in
+  const ambiguous = useMemo(() => {
+    const out: PlacedWell[] = [];
+    if (!file || dataSource !== 'upload' || singleUnit || aquiferAssignment !== 'by-location' || !aquifersGeojson) return out;
     const idCol = file.mapping['well_id'], nameCol = file.mapping['well_name'];
     const latCol = file.mapping['lat'], longCol = file.mapping['long'];
-    if (!idCol || !latCol || !longCol) return empty;
-    if (dataSource === 'upload' && crs.crsPreview?.ok === false) return empty;
+    if (!idCol || !latCol || !longCol) return out;
+    if (crs.crsPreview?.ok === false) return out;
     const staying = new Set(remainingRows.map(r => r.well_id));
     const seen = new Set<string>();
-    const fresh: PlacedWell[] = [];
-    const ambiguous: PlacedWell[] = [];
     (file.data as Record<string, string>[]).forEach((r, i) => {
       const id = (r[idCol] || '').trim();
       if (!id || seen.has(id) || staying.has(id)) return;
       const { lat, lng } = parseRowCoords(r[latCol], r[longCol]);
       if (lat === undefined || lng === undefined) return;
-      const aquiferId = resolveAquiferId(r);
-      if (!keepsWell(aquiferId)) return;
       seen.add(id);
-      const w: PlacedWell = { id, name: nameCol ? r[nameCol] || '' : '', lat, lng, aquiferId, row: dataSource === 'upload' ? i + 2 : undefined };
-      if (dataSource === 'upload' && !singleUnit && aquiferAssignment === 'by-location' && aquifersGeojson &&
-        aquifersContaining(lat, lng, aquifersGeojson).length > 1) {
-        ambiguous.push(w);
-        return;
+      if (aquifersContaining(lat, lng, aquifersGeojson).length > 1) {
+        out.push({ id, name: nameCol ? r[nameCol] || '' : '', lat, lng, aquiferId: '', row: i + 2 });
       }
-      fresh.push(w);
     });
-    const staying_: PlacedWell[] = remainingRows
-      .map(r => ({ id: r.well_id, name: r.well_name || '', lat: parseFloat(r.lat), lng: parseFloat(r.long), aquiferId: singleUnit ? '0' : r.aquifer_id || '', existing: true }))
-      .filter(w => Number.isFinite(w.lat) && Number.isFinite(w.lng));
-    return { shared: findSharedLocations([...fresh, ...staying_]), ambiguous };
+    return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file, dataSource, remainingRows, singleUnit, aquiferAssignment, selectedAquiferId, aquifersGeojson, parseRowCoords, crs.crsPreview?.ok, aquiferIds]);
+  }, [file, dataSource, remainingRows, singleUnit, aquiferAssignment, aquifersGeojson, parseRowCoords, crs.crsPreview?.ok]);
 
-  const aquiferNameOf = (id: string) => singleUnit ? regionName : (aquiferList.find(a => a.id === id)?.name || '');
-  const sharedWellCount = placement.shared.reduce((n, g) => n + g.wells.length, 0);
-  const fileRefused = dataSource === 'upload' && (placement.shared.length > 0 || placement.ambiguous.length > 0);
+  const fileRefused = ambiguous.length > 0;
 
-  // A USGS download with shared locations: read the wells' record dates
-  // (first and last water level), which decide where depth can't
-  const needsRecords = dataSource === 'usgs' && placement.shared.length > 0;
-  useEffect(() => {
-    if (!needsRecords || !usgsBbox || usgsRecords || usgsRecordsState !== 'idle') return;
-    let live = true;
-    setUsgsRecordsState('loading');
-    fetchUSGSLevelRecords(usgsBbox)
-      .then(r => { if (live) { setUsgsRecords(r); setUsgsRecordsState('idle'); } })
-      .catch(() => { if (live) setUsgsRecordsState('error'); });
-    return () => { live = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [needsRecords, usgsBbox]);
-
-  const usgsFacts = useMemo(() => {
-    const facts = new Map<string, WellRecordFacts>();
-    for (const g of placement.shared) {
-      for (const w of g.wells) {
-        const rec = usgsRecords?.get(w.id);
-        facts.set(w.id, { depthFt: usgsDepths.get(w.id), begin: rec?.begin, end: rec?.end });
-      }
-    }
-    return facts;
-  }, [placement.shared, usgsDepths, usgsRecords]);
-  const usgsChoices = useMemo(
-    () => needsRecords ? chooseWells(placement.shared, keepRule, usgsFacts, 'span') : [],
-    [needsRecords, placement.shared, keepRule, usgsFacts]);
-  const usgsLeftOut = useMemo(() => leftOutIds(usgsChoices), [usgsChoices]);
-
-  const downloadSharedList = () => {
-    const rows: Record<string, string>[] = sharedLocationRows(placement.shared, aquiferNameOf).map(r => ({ problem: 'more than one well at this location', ...r }));
-    for (const w of placement.ambiguous) {
-      rows.push({
-        problem: 'inside more than one aquifer outline', location: '',
-        aquifer_id: aquifersContaining(w.lat, w.lng, aquifersGeojson).join('; '), aquifer_name: '',
-        well_id: w.id, well_name: w.name, latitude: String(w.lat), longitude: String(w.lng),
-        meters_from_first: '', row: w.row != null ? String(w.row) : '', already_in_region: '',
-      });
-    }
-    downloadCsv(`wells-to-fix-${regionId}.csv`, ['problem', ...SHARED_LOCATION_HEADERS], rows);
+  const downloadAmbiguousList = () => {
+    const rows = ambiguous.map(w => ({
+      aquifer_ids: aquifersContaining(w.lat, w.lng, aquifersGeojson).join('; '),
+      well_id: w.id, well_name: w.name, latitude: String(w.lat), longitude: String(w.lng),
+      row: w.row != null ? String(w.row) : '',
+    }));
+    downloadCsv(`wells-to-fix-${regionId}.csv`, ['aquifer_ids', 'well_id', 'well_name', 'latitude', 'longitude', 'row'], rows);
   };
 
   const doSave = async () => {
@@ -618,8 +550,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
           aquifer_id: aquiferId,
           aquifer_name: aquiferNameById.get(aquiferId) || '',
         };
-      }).filter(w => w.well_id && w.lat && w.long && keepsWell(w.aquifer_id) &&
-        !(dataSource === 'usgs' && usgsLeftOut.has(w.well_id)));
+      }).filter(w => w.well_id && w.lat && w.long && keepsWell(w.aquifer_id));
 
       const isAquiferScoped = dataSource === 'usgs' && usgsScope === 'aquifer' && usgsScopeAquiferId;
 
@@ -690,7 +621,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
 
   const isReady = file && file.mapping['well_id'] && file.mapping['lat'] && file.mapping['long'] &&
     (singleUnit || aquiferAssignment !== 'single' || selectedAquiferId) &&
-    !fileRefused && !(needsRecords && usgsRecordsState === 'loading');
+    !fileRefused;
 
   return (
     <div className="fixed inset-0 z-[105] flex items-center justify-center bg-black/40" onClick={onClose}>
@@ -960,77 +891,20 @@ const WellImporter: React.FC<WellImporterProps> = ({
           </div>
         )}
 
-        {/* A file with wells at one location, or placed by location inside two outlines, is refused */}
+        {/* Placed by location, a well inside two outlines is refused */}
         {fileRefused && (
           <div className="p-3 mb-4 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 space-y-2">
-            {placement.shared.length > 0 && (
-              <p className="flex items-start gap-2">
-                <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-                <span>
-                  {placement.shared.length} location{placement.shared.length === 1 ? ' has' : 's have'} more than one well in the same
-                  aquifer ({sharedWellCount} wells within {COLOCATED_METERS} m of each other). A map would average them into one
-                  value that belongs to none of them, so each location in an aquifer can have only one well. Keep one well at
-                  each location, or put wells at different depths in separate aquifers with an Aquifer ID column, and import
-                  the file again.
-                </span>
-              </p>
-            )}
-            {placement.ambiguous.length > 0 && (
-              <p className="flex items-start gap-2">
-                <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-                <span>
-                  {placement.ambiguous.length} well{placement.ambiguous.length === 1 ? ' falls' : 's fall'} inside more than one
-                  aquifer's outline, so {placement.ambiguous.length === 1 ? 'its aquifer' : 'their aquifers'} can't be told from
-                  the location. Give the file an Aquifer ID column and use it.
-                </span>
-              </p>
-            )}
-            <button onClick={downloadSharedList} className="flex items-center gap-1.5 font-medium text-blue-700 hover:text-blue-900 hover:underline">
+            <p className="flex items-start gap-2">
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <span>
+                {ambiguous.length} well{ambiguous.length === 1 ? ' falls' : 's fall'} inside more than one
+                aquifer's outline, so {ambiguous.length === 1 ? 'its aquifer' : 'their aquifers'} can't be told from
+                the location. Give the file an Aquifer ID column and use it.
+              </span>
+            </p>
+            <button onClick={downloadAmbiguousList} className="flex items-center gap-1.5 font-medium text-blue-700 hover:text-blue-900 hover:underline">
               <Download size={13} /> Download the list of wells (CSV)
             </button>
-          </div>
-        )}
-
-        {/* A USGS download keeps one well at each shared location */}
-        {needsRecords && (
-          <div className="p-3 mb-4 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900">
-            <p className="mb-2">
-              {placement.shared.length} location{placement.shared.length === 1 ? ' has' : 's have'} more than one well in the same
-              aquifer ({sharedWellCount} wells within {COLOCATED_METERS} m of each other). A map would average them into one
-              value, so one well is kept at each.
-            </p>
-            <div className="flex flex-wrap gap-x-4 gap-y-1 mb-2">
-              {([['shallowest', 'Shallowest well'], ['deepest', 'Deepest well'], ['record', 'Longest record']] as [KeepRule, string][]).map(([rule, label]) => (
-                <label key={rule} className="flex items-center gap-1.5 cursor-pointer">
-                  <input type="radio" name="keep-rule" checked={keepRule === rule} onChange={() => setKeepRule(rule)} className="text-blue-600" />
-                  <span>{label}</span>
-                </label>
-              ))}
-            </div>
-            <p className="text-amber-800 mb-2">
-              {keepRule === 'record'
-                ? 'The record runs from the first water level reading to the last.'
-                : 'Where the depths are missing or the same, the well with the longest record, from its first water level reading to its last, is kept.'}
-              {placement.shared.some(g => g.wells.some(w => w.existing)) && ' Where a well is already in the region, it stays and the downloaded ones are left out.'}
-            </p>
-            {usgsRecordsState === 'loading' && (
-              <p className="flex items-center gap-2 mb-2"><Loader2 size={12} className="animate-spin" /> Reading the wells' record dates from USGS...</p>
-            )}
-            {usgsRecordsState === 'error' && (
-              <p className="flex items-center gap-2 mb-2 text-red-700">
-                <AlertTriangle size={12} className="shrink-0" />
-                USGS did not return the record dates, so where depth can't decide, the first well listed is kept.
-              </p>
-            )}
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-medium">{usgsLeftOut.size} well{usgsLeftOut.size === 1 ? '' : 's'} will be left out.</span>
-              <button
-                onClick={() => downloadCsv(`wells-left-out-${regionId}.csv`, KEEP_REPORT_HEADERS, keepReportRows(usgsChoices, usgsFacts, aquiferNameOf, 'span'))}
-                className="flex items-center gap-1.5 font-medium text-blue-700 hover:text-blue-900 hover:underline"
-              >
-                <Download size={13} /> Download the list (CSV)
-              </button>
-            </div>
           </div>
         )}
 
