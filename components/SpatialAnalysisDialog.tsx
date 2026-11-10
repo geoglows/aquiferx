@@ -748,7 +748,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
             const diffUnit = dataType.unit ? ` ${dataType.unit}` : '';
             const round1 = (x: number) => (Math.round(x * 10) / 10).toLocaleString();
             const ruleHelp: Record<PlaceKeepRule, string> = {
-              neighbors: `Each well's readings in the period are compared with those of up to ${NEIGHBOR_COMPARISON.maxNeighbors} nearby wells read within ${NEIGHBOR_COMPARISON.days} days, and the well that differs least is kept. Where too few nearby wells were read at the same times, the well with the most readings is kept.`,
+              neighbors: `Each well's readings in the period are compared with those of up to ${NEIGHBOR_COMPARISON.maxNeighbors} nearby wells read within ${NEIGHBOR_COMPARISON.days} days, and the well that differs least is kept. Only wells whose record covers at least half as much of the period as the best-covered well at the place take part. Where too few nearby wells were read at the same times, the well with the most readings is kept.`,
               record: 'The well whose record, from its first reading to its last, covers more of the period.',
               count: 'The well with the most readings in the period.',
               shallowest: 'By well depth. Where a well at the place has no depth, the well with the most readings is kept.',

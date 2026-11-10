@@ -225,6 +225,10 @@ export interface KeepChoice {
 
 const fmt = (x: number) => (Math.round(x * 10) / 10).toLocaleString();
 
+/** The neighbor rule compares only wells covering at least this share of the
+ *  period covered by the best-covered well at the place */
+export const COVER_SHARE = 0.5;
+
 /**
  * The well a place keeps under a rule. Ties, and places where the rule can't
  * decide (a well with no depth, too few nearby wells to compare with), go to
@@ -248,14 +252,29 @@ export function chooseWell(place: Place, rule: KeepRule): KeepChoice {
   };
 
   if (rule === 'neighbors') {
-    if (ws.every(w => w.medianDiff != null)) {
-      const best = Math.min(...ws.map(w => w.medianDiff!));
-      const pool = ws.filter(w => w.medianDiff === best);
-      kept = byCount(pool);
+    // Only wells whose record covers at least half as much of the period as
+    // the best-covered well at the place: a close match over a few years
+    // would leave the place empty for the rest of the map
+    const most = Math.max(...ws.map(w => w.coverYears));
+    const covering = ws.filter(w => w.coverYears >= COVER_SHARE * most);
+    const short = (w: PlaceWell) => `covers less than half as much of the period as ${kept!.id}`;
+    if (covering.length === 1) {
+      kept = covering[0];
+      how = 'only well covering most of the period';
+      for (const w of ws) if (w !== kept) reasons.set(w.id, short(w));
+    } else if (covering.every(w => w.medianDiff != null)) {
+      const best = Math.min(...covering.map(w => w.medianDiff!));
+      kept = byCount(covering.filter(w => w.medianDiff === best));
       how = 'agrees best with nearby wells';
-      for (const w of ws) if (w !== kept) reasons.set(w.id, `differs more from nearby wells (${fmt(w.medianDiff!)} vs ${fmt(kept.medianDiff!)})`);
+      for (const w of ws) {
+        if (w === kept) continue;
+        reasons.set(w.id, covering.includes(w)
+          ? `differs more from nearby wells (${fmt(w.medianDiff!)} vs ${fmt(kept.medianDiff!)})`
+          : short(w));
+      }
     } else {
-      fallback('too few nearby wells read at the same times to compare');
+      fallback('too few nearby wells read at the same times to compare', covering);
+      for (const w of ws) if (!covering.includes(w)) reasons.set(w.id, short(w));
     }
   } else if (rule === 'shallowest' || rule === 'deepest') {
     if (ws.every(w => w.depth != null)) {
