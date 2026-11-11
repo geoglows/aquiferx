@@ -1,5 +1,6 @@
 import * as zarr from 'zarrita';
 import { interpolatePCHIP } from '../utils/interpolation';
+import { LONGEST_MEAN_MONTHS } from '../utils/imputationMonths';
 
 // Monthly soil moisture from NOAA CPC v2 (0.5 degree, 1948 on), published as a
 // zarr store by scripts/soil_moisture_store.py. The names below still say GLDAS
@@ -248,7 +249,7 @@ export async function fetchGldasFeatures(
   const yr01 = rollingMean(monthlySoilw, 12);
   const yr03 = rollingMean(monthlySoilw, 36);
   const yr05 = rollingMean(monthlySoilw, 60);
-  const yr10 = rollingMean(monthlySoilw, 120);
+  const yr10 = rollingMean(monthlySoilw, LONGEST_MEAN_MONTHS);
 
   // Trim leading rows where 10-year rolling mean is NaN (~1948-1957)
   let trimStart = 0;

@@ -7,14 +7,15 @@ import { fetchGldasFeatures, GldasFeatures } from './gldasFetch';
 import { trainElm, predictElm } from './elm';
 import { interpolatePCHIP } from '../utils/interpolation';
 import { slugify } from '../utils/strings';
+import { pchipMonthMask, MIN_TRAINING_MONTHS } from '../utils/imputationMonths';
 import { PipelineCancelledError } from './pipelineCancel';
 
 export interface ImputationPipelineInput {
   title: string;
   startDate: string;
   endDate: string;
-  gldasStartDate: string;  // full GLDAS feature range start (from fetchGldasDateRange)
-  gldasEndDate: string;    // full GLDAS feature range end
+  gldasStartDate: string;  // first month of the soil moisture record (from fetchGldasDateRange)
+  gldasEndDate: string;    // last month of the soil moisture record
   minSamples: number;
   gapSize: number;    // days (Python default: 730)
   padSize: number;    // days (Python default: 180)
@@ -90,8 +91,8 @@ export async function runImputationPipeline(
   const padSizeMs = padSize * MS_PER_DAY;
 
   // ===== Step 1: Fetch GLDAS data (0-5%) =====
-  onProgress('Fetching GLDAS data...', 0);
-  onLog(`Fetching GLDAS soil moisture data for aquifer "${aquifer.name}"...`);
+  onProgress('Reading soil moisture...', 0);
+  onLog(`Reading soil moisture for aquifer "${aquifer.name}"...`);
   await tick();
 
   let gldas: GldasFeatures;
@@ -99,13 +100,13 @@ export async function runImputationPipeline(
     // Cache key must include the region — every single-unit region uses
     // aquifer_id=0, so a bare aquifer id collides across regions
     gldas = await fetchGldasFeatures(`${region.id}:${aquifer.id}`, aquifer.geojson, input.gldasStartDate, input.gldasEndDate);
-    onLog(`GLDAS data loaded: ${gldas.dates.length} monthly records, range ${gldas.dates[0]} to ${gldas.dates[gldas.dates.length - 1]}`);
+    onLog(`Soil moisture features: ${gldas.dates.length} months, ${gldas.dates[0]} to ${gldas.dates[gldas.dates.length - 1]}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    onLog(`ERROR: Failed to fetch GLDAS data: ${msg}`);
-    throw new Error(`GLDAS data fetch failed: ${msg}`);
+    onLog(`ERROR: Could not read soil moisture: ${msg}`);
+    throw new Error(`Could not read soil moisture: ${msg}`);
   }
-  onProgress('GLDAS data loaded', 5);
+  onProgress('Soil moisture loaded', 5);
 
   // ===== Step 2: Prepare well data (5-10%) =====
   onProgress('Preparing well data...', 5);
@@ -127,16 +128,11 @@ export async function runImputationPipeline(
   let omitted = 0;
 
   for (const well of wells) {
-    const meas = byWell.get(well.id);
-    if (!meas || meas.length < minSamples) {
-      omitted++;
-      continue;
-    }
-    const sorted = [...meas]
+    const sorted = (byWell.get(well.id) ?? [])
       .filter(m => !isNaN(new Date(m.date).getTime()))
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
       .map(m => ({ date: m.date, ts: new Date(m.date).getTime(), value: m.value }));
-    if (sorted.length < 2) {
+    if (sorted.length < Math.max(2, minSamples)) {
       omitted++;
       continue;
     }
@@ -176,58 +172,31 @@ export async function runImputationPipeline(
   for (const { well, sorted } of qualifiedWells) {
     const measTimestamps = sorted.map(m => m.ts);
     const measValues = sorted.map(m => m.value);
-    const firstMeasTs = measTimestamps[0];
-    const lastMeasTs = measTimestamps[measTimestamps.length - 1];
 
-    // PCHIP interpolate to monthly dates within [firstMeas, lastMeas)
-    // Python blanks index >= end_meas_date, so last measurement date is excluded
+    // PCHIP at the months from the first reading up to (not including) the last, as Python blanks
+    // index >= end_meas_date, less the inside of each gap longer than gapSize, which keeps padSize of
+    // PCHIP at each end (Python: x_diff > gap_size; interp_df[meas + pad : next - pad] = np.nan)
+    const mask = pchipMonthMask(measTimestamps, monthlyTimestamps, gapSizeMs, padSizeMs);
+    const pchipIndices = mask.flatMap((m, i) => (m ? [i] : []));
     const pchipFull: (number | null)[] = new Array(monthlyDates.length).fill(null);
-    const inRangeIndices: number[] = [];
-    const inRangeTimestamps: number[] = [];
-    for (let i = 0; i < monthlyDates.length; i++) {
-      const ts = monthlyTimestamps[i];
-      if (ts >= firstMeasTs && ts < lastMeasTs) {
-        inRangeIndices.push(i);
-        inRangeTimestamps.push(ts);
-      }
-    }
-
-    if (inRangeIndices.length > 0) {
-      const pchipValues = interpolatePCHIP(measTimestamps, measValues, inRangeTimestamps);
-      for (let j = 0; j < inRangeIndices.length; j++) {
-        pchipFull[inRangeIndices[j]] = pchipValues[j];
-      }
-    }
-
-    // Blank out interiors of large gaps, keeping pad at boundaries
-    // Matches Python: gap comparison in days, pad offsets from measurement dates
-    // Python: x_diff > gap_size (timedelta), start = meas[g-1] + timedelta(days=pad)
-    for (let i = 0; i < sorted.length - 1; i++) {
-      const gapMs = measTimestamps[i + 1] - measTimestamps[i];
-      if (gapMs > gapSizeMs) {
-        const padStartTs = measTimestamps[i] + padSizeMs;
-        const padEndTs = measTimestamps[i + 1] - padSizeMs;
-        // Python: interp_df[start:end] = np.nan (inclusive on both ends)
-        for (const idx of inRangeIndices) {
-          const ts = monthlyTimestamps[idx];
-          if (ts >= padStartTs && ts <= padEndTs) {
-            pchipFull[idx] = null;
-          }
-        }
-      }
+    if (pchipIndices.length > 0) {
+      const pchipValues = interpolatePCHIP(measTimestamps, measValues, pchipIndices.map(i => monthlyTimestamps[i]));
+      pchipIndices.forEach((idx, j) => { pchipFull[idx] = pchipValues[j]; });
     }
 
     wellPchip.set(well.id, pchipFull);
   }
 
   // Second filter: drop wells with < minSamples non-NaN PCHIP values
-  // Matches Python: well_interp_df.dropna(thresh=min_samples, axis=1)
+  // Matches Python: well_interp_df.dropna(thresh=min_samples, axis=1). The fit needs
+  // MIN_TRAINING_MONTHS too; the wizard counts wells by the same rule.
+  const minMonths = Math.max(minSamples, MIN_TRAINING_MONTHS);
   const activeWells: QualifiedWell[] = [];
   for (const qw of qualifiedWells) {
     const pchip = wellPchip.get(qw.well.id);
     if (!pchip) continue;
     const nonNullCount = pchip.filter(v => v !== null).length;
-    if (nonNullCount >= minSamples) {
+    if (nonNullCount >= minMonths) {
       activeWells.push(qw);
     } else {
       wellPchip.delete(qw.well.id);
@@ -246,10 +215,10 @@ export async function runImputationPipeline(
     }
   }
   const nRows = validRowIndices.length;
-  onLog(`${nRows} valid GLDAS rows in date range`);
+  onLog(`${nRows} months with soil moisture`);
 
   if (nRows === 0) {
-    throw new Error('No valid GLDAS data in the selected date range');
+    throw new Error('No soil moisture in the selected date range');
   }
 
   // GLDAS feature arrays for valid rows
@@ -356,7 +325,7 @@ export async function runImputationPipeline(
     const targetStats = wellTargetStats.get(well.id);
     const pchipAtRows = wellPchipAtRows.get(well.id);
     if (!targetStats || !pchipAtRows) {
-      onLog(`Well ${well.name}: skipped (insufficient PCHIP overlap with GLDAS)`);
+      onLog(`Well ${well.name}: skipped (too few months of record with soil moisture)`);
       continue;
     }
 

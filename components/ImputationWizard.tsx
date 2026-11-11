@@ -10,6 +10,7 @@ import { startImputation, AnalysisRun } from '../services/analysisClient';
 import { isPipelineCancelled } from '../services/pipelineCancel';
 import { slugify } from '../utils/strings';
 import PchipPreviewCanvas from './PchipPreviewCanvas';
+import { featureDateRange, monthlyTimestamps, pchipMonthMask, MIN_TRAINING_MONTHS } from '../utils/imputationMonths';
 
 interface ImputationWizardProps {
   aquifer: Aquifer;
@@ -65,8 +66,11 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
     measurements.filter(m => m.dataType === 'wte' && wellKeySet.has(`${m.regionId}:${m.aquiferId}:${m.wellId}`)),
   [measurements, wellKeySet]);
 
+  // The months a model can cover: the soil moisture record less its first ten years
+  const modelRange = useMemo(() => (gldasDateRange ? featureDateRange(gldasDateRange) : null), [gldasDateRange]);
+
   // Data density analysis (same as SpatialAnalysisDialog but with 3%/5 threshold)
-  const { densityData, defaultStartDate, defaultEndDate, gldasFirstLabel, gldasLastLabel } = useMemo(() => {
+  const { densityData, gldasFirstLabel, gldasLastLabel } = useMemo(() => {
     const byWellDate = new Map<string, Set<string>>();
     for (const m of wteMeasurements) {
       if (!byWellDate.has(m.wellId)) byWellDate.set(m.wellId, new Set());
@@ -83,13 +87,11 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
     }
 
     if (allMin === Infinity) {
-      return { densityData: [], defaultStartDate: '', defaultEndDate: '' };
+      return { densityData: [] };
     }
 
     const minYear = new Date(allMin).getFullYear();
     const maxYear = new Date(allMax).getFullYear();
-    const minDateStr = `${minYear}-01-01`;
-    const maxDateStr = `${maxYear + 1}-01-01`;
 
     const bins: { label: string; start: Date; end: Date }[] = [];
     for (let y = minYear; y <= maxYear; y++) {
@@ -111,33 +113,34 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
       return { label: bin.label, count: wellsInBin.size, startTs: bin.start.getTime() };
     }).filter(b => b.startTs >= allMin - 365 * 86400000 && b.startTs <= allMax + 365 * 86400000);
 
-    // Default dates: full GLDAS feature range (matches Python notebook behavior)
-    let defStart = gldasDateRange?.min ?? minDateStr;
-    let defEnd = gldasDateRange?.max ?? maxDateStr;
-
-    // Compute GLDAS range bin labels for histogram highlight
+    // Bin labels of the model's months, shaded on the histogram
     let gldasFirstLabel: string | undefined;
     let gldasLastLabel: string | undefined;
-    if (gldasDateRange) {
-      const gMin = new Date(gldasDateRange.min).getTime();
-      const gMax = new Date(gldasDateRange.max).getTime();
+    if (modelRange) {
+      const gMin = new Date(modelRange.min).getTime();
+      const gMax = new Date(modelRange.max).getTime();
       for (const b of densityData) {
         if (b.startTs >= gMin && !gldasFirstLabel) gldasFirstLabel = b.label;
         if (b.startTs <= gMax) gldasLastLabel = b.label;
       }
     }
 
-    return { densityData, defaultStartDate: defStart, defaultEndDate: defEnd, gldasFirstLabel, gldasLastLabel };
-  }, [wteMeasurements, gldasDateRange]);
+    return { densityData, gldasFirstLabel, gldasLastLabel };
+  }, [wteMeasurements, modelRange]);
 
-  const [startDate, setStartDate] = useState(defaultStartDate);
-  const [endDate, setEndDate] = useState(defaultEndDate);
-
-  // Sync defaults when they compute
+  // Output dates start as the model's months, set once the soil moisture record's dates arrive,
+  // unless they have been changed by then
+  const [startDate, setStartDate] = useState(modelRange?.min ?? '');
+  const [endDate, setEndDate] = useState(modelRange?.max ?? '');
+  const datesEdited = useRef(false);
+  const editStart = (v: string) => { datesEdited.current = true; setStartDate(v); };
+  const editEnd = (v: string) => { datesEdited.current = true; setEndDate(v); };
   useEffect(() => {
-    if (defaultStartDate && !startDate) setStartDate(defaultStartDate);
-    if (defaultEndDate && !endDate) setEndDate(defaultEndDate);
-  }, [defaultStartDate, defaultEndDate]);
+    if (modelRange && !datesEdited.current) {
+      setStartDate(modelRange.min);
+      setEndDate(modelRange.max);
+    }
+  }, [modelRange]);
 
   const code = slugify(title);
   const hasConflict = existingModelCodes.includes(code);
@@ -153,25 +156,34 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
     return count;
   }, [wteMeasurements]);
 
-  // Well qualification based on minSamples
-  const { qualifiedWellCount, omittedWellCount } = useMemo(() => {
-    const byWell = new Map<string, number>();
+  // Wells the run will model, by its own rule: at least minSamples readings, and at least
+  // minSamples (and MIN_TRAINING_MONTHS) months of PCHIP in the model's months, long gaps excepted
+  const minMonths = Math.max(minSamples, MIN_TRAINING_MONTHS);
+  const { qualifiedWellCount, fewReadings, fewMonths } = useMemo(() => {
+    const byWell = new Map<string, number[]>();
     for (const m of wteMeasurements) {
-      byWell.set(m.wellId, (byWell.get(m.wellId) || 0) + 1);
+      const t = new Date(m.date).getTime();
+      if (isNaN(t)) continue;
+      if (!byWell.has(m.wellId)) byWell.set(m.wellId, []);
+      byWell.get(m.wellId)!.push(t);
     }
-    let qualified = 0, omitted = 0;
-    for (const [, count] of byWell) {
-      if (count >= minSamples) qualified++;
-      else omitted++;
+    if (!modelRange) return { qualifiedWellCount: 0, fewReadings: 0, fewMonths: 0 };
+    const months = monthlyTimestamps(modelRange.min, modelRange.max);
+    let qualified = 0, readings = 0, monthsShort = 0;
+    for (const ts of byWell.values()) {
+      if (ts.length < Math.max(2, minSamples)) { readings++; continue; }
+      ts.sort((a, b) => a - b);
+      const n = pchipMonthMask(ts, months, gapSizeDays * 86400000, padSizeDays * 86400000).filter(Boolean).length;
+      if (n >= minMonths) qualified++;
+      else monthsShort++;
     }
-    return { qualifiedWellCount: qualified, omittedWellCount: omitted };
-  }, [wteMeasurements, minSamples]);
+    return { qualifiedWellCount: qualified, fewReadings: readings, fewMonths: monthsShort };
+  }, [wteMeasurements, modelRange, minSamples, minMonths, gapSizeDays, padSizeDays]);
 
-  // GLDAS range info
   const gldasInfo = useMemo(() => {
-    if (!gldasDateRange) return 'GLDAS date range not available. The wizard will attempt to fetch GLDAS data during processing.';
-    return `Training uses full GLDAS range: ${gldasDateRange.min} to ${gldasDateRange.max}. Output dates clip the results.`;
-  }, [gldasDateRange]);
+    if (!gldasDateRange || !modelRange) return 'Reading the dates of the soil moisture record...';
+    return `The model covers ${modelRange.min} to ${modelRange.max}: the soil moisture record from ${gldasDateRange.min}, less its first ten years, which go into the 10-year average. Output dates clip the result.`;
+  }, [gldasDateRange, modelRange]);
 
   // Validation
   const step1Valid = startDate && endDate && startDate < endDate && wells.length > 0 && qualifiedWellCount > 0;
@@ -323,7 +335,7 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
                       wteMeasurements={wteMeasurements}
                       startTs={startTs}
                       endTs={endTs}
-                      gldasRange={gldasDateRange ? { min: new Date(gldasDateRange.min).getTime(), max: new Date(gldasDateRange.max).getTime() } : undefined}
+                      gldasRange={modelRange ? { min: new Date(modelRange.min).getTime(), max: new Date(modelRange.max).getTime() } : undefined}
                     />
                   </div>
                 </div>
@@ -376,30 +388,30 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
                   <label className={labelCls}>Output Start Date</label>
                   <div className="flex items-center gap-1">
                     <input type="date" value={startDate}
-                      min={gldasDateRange?.min}
-                      max={endDate || gldasDateRange?.max}
+                      min={modelRange?.min}
+                      max={endDate || modelRange?.max}
                       onChange={e => {
                         let v = e.target.value;
-                        if (gldasDateRange && v < gldasDateRange.min) v = gldasDateRange.min;
-                        setStartDate(v);
+                        if (modelRange && v < modelRange.min) v = modelRange.min;
+                        editStart(v);
                       }}
                       className={inputCls + ' flex-1'} />
-                    {!(gldasDateRange && startDate <= gldasDateRange.min) && (
+                    {!(modelRange && startDate <= modelRange.min) && (
                       <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
                         const y = parseInt(startDate); if (isNaN(y)) return;
                         let next = `${y - 1}-01-01`;
-                        if (gldasDateRange && next < gldasDateRange.min) next = gldasDateRange.min;
-                        setStartDate(next);
+                        if (modelRange && next < modelRange.min) next = modelRange.min;
+                        editStart(next);
                       }}>
                         <svg width="14" height="14" viewBox="0 0 14 14"><path d="M9 2L4 7l5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       </button>
                     )}
-                    {!(gldasDateRange && startDate >= gldasDateRange.max) && (
+                    {!(modelRange && startDate >= modelRange.max) && (
                       <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
                         const y = parseInt(startDate); if (isNaN(y)) return;
                         let next = `${y + 1}-01-01`;
-                        if (gldasDateRange && next > gldasDateRange.max) next = gldasDateRange.max;
-                        setStartDate(next);
+                        if (modelRange && next > modelRange.max) next = modelRange.max;
+                        editStart(next);
                       }}>
                         <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 2l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       </button>
@@ -410,30 +422,30 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
                   <label className={labelCls}>Output End Date</label>
                   <div className="flex items-center gap-1">
                     <input type="date" value={endDate}
-                      min={startDate || gldasDateRange?.min}
-                      max={gldasDateRange?.max}
+                      min={startDate || modelRange?.min}
+                      max={modelRange?.max}
                       onChange={e => {
                         let v = e.target.value;
-                        if (gldasDateRange && v > gldasDateRange.max) v = gldasDateRange.max;
-                        setEndDate(v);
+                        if (modelRange && v > modelRange.max) v = modelRange.max;
+                        editEnd(v);
                       }}
                       className={inputCls + ' flex-1'} />
-                    {!(gldasDateRange && endDate <= gldasDateRange.min) && (
+                    {!(modelRange && endDate <= modelRange.min) && (
                       <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
                         const y = parseInt(endDate); if (isNaN(y)) return;
                         let next = `${y - 1}-01-01`;
-                        if (gldasDateRange && next < gldasDateRange.min) next = gldasDateRange.min;
-                        setEndDate(next);
+                        if (modelRange && next < modelRange.min) next = modelRange.min;
+                        editEnd(next);
                       }}>
                         <svg width="14" height="14" viewBox="0 0 14 14"><path d="M9 2L4 7l5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       </button>
                     )}
-                    {!(gldasDateRange && endDate >= gldasDateRange.max) && (
+                    {!(modelRange && endDate >= modelRange.max) && (
                       <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
                         const y = parseInt(endDate); if (isNaN(y)) return;
                         let next = `${y + 1}-01-01`;
-                        if (gldasDateRange && next > gldasDateRange.max) next = gldasDateRange.max;
-                        setEndDate(next);
+                        if (modelRange && next > modelRange.max) next = modelRange.max;
+                        editEnd(next);
                       }}>
                         <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 2l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       </button>
@@ -461,15 +473,20 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
 
                 <div className="col-span-2">
                   <div className="flex items-center gap-3 text-xs">
-                    <span className="text-amber-600 font-medium">{qualifiedWellCount} wells qualify</span>
-                    {omittedWellCount > 0 && (
-                      <span className="text-slate-400">{omittedWellCount} omitted (fewer than {minSamples} samples)</span>
+                    <span className="text-amber-600 font-medium">{modelRange ? `${qualifiedWellCount} wells qualify` : 'Counting wells...'}</span>
+                    {fewReadings > 0 && (
+                      <span className="text-slate-400">{fewReadings} with fewer than {Math.max(2, minSamples)} readings</span>
+                    )}
+                    {fewMonths > 0 && modelRange && (
+                      <span className="text-slate-400" title="Months from the first reading to the last, not counting the inside of gaps longer than the gap size">
+                        {fewMonths} with fewer than {minMonths} months of record from {modelRange.min}
+                      </span>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* GLDAS Info */}
+              {/* The model's months */}
               {gldasInfo && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-start gap-2">
                   <AlertTriangle size={14} className="text-blue-500 mt-0.5 shrink-0" />

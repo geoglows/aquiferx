@@ -47,7 +47,7 @@ const ModelInfoDialog: React.FC<ModelInfoDialogProps> = ({ meta, onClose }) => {
             <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-2">Parameters</h3>
             <div className="space-y-0">
               <div className={rowCls}><span className={labelCls}>Output Dates</span><span className={valueCls}>{meta.params.startDate} to {meta.params.endDate}</span></div>
-              <div className={rowCls}><span className={labelCls}>GLDAS Training</span><span className={valueCls}>{meta.params.gldasStartDate} to {meta.params.gldasEndDate}</span></div>
+              <div className={rowCls}><span className={labelCls}>Model Months</span><span className={valueCls}>{meta.params.gldasStartDate} to {meta.params.gldasEndDate}</span></div>
               <div className={rowCls}><span className={labelCls}>Min Samples</span><span className={valueCls}>{meta.params.minSamples}</span></div>
               <div className={rowCls}><span className={labelCls}>Gap Size</span><span className={valueCls}>{meta.params.gapSize} days</span></div>
               <div className={rowCls}><span className={labelCls}>Pad Size</span><span className={valueCls}>{meta.params.padSize} days</span></div>

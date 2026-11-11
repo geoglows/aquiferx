@@ -617,7 +617,7 @@ const App: React.FC = () => {
     if (!gldasDateRange) {
       fetchGldasDateRange()
         .then(range => setGldasDateRange(range))
-        .catch(e => console.warn('Could not fetch GLDAS date range:', e));
+        .catch(e => console.warn('Could not read the soil moisture record dates:', e));
     }
   };
 
