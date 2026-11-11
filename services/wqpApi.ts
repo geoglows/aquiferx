@@ -65,7 +65,7 @@ export interface WqpResult {
   value: number;
   /** `ResultMeasure/MeasureUnitCode`, e.g. `mg/l`, `ug/l`. */
   unit: string;
-  /** `ResultSampleFractionText`, e.g. `Filtered`, `Unfiltered`, or `''`. */
+  /** `ResultSampleFractionText`, e.g. `Dissolved`, `Total`, or `''`. */
   sampleFraction: string;
   /** `OrganizationFormalName`. */
   organization: string;
@@ -343,11 +343,25 @@ export function listWqpDownloadableCodes(catalog: ParameterCatalog): string[] {
     .map(([code]) => code);
 }
 
+/**
+ * Whether a WQX sample fraction is a filtered or an unfiltered sample. The
+ * catalog says `Filtered` or `Unfiltered`; the portal's results use the WQX 2
+ * terms, `Dissolved` and `Total`, and WQX 3 others, `Filtered field and/or
+ * lab` and `Unfiltered`. Any other fraction, or none, is neither.
+ */
+export function fractionKind(text: string | null | undefined): 'filtered' | 'unfiltered' | null {
+  const s = (text || '').trim().toLowerCase();
+  if (s === 'dissolved' || s === 'filtered' || s.startsWith('filtered ') || s.startsWith('filtered,')) return 'filtered';
+  if (s === 'total' || s === 'total recoverable' || s === 'unfiltered' || s.startsWith('unfiltered ') || s.startsWith('unfiltered,')) return 'unfiltered';
+  return null;
+}
+
 /** Per-WQP-row deduplication. A single sampling event can produce
  *  multiple rows for the same site+date+characteristic (different labs,
  *  filtered vs. unfiltered, lab vs. field). Strategy:
  *    1. Filter by the catalog's `wqp.sampleFraction` when set
- *       (e.g. Nitrate prefers `Filtered`). If a row's fraction doesn't
+ *       (e.g. Nitrate prefers `Filtered`, which the portal labels
+ *       `Dissolved`; see fractionKind). If a row's fraction doesn't
  *       match, drop it. Catalog entries with `sampleFraction: null`
  *       (pH, temperature) accept any row.
  *    2. Of what remains, take the first row per (siteId, date,
@@ -383,11 +397,12 @@ export function dedupWqpResults(
       continue;
     }
 
-    // Step 1: fraction filter (only when catalog specifies a preference)
+    // Step 1: fraction filter (only when catalog specifies a preference).
+    // A result with no fraction, or another one, doesn't match
     if (entry.preferredFraction) {
-      const want = entry.preferredFraction.toLowerCase();
-      const got = (r.sampleFraction || '').toLowerCase();
-      if (got !== want) {
+      const want = fractionKind(entry.preferredFraction);
+      const got = fractionKind(r.sampleFraction);
+      if (!want || got !== want) {
         report.droppedFractionMismatch++;
         continue;
       }
