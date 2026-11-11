@@ -866,7 +866,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           <div className="rfs-tip text-[11px] p-3 min-w-[220px] leading-relaxed">
             <div className="font-semibold text-[var(--model)] mb-1.5">{m.title}</div>
             <div><span className="text-[var(--text-faint)]">Dates:</span> {m.params.startDate} &mdash; {m.params.endDate}</div>
-            <div><span className="text-[var(--text-faint)]">Gap Size:</span> {m.params.gapSize} months</div>
+            <div><span className="text-[var(--text-faint)]">Gap Size:</span> {m.params.gapSize} days</div>
             <div><span className="text-[var(--text-faint)]">Wells Modeled:</span> {Object.keys(m.wellMetrics).length}</div>
             <div className="mt-1.5 text-[var(--text-faint)] text-[10px]">Created {new Date(m.createdAt).toLocaleDateString()}</div>
           </div>
