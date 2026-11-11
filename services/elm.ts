@@ -55,12 +55,12 @@ function computeHidden(X: Matrix, W_in: Matrix, b: number[]): Matrix {
  * matching the Python notebook's flow where zscore_training_data is applied
  * globally before impute_data is called.
  *
- * X: feature matrix [n x inputDim] (z-scored GLDAS + year + month + bias)
+ * X: feature matrix [n x inputDim] (z-scored soil moisture + year + month + bias)
  * y: target values (z-scored)
  *
- * Matches Python:
+ * Follows Python, except that every hidden unit is penalized (see below):
  *   X = input_to_hidden(tx, W_in, b)
- *   I = np.identity(X.shape[1]); I[-1,-1]=0; I[-2,-2]=0
+ *   I = np.identity(X.shape[1])
  *   W_out = np.linalg.lstsq(X.T.dot(X) + lamb_value * I, X.T.dot(ty))[0]
  */
 export function trainElm(
@@ -95,12 +95,12 @@ export function trainElm(
   // Ridge regression: W_out = lstsq(H^T·H + λI, H^T·y)
   const HtH = H.transpose().mmul(H);
 
-  // Build regularization matrix: λI with last 2 diagonal entries zeroed
-  // Matches Python: I[-1,-1]=0; I[-2,-2]=0
+  // Ridge penalty λI on every hidden unit. The Python notebook zeroed the last two
+  // diagonal entries (I[-1,-1]=0; I[-2,-2]=0), which left two random units unpenalized:
+  // one barely active in a well's training months could take a huge weight and send
+  // its filled values hundreds of feet off (2 of 159 wells in one Escalante run).
   for (let i = 0; i < hiddenUnits; i++) {
-    if (i < hiddenUnits - 2) {
-      HtH.set(i, i, HtH.get(i, i) + lambda);
-    }
+    HtH.set(i, i, HtH.get(i, i) + lambda);
   }
 
   const yMat = Matrix.columnVector(y);
