@@ -493,6 +493,9 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
           }
           if (clickedAquifer) {
             onAquiferClickRef.current(clickedAquifer);
+          } else if (isPointInGeoJSON(lat, lng, curRegion.geojson)) {
+            // Inside the open region but outside its aquifers: stay, even where another region overlaps
+            onWellBoxSelectRef.current([]);
           } else {
             let clickedRegion: Region | null = null;
             for (const r of regionsRef.current) {
