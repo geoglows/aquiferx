@@ -1371,7 +1371,12 @@ const App: React.FC = () => {
             {/* Trend legend */}
             {showTrends && (trendColors || aquiferTrendColors) && (() => {
               const isAquiferMode = !selectedAquifer && aquiferTrendColors !== null;
-              const activeColors = isAquiferMode ? aquiferTrendColors! : trendColors!;
+              // With an aquifer open, count its wells, the ones on the map; trendColors covers the whole region
+              const activeColors = isAquiferMode
+                ? Array.from(aquiferTrendColors!.values())
+                : selectedAquifer
+                  ? filteredWells.map(w => trendColors!.get(w.id) ?? INSUFFICIENT_COLOR)
+                  : Array.from(trendColors!.values());
               const unit = selectedRegion?.lengthUnit === 'm' ? 'm' : 'ft';
               const thresholds = isAquiferMode
                 ? (unit === 'm' ? AQUIFER_TREND_THRESHOLDS_M : AQUIFER_TREND_THRESHOLDS_FT)
@@ -1385,7 +1390,7 @@ const App: React.FC = () => {
                     {thresholds.moderate} / {thresholds.extreme} {unit}/yr
                   </div>
                   {[...TREND_CATEGORIES].reverse().map(cat => {
-                    const count = Array.from(activeColors.values()).filter(c => c === cat.color).length;
+                    const count = activeColors.filter(c => c === cat.color).length;
                     return (
                       <div key={cat.label} className="flex items-center gap-2 py-0.5">
                         <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: cat.color }} />
@@ -1396,7 +1401,7 @@ const App: React.FC = () => {
                   <div className="flex items-center gap-2 py-0.5">
                     <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: INSUFFICIENT_COLOR }} />
                     <span className="text-xs text-slate-600">
-                      Insufficient data ({Array.from(activeColors.values()).filter(c => c === INSUFFICIENT_COLOR).length})
+                      Insufficient data ({activeColors.filter(c => c === INSUFFICIENT_COLOR).length})
                     </span>
                   </div>
                 </div>
