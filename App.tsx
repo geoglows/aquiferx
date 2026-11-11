@@ -791,6 +791,14 @@ const App: React.FC = () => {
   // Regions whose length unit and single-unit setting are fixed: wells store
   // ground elevation in the region's unit and sit in its aquifers.
   const regionsWithWells = useMemo(() => new Set(wells.map(w => w.regionId)), [wells]);
+  const aquiferWellCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const w of wells) {
+      const key = `${w.regionId}:${w.aquiferId}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [wells]);
 
   const handleEditRegion = async (regionId: string, newName: string, lengthUnit: 'ft' | 'm', singleUnit: boolean) => {
     const region = regions.find(r => r.id === regionId);
@@ -1164,6 +1172,7 @@ const App: React.FC = () => {
         onToggleRegionVisibility={toggleRegionVisibility}
         onEditRegion={handleEditRegion}
         regionsWithWells={regionsWithWells}
+        aquiferWellCounts={aquiferWellCounts}
         onDownloadRegion={handleDownloadRegion}
         onDeleteRegion={handleDeleteRegion}
         onRenameAquifer={handleRenameAquifer}

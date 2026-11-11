@@ -25,6 +25,8 @@ interface SidebarProps {
   onEditRegion: (id: string, newName: string, lengthUnit: 'ft' | 'm', singleUnit: boolean) => void;
   /** Regions with wells, whose unit and single-unit setting can no longer change. */
   regionsWithWells: Set<string>;
+  /** Wells in each aquifer, keyed `${regionId}:${aquiferId}`, shown after its name. */
+  aquiferWellCounts: Map<string, number>;
   onDownloadRegion: (id: string) => void;
   onDeleteRegion: (id: string) => void | Promise<void>;
   onRenameAquifer: (id: string, newName: string) => void;
@@ -89,6 +91,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onToggleRegionVisibility,
   onEditRegion,
   regionsWithWells,
+  aquiferWellCounts,
   onDownloadRegion,
   onDeleteRegion,
   onRenameAquifer,
@@ -956,7 +959,12 @@ const Sidebar: React.FC<SidebarProps> = ({
                   className="rfs-input"
                 />
               ) : (
-                <span className="truncate block">{a.name}</span>
+                <span className="flex min-w-0">
+                  <span className="truncate">{a.name}</span>
+                  <span className="ml-1 flex-shrink-0 text-[var(--text-faint)]">
+                    ({(aquiferWellCounts.get(`${a.regionId}:${a.id}`) ?? 0).toLocaleString()})
+                  </span>
+                </span>
               )}
             </div>
             {!isEditing && !readOnly && (
