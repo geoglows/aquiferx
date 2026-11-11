@@ -214,11 +214,20 @@ const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRegion?.id]);
 
-  // Clear trend analysis when region or data type changes
+  // Trends stay on from one region to the next, recomputed for the region now
+  // open (window cut back to its record); Home or another data type turns them off
   useEffect(() => {
-    setTrendColors(null);
-    setAquiferTrendColors(null);
-    setShowTrends(false);
+    if (!showTrends) return;
+    if (!selectedRegion || selectedDataType !== 'wte') {
+      setTrendColors(null);
+      setAquiferTrendColors(null);
+      setShowTrends(false);
+      return;
+    }
+    const w = Math.min(trendWindowYears, trendWindowMax);
+    setTrendWindowYears(w);
+    computeTrendColors(w);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRegion?.id, selectedDataType]);
 
   // Clear the active raster/model when the aquifer changes, unless it
@@ -272,7 +281,7 @@ const App: React.FC = () => {
     if (!selectedRegion) return 0;
     let minT = Infinity;
     for (const m of measurements) {
-      if (m.dataType !== selectedDataType) continue;
+      if (m.dataType !== selectedDataType || m.regionId !== selectedRegion.id) continue;
       const t = new Date(m.date).getTime();
       if (!isNaN(t) && t < minT) minT = t;
     }
@@ -346,8 +355,10 @@ const App: React.FC = () => {
       return;
     }
     if (!selectedRegion) return;
+    const w = Math.min(trendWindowYears, trendWindowMax);
+    setTrendWindowYears(w);
     setShowTrendLine(true);
-    computeTrendColors(trendWindowYears);
+    computeTrendColors(w);
     setShowTrends(true);
   };
 
