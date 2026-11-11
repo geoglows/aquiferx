@@ -37,6 +37,7 @@ import {
   WqpQueryParams,
   WqpCounts,
   WqpDataQualityReport,
+  WqpStation,
 } from '../../services/wqpApi';
 
 interface MeasurementImporterProps {
@@ -134,6 +135,8 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
   const [wqpIsCounting, setWqpIsCounting] = useState(false);
   const [wqpIsDownloading, setWqpIsDownloading] = useState(false);
   const [wqpQualityReport, setWqpQualityReport] = useState<WqpDataQualityReport | null>(null);
+  // Stations inside more than one aquifer's outline, left out with their results
+  const [wqpAmbiguous, setWqpAmbiguous] = useState<{ station: WqpStation; aquiferIds: string[] }[]>([]);
   const [showWqpPicker, setShowWqpPicker] = useState(false);
   const [wqpScope, setWqpScope] = useState<'region' | 'aquifer'>('region');
   const [wqpScopeAquiferId, setWqpScopeAquiferId] = useState('');
@@ -832,11 +835,20 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       const depthInUnit = (ft?: number) => ft == null ? ''
         : String(lengthUnit === 'ft' ? ft : Math.round(ft * 0.3048 * 100) / 100);
       let droppedStations = 0;
+      // A station inside more than one aquifer's outline (aquifers that share
+      // an outline keep deep and shallow wells apart) can't be told which it
+      // is in: it is left out with its results and listed, unless it is a
+      // well the region already has, which its results match by ID
+      const regionIds = new Set<string>();
+      for (const w of existingWellsFull) { regionIds.add(w.well_id); regionIds.add(w.well_id.replace(/^USGS-/, '')); }
+      const inRegion = (id: string) => regionIds.has(id) || regionIds.has(id.replace(/^USGS-/, ''));
+      const ambiguous: { station: WqpStation; aquiferIds: string[] }[] = [];
       for (const s of stations) {
         if (aquifersGeojson) {
-          const aq = assignWellToAquifer(s.lat, s.lng, aquifersGeojson);
-          if (!aq) { droppedStations++; continue; }
-          if (wqpScope === 'aquifer' && aq !== wqpScopeAquiferId) { droppedStations++; continue; }
+          const ins = aquifersContaining(s.lat, s.lng, aquifersGeojson);
+          if (ins.length === 0) { droppedStations++; continue; }
+          if (wqpScope === 'aquifer' && !ins.includes(wqpScopeAquiferId)) { droppedStations++; continue; }
+          if (ins.length > 1 && !inRegion(s.siteId)) { ambiguous.push({ station: s, aquiferIds: ins }); continue; }
         }
         stationMap.set(s.siteId, { lat: s.lat, lng: s.lng, name: s.siteName, depth: depthInUnit(s.depthFt) });
       }
@@ -848,6 +860,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       if (droppedStations > 0) {
         report.details.unshift(`${droppedStations} station${droppedStations === 1 ? '' : 's'} dropped — outside aquifer polygon${wqpScope === 'aquifer' ? '' : 's'}`);
       }
+      setWqpAmbiguous(ambiguous);
       setWqpQualityReport(report);
 
       buildWqpFile(kept, stationMap, wqpSelectedCodes);
@@ -2384,6 +2397,31 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         )}
 
         {/* WQP Data Quality Report */}
+        {dataSource === 'wqp' && wqpAmbiguous.length > 0 && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 space-y-2">
+            <p className="flex items-start gap-2">
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <span>
+                {wqpAmbiguous.length} station{wqpAmbiguous.length === 1 ? ' falls' : 's fall'} inside more than one aquifer's
+                outline, so {wqpAmbiguous.length === 1 ? 'its aquifer' : 'their aquifers'} can't be told from the location,
+                and {wqpAmbiguous.length === 1 ? 'it is' : 'they are'} left out with {wqpAmbiguous.length === 1 ? 'its' : 'their'} results.
+                The list has each well's depth and an empty aquifer_id column: fill it in, add the wells with Add Wells and the
+                aquifer_id column, and download again.
+              </span>
+            </p>
+            <button
+              onClick={() => downloadCsv(`stations-in-two-aquifers-${regionId}.csv`,
+                ['well_id', 'well_name', 'lat', 'long', 'well_depth', 'aquifer_id', 'aquifers_here'],
+                wqpAmbiguous.map(({ station: s, aquiferIds }) => ({
+                  well_id: s.siteId, well_name: s.siteName, lat: String(s.lat), long: String(s.lng),
+                  well_depth: s.depthFt == null ? '' : String(lengthUnit === 'ft' ? s.depthFt : Math.round(s.depthFt * 0.3048 * 100) / 100),
+                  aquifer_id: '', aquifers_here: aquiferIds.join('; '),
+                })))}
+              className="flex items-center gap-1.5 font-medium text-blue-700 hover:text-blue-900 hover:underline">
+              <Download size={13} /> Download the list of wells (CSV)
+            </button>
+          </div>
+        )}
         {wqpQualityReport && dataSource === 'wqp' && (
           <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs">
             <div className="font-medium text-slate-700 mb-1">WQP cleanup</div>

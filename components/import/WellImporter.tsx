@@ -2,6 +2,8 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { X, CheckCircle2, Loader2, AlertTriangle, Download, Upload, RefreshCw } from 'lucide-react';
 import { processUploadedFile, UploadedFile, saveFiles, deleteFile, isInUS, assignWellToAquifer, aquifersContaining, parseCSV, toCsv, downloadCsv, WELLS_CSV_HEADERS, cleanDepth } from '../../services/importUtils';
 import { fetchUSGSWells, getUSGSApiKey, setUSGSApiKey } from '../../services/usgsApi';
+
+type USGSWellSite = Awaited<ReturnType<typeof fetchUSGSWells>>[number];
 import { PlacedWell } from '../../services/sharedLocations';
 import { fetchGseBatch, GSE_SOURCE_US, GSE_SOURCE_GLOBAL } from '../../services/gseLookup';
 import { compareNames } from '../../utils/strings';
@@ -61,6 +63,8 @@ const WellImporter: React.FC<WellImporterProps> = ({
 
   // USGS download
   const [usgsWells, setUsgsWells] = useState<any[] | null>(null);
+  // Downloaded wells inside more than one aquifer's outline, left out
+  const [usgsAmbiguous, setUsgsAmbiguous] = useState<{ well: USGSWellSite; aquiferIds: string[] }[]>([]);
   const [usgsProgress, setUsgsProgress] = useState({ count: 0, done: false });
   const [usgsIsLoading, setUsgsIsLoading] = useState(false);
 
@@ -224,6 +228,46 @@ const WellImporter: React.FC<WellImporterProps> = ({
     return [minLat, minLng, maxLat, maxLng];
   };
 
+  // Place downloaded wells in their aquifers by location. A well inside more
+  // than one aquifer's outline (aquifers that share an outline keep deep and
+  // shallow wells apart) can't be told which it is in: it is left out and
+  // listed, unless the region already has it. A scoped download keeps the
+  // wells inside the chosen aquifer only.
+  const placeDownloaded = (wells: USGSWellSite[]) => {
+    const placed: { well: USGSWellSite; aquiferId: string }[] = [];
+    const ambiguous: { well: USGSWellSite; aquiferIds: string[] }[] = [];
+    const inRegion = new Set(existingRows.map(r => r.well_id));
+    for (const w of wells) {
+      if (!aquifersGeojson) { placed.push({ well: w, aquiferId: singleUnit ? '0' : '' }); continue; }
+      const ins = aquifersContaining(w.lat, w.lng, aquifersGeojson);
+      if (ins.length === 0) continue;
+      if (ins.length > 1) {
+        const inScope = usgsScope !== 'aquifer' || ins.includes(usgsScopeAquiferId);
+        if (inScope && !inRegion.has(w.siteId)) ambiguous.push({ well: w, aquiferIds: ins });
+        continue;
+      }
+      if (usgsScope === 'aquifer' && ins[0] !== usgsScopeAquiferId) continue;
+      placed.push({ well: w, aquiferId: ins[0] });
+    }
+    setUsgsAmbiguous(ambiguous);
+    return placed;
+  };
+
+  const downloadAmbiguousUsgs = () => {
+    const rows = usgsAmbiguous.map(({ well: w, aquiferIds }) => ({
+      well_id: w.siteId,
+      well_name: w.siteName,
+      lat: String(w.lat),
+      long: String(w.lng),
+      gse: w.gse ? String(lengthUnit === 'ft' ? Math.round(w.gse * 3.28084 * 100) / 100 : Math.round(w.gse * 100) / 100) : '',
+      well_depth: usgsDepth(w.depthFt),
+      aquifer_id: '',
+      aquifers_here: aquiferIds.join('; '),
+    }));
+    downloadCsv(`wells-in-two-aquifers-${regionId}.csv`,
+      ['well_id', 'well_name', 'lat', 'long', 'gse', 'well_depth', 'aquifer_id', 'aquifers_here'], rows);
+  };
+
   // USGS well download
   const handleUSGSDownload = async () => {
     setUsgsIsLoading(true);
@@ -247,30 +291,8 @@ const WellImporter: React.FC<WellImporterProps> = ({
         setUsgsProgress({ count, done: false });
       });
 
-      // Filter to aquifer boundaries and capture aquifer_id via point-in-polygon
-      let wellsWithAquifer: { well: typeof wells[0]; aquiferId: string }[];
-      if (aquifersGeojson) {
-        wellsWithAquifer = [];
-        if (usgsScope === 'aquifer') {
-          // Only match to the selected aquifer
-          const features = aquifersGeojson.type === 'FeatureCollection' ? aquifersGeojson.features : [aquifersGeojson];
-          const targetFeature = features.find((f: any) => String(f.properties?.aquifer_id) === usgsScopeAquiferId);
-          if (targetFeature) {
-            const scopedGj = { type: 'FeatureCollection', features: [targetFeature] };
-            for (const w of wells) {
-              const aqId = assignWellToAquifer(w.lat, w.lng, scopedGj);
-              if (aqId !== null) wellsWithAquifer.push({ well: w, aquiferId: aqId });
-            }
-          }
-        } else {
-          for (const w of wells) {
-            const aqId = assignWellToAquifer(w.lat, w.lng, aquifersGeojson);
-            if (aqId !== null) wellsWithAquifer.push({ well: w, aquiferId: aqId });
-          }
-        }
-      } else {
-        wellsWithAquifer = wells.map(w => ({ well: w, aquiferId: singleUnit ? '0' : '' }));
-      }
+      // Place each well in its aquifer by location
+      const wellsWithAquifer = placeDownloaded(wells);
 
       setUsgsWells(wellsWithAquifer.map(x => x.well));
       setUsgsProgress({ count: wellsWithAquifer.length, done: true });
@@ -321,29 +343,8 @@ const WellImporter: React.FC<WellImporterProps> = ({
         setUsgsProgress({ count, done: false });
       });
 
-      // Filter to aquifer boundaries and capture aquifer_id
-      let wellsWithAquifer: { well: typeof wells[0]; aquiferId: string }[];
-      if (aquifersGeojson) {
-        wellsWithAquifer = [];
-        if (usgsScope === 'aquifer') {
-          const features = aquifersGeojson.type === 'FeatureCollection' ? aquifersGeojson.features : [aquifersGeojson];
-          const targetFeature = features.find((f: any) => String(f.properties?.aquifer_id) === usgsScopeAquiferId);
-          if (targetFeature) {
-            const scopedGj = { type: 'FeatureCollection', features: [targetFeature] };
-            for (const w of wells) {
-              const aqId = assignWellToAquifer(w.lat, w.lng, scopedGj);
-              if (aqId !== null) wellsWithAquifer.push({ well: w, aquiferId: aqId });
-            }
-          }
-        } else {
-          for (const w of wells) {
-            const aqId = assignWellToAquifer(w.lat, w.lng, aquifersGeojson);
-            if (aqId !== null) wellsWithAquifer.push({ well: w, aquiferId: aqId });
-          }
-        }
-      } else {
-        wellsWithAquifer = wells.map(w => ({ well: w, aquiferId: singleUnit ? '0' : '' }));
-      }
+      // Place each well in its aquifer by location
+      const wellsWithAquifer = placeDownloaded(wells);
 
       // Diff against existing USGS wells
       const newWells = wellsWithAquifer.filter(x => !existingUsgsIds.has(x.well.siteId));
@@ -886,6 +887,24 @@ const WellImporter: React.FC<WellImporterProps> = ({
                 Edit Column Mapping
               </button>
             )}
+          </div>
+        )}
+
+        {/* Downloaded wells inside more than one aquifer outline, left out */}
+        {dataSource === 'usgs' && usgsAmbiguous.length > 0 && (
+          <div className="p-3 mb-4 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 space-y-2">
+            <p className="flex items-start gap-2">
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <span>
+                {usgsAmbiguous.length} downloaded well{usgsAmbiguous.length === 1 ? ' falls' : 's fall'} inside more than one
+                aquifer's outline, so {usgsAmbiguous.length === 1 ? 'its aquifer' : 'their aquifers'} can't be told from the
+                location, and {usgsAmbiguous.length === 1 ? 'it is' : 'they are'} left out. The list has each well's depth and an
+                empty aquifer_id column: fill it in and add the wells with Upload CSV and the aquifer_id column.
+              </span>
+            </p>
+            <button onClick={downloadAmbiguousUsgs} className="flex items-center gap-1.5 font-medium text-blue-700 hover:text-blue-900 hover:underline">
+              <Download size={13} /> Download the list of wells (CSV)
+            </button>
           </div>
         )}
 
