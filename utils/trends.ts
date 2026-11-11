@@ -21,14 +21,21 @@ export const TREND_CATEGORIES: { label: string; color: string; test: (s: number,
 export const INSUFFICIENT_COLOR = '#1E293B';
 export const MS_PER_YEAR = 365.25 * 86400000;
 
+// A trend needs measurements at least this many years apart: two readings a few weeks apart give rates of hundreds of
+// feet a year.
+export const MIN_TREND_SPAN_YEARS = 2;
+
 export function computeSlope(meas: Measurement[]): number | null {
   if (meas.length < 2) return null;
-  let n = 0, sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  let n = 0, sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, first = Infinity, last = -Infinity;
   for (const m of meas) {
     const x = new Date(m.date).getTime() / MS_PER_YEAR;
+    if (x < first) first = x;
+    if (x > last) last = x;
     const y = m.value;
     n++; sumX += x; sumY += y; sumXY += x * y; sumX2 += x * x;
   }
+  if (!(last - first >= MIN_TREND_SPAN_YEARS)) return null;
   const denom = n * sumX2 - sumX * sumX;
   if (denom === 0) return null;
   return (n * sumXY - sumX * sumY) / denom;

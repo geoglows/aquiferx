@@ -6,6 +6,7 @@ import {
 import { Measurement, Well, DataType } from '../types';
 import { interpolatePCHIP, kernelSmooth } from '../utils/interpolation';
 import { dateTime } from '../utils/dates';
+import { MIN_TREND_SPAN_YEARS, MS_PER_YEAR } from '../utils/trends';
 
 // Tailwind 400s. These were the 500s, chosen when the plot sat on white; on a
 // dark ground that whole rank reads muddy. Lifted as a set rather than one at a
@@ -206,7 +207,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     return { chartData: data, wellIds: orderedWellIds };
   }, [measurements, selectedWells, usePCHIP]);
 
-  // Compute linear regression trend lines per well (requires >= 2 measurements)
+  // Compute linear regression trend lines per well (measurements at least MIN_TREND_SPAN_YEARS apart)
   const trendData = useMemo(() => {
     if (!showTrendLine || measurements.length === 0 || selectedWells.length === 0) return null;
 
@@ -220,11 +221,12 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
       byWell.get(m.wellId)!.push({ x: t, y: m.value });
     }
 
-    const MS_PER_YEAR = 365.25 * 86400000;
     const lines = new Map<string, { startDate: number; startVal: number; endDate: number; endVal: number; slopePerYear: number }>();
 
     for (const [wellId, points] of byWell) {
       if (points.length < 2) continue;
+      const xs = points.map(p => p.x);
+      if (Math.max(...xs) - Math.min(...xs) < MIN_TREND_SPAN_YEARS * MS_PER_YEAR) continue;
 
       // Linear regression: y = mx + b
       const n = points.length;
