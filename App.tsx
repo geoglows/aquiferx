@@ -1241,10 +1241,12 @@ const App: React.FC = () => {
           <div className="flex items-center space-x-3 flex-shrink-0 ml-4">
             {selectedRegion && (
               <>
+                {/* Trend classes are rates of a water level, in the region's length unit: water table elevation only */}
                 <button
                   onClick={analyzeTrends}
+                  disabled={selectedDataType !== 'wte'}
                   className={`rfs-btn icon ${showTrends ? 'active' : ''}`}
-                  data-tip="Analyze Trends"
+                  data-tip={selectedDataType === 'wte' ? 'Analyze Trends' : 'Analyze Trends works on water table elevation'}
                   aria-label="Analyze Trends"
                   aria-pressed={showTrends}
                 >

@@ -778,17 +778,21 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
               {...{ fill: '#9ca3af', stroke: '#9ca3af' } as any}
             />
           )}
-          {showTrendLine && trendData && wellIds.map((wellId) => {
+          {showTrendLine && trendData && wellIds.map((wellId, i) => {
             const line = trendData.get(wellId);
             if (!line) return null;
-            const thresholds = lengthUnit === 'm' ? { extreme: 0.6, moderate: 0.15 } : { extreme: 2.0, moderate: 0.5 };
-            const slope = line.slopePerYear;
-            let color: string;
-            if (slope < -thresholds.extreme) color = '#DC2626';
-            else if (slope < -thresholds.moderate) color = '#FB923C';
-            else if (slope <= thresholds.moderate) color = '#CA8A04';
-            else if (slope <= thresholds.extreme) color = '#38BDF8';
-            else color = '#2563EB';
+            // A water level's line takes the color of its trend class; the classes are rates in the region's length
+            // unit, so any other data type's line takes the well's own color
+            let color = SERIES_COLORS[i % SERIES_COLORS.length];
+            if (dataType.code === 'wte') {
+              const thresholds = lengthUnit === 'm' ? { extreme: 0.6, moderate: 0.15 } : { extreme: 2.0, moderate: 0.5 };
+              const slope = line.slopePerYear;
+              if (slope < -thresholds.extreme) color = '#DC2626';
+              else if (slope < -thresholds.moderate) color = '#FB923C';
+              else if (slope <= thresholds.moderate) color = '#CA8A04';
+              else if (slope <= thresholds.extreme) color = '#38BDF8';
+              else color = '#2563EB';
+            }
             return (
               <Line
                 key={`trend_${wellId}`}
