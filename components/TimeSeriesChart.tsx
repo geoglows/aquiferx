@@ -55,6 +55,22 @@ interface DotPosition extends SelectedPoint {
 
 const HIT_RADIUS = 15;
 
+// A y range that covers [min, max] in four equal steps of 1, 2, 2.5 or 5 times a power of ten, so the axis's five ticks
+// fall on round values. Without it, the range the GSE line forces gave ticks such as 5,177.658.
+function niceDomain(min: number, max: number): [number, number] {
+  const raw = (max - min) / 4 || 1;
+  let pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (let guard = 0; guard < 20; guard++, pow *= 10) {
+    for (const m of [1, 2, 2.5, 5]) {
+      const step = m * pow;
+      if (step < raw) continue;
+      const lo = Math.floor(min / step) * step;
+      if (lo + 4 * step >= max) return [lo, lo + 4 * step];
+    }
+  }
+  return [min, max];
+}
+
 const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selectedWells, showGSE, showTrendLine, showSmooth, smoothMonths, usePCHIP = true, dataType, lengthUnit = 'ft', referenceDate, rasterTimeRange, trendWindowStart, dateFilter, onEditMeasurement, onDeleteMeasurement, onEscapeUnhandled }) => {
   const [selectedPoint, setSelectedPoint] = useState<SelectedPoint | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -346,7 +362,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     const dataMin = Math.min(...allValues);
     const dataMax = Math.max(...allValues, ...gseValues);
     const padding = (dataMax - dataMin) * 0.05 || 1;
-    return [dataMin - padding, dataMax + padding];
+    return niceDomain(dataMin - padding, dataMax + padding);
   }, [showGSE, selectedWells, finalChartData]);
 
   modalsOpenRef.current = !!(contextMenu || editModal || deleteModal);

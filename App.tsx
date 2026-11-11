@@ -1977,6 +1977,7 @@ const App: React.FC = () => {
               showGSE={showGSE && activeDataType.code === 'wte'}
               showTrendLine={showTrendLine}
               showSmooth={showSmooth}
+              usePCHIP={usePCHIP}
               smoothMonths={smoothMonths}
               dataType={activeDataType}
               lengthUnit={selectedRegion?.lengthUnit || 'ft'}
