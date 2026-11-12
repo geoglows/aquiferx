@@ -81,6 +81,10 @@ export async function runImputationPipeline(
 ): Promise<ImputationModelResult> {
   const { title, startDate, endDate, minSamples, gapSize, padSize, hiddenUnits, lambda } = input;
 
+  // The run's log goes into the model file, so the chart's Processing Log shows it after a reload and for Sample Data
+  const logLines: string[] = [];
+  const log = (msg: string) => { logLines.push(msg); onLog(msg); };
+
   // Yield point: lets the UI repaint AND aborts the pipeline when the
   // user cancelled — without this the ELM training grinds on (and saves
   // its model file) after the wizard closes
@@ -95,7 +99,7 @@ export async function runImputationPipeline(
 
   // ===== Step 1: Fetch GLDAS data (0-5%) =====
   onProgress('Reading soil moisture...', 0);
-  onLog(`Reading soil moisture for aquifer "${aquifer.name}"...`);
+  log(`Reading soil moisture for aquifer "${aquifer.name}"...`);
   await tick();
 
   let gldas: GldasFeatures;
@@ -103,10 +107,10 @@ export async function runImputationPipeline(
     // Cache key must include the region — every single-unit region uses
     // aquifer_id=0, so a bare aquifer id collides across regions
     gldas = await fetchGldasFeatures(`${region.id}:${aquifer.id}`, aquifer.geojson, input.gldasStartDate, input.gldasEndDate);
-    onLog(`Soil moisture features: ${gldas.dates.length} months, ${gldas.dates[0]} to ${gldas.dates[gldas.dates.length - 1]}`);
+    log(`Soil moisture features: ${gldas.dates.length} months, ${gldas.dates[0]} to ${gldas.dates[gldas.dates.length - 1]}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    onLog(`ERROR: Could not read soil moisture: ${msg}`);
+    log(`ERROR: Could not read soil moisture: ${msg}`);
     throw new Error(`Could not read soil moisture: ${msg}`);
   }
   onProgress('Soil moisture loaded', 5);
@@ -142,7 +146,7 @@ export async function runImputationPipeline(
     qualifiedWells.push({ well, sorted });
   }
 
-  onLog(`${qualifiedWells.length} wells qualified (>= ${minSamples} measurements), ${omitted} omitted`);
+  log(`${qualifiedWells.length} wells qualified (>= ${minSamples} measurements), ${omitted} omitted`);
 
   if (qualifiedWells.length === 0) {
     throw new Error(`No wells have >= ${minSamples} measurements. Adjust min samples or date range.`);
@@ -156,8 +160,8 @@ export async function runImputationPipeline(
   const gldasFeatureEnd = gldas.dates[gldas.dates.length - 1];
   const monthlyDates = generateMonthlyDates(gldasFeatureStart, gldasFeatureEnd);
   const monthlyTimestamps = monthlyDates.map(d => new Date(d).getTime());
-  onLog(`Training date grid: ${monthlyDates.length} months from ${gldasFeatureStart} to ${gldasFeatureEnd}`);
-  onLog(`Output will be clipped to: ${startDate} to ${endDate}`);
+  log(`Training date grid: ${monthlyDates.length} months from ${gldasFeatureStart} to ${gldasFeatureEnd}`);
+  log(`Output will be clipped to: ${startDate} to ${endDate}`);
 
   // Build GLDAS lookup by date
   const gldasByDate = new Map<string, number>();
@@ -203,11 +207,11 @@ export async function runImputationPipeline(
       activeWells.push(qw);
     } else {
       wellPchip.delete(qw.well.id);
-      onLog(`Well ${qw.well.name}: dropped after PCHIP (only ${nonNullCount} non-NaN values)`);
+      log(`Well ${qw.well.name}: dropped after PCHIP (only ${nonNullCount} non-NaN values)`);
     }
   }
 
-  onLog(`PCHIP interpolation complete: ${activeWells.length} wells retained`);
+  log(`PCHIP interpolation complete: ${activeWells.length} wells retained`);
 
   // ===== PHASE B: Identify valid GLDAS rows =====
   // Matches Python: combined_df.dropna(subset=names) — keep rows where GLDAS features are present
@@ -218,7 +222,7 @@ export async function runImputationPipeline(
     }
   }
   const nRows = validRowIndices.length;
-  onLog(`${nRows} months with soil moisture`);
+  log(`${nRows} months with soil moisture`);
 
   if (nRows === 0) {
     throw new Error('No soil moisture in the selected date range');
@@ -380,7 +384,7 @@ export async function runImputationPipeline(
 
     const pchipAtRows = wellPchipAtRows.get(well.id);
     if (!pchipAtRows || pchipAtRows.filter(v => v !== null).length < 3) {
-      onLog(`Well ${well.name}: skipped (too few months of record with soil moisture)`);
+      log(`Well ${well.name}: skipped (too few months of record with soil moisture)`);
       continue;
     }
 
@@ -389,7 +393,7 @@ export async function runImputationPipeline(
       const combined = shiftedSeries(pchipAtRows, fit.pred);
       const check = runCheck(sorted);
       wellMetrics[well.id] = check ? { r2: fit.r2, rmse: fit.rmse, check } : { r2: fit.r2, rmse: fit.rmse };
-      onLog(`Well ${well.name}: ELM R²=${fit.r2.toFixed(4)}, RMSE=${fit.rmse.toFixed(2)} (${fit.nTrain} training pts); `
+      log(`Well ${well.name}: ELM R²=${fit.r2.toFixed(4)}, RMSE=${fit.rmse.toFixed(2)} (${fit.nTrain} training pts); `
         + (check ? `check, ${check.n} readings hidden from ${check.from} to ${check.to}: model RMSE ${check.model.toFixed(2)}, PCHIP ${check.pchip.toFixed(2)}`
           : 'no check (too few readings)'));
 
@@ -405,12 +409,12 @@ export async function runImputationPipeline(
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      onLog(`Well ${well.name}: ELM training failed: ${msg}`);
+      log(`Well ${well.name}: ELM training failed: ${msg}`);
     }
   }
 
   const checks = summarizeChecks(wellMetrics);
-  onLog(checks
+  log(checks
     ? `Check: ${checks.wells} of ${Object.keys(wellMetrics).length} wells; the model was closer than PCHIP to the hidden readings at `
       + `${checks.modelCloser} (${Math.round((100 * checks.modelCloser) / checks.wells)}%); median RMSE model ${checks.medianModel.toFixed(2)}, `
       + `PCHIP ${checks.medianPchip.toFixed(2)}`
@@ -456,7 +460,7 @@ export async function runImputationPipeline(
     params,
     wellMetrics,
     data: outputRows,
-    log: [], // Will be populated by caller from accumulated log messages
+    log: logLines,
   };
 
   // Save to My Data
