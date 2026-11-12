@@ -6,6 +6,7 @@ import {
 import { ImputationModelResult, Well, Measurement } from '../types';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { smoothModelCombined } from '../utils/interpolation';
+import { niceDomain, yearTicks as yearTicksBetween } from '../utils/chartAxes';
 
 interface ModelTimeSeriesProps {
   model: ImputationModelResult;
@@ -125,24 +126,16 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
     }
     if (!isFinite(min)) return [0, 1];
     const pad = (max - min) * 0.05 || 1;
-    return [min - pad, max + pad];
+    return niceDomain(min - pad, max + pad);
   }, [chartData, showGSE, well.gse]);
 
-  const formatDate = (ts: number) => new Date(ts).getFullYear().toString();
+  // Model months are UTC dates (1957-12-01 is midnight UTC), so dates are read in UTC; in local time west of Greenwich
+  // the first of a month falls on the last day of the month before.
+  const formatDate = (ts: number) => new Date(ts).getUTCFullYear().toString();
 
-  // Generate ticks at Jan 1 of each year
-  const yearTicks = useMemo(() => {
-    if (chartData.length === 0) return [];
-    const minTs = chartData[0].date;
-    const maxTs = chartData[chartData.length - 1].date;
-    const startYear = new Date(minTs).getFullYear();
-    const endYear = new Date(maxTs).getFullYear();
-    const ticks: number[] = [];
-    for (let y = startYear; y <= endYear; y++) {
-      ticks.push(new Date(y, 0, 1).getTime());
-    }
-    return ticks;
-  }, [chartData]);
+  const yearTicks = useMemo(() =>
+    chartData.length === 0 ? [] : yearTicksBetween(chartData[0].date, chartData[chartData.length - 1].date),
+  [chartData]);
 
   if (modelRows.length === 0) {
     return (
@@ -190,9 +183,9 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
               stroke="var(--chart-axis)"
               fontSize={10}
             />
-            <YAxis stroke="var(--chart-axis)" fontSize={10} domain={yDomain} tickFormatter={(v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 1 })} />
+            <YAxis stroke="var(--chart-axis)" fontSize={10} domain={yDomain} tickFormatter={(v: number) => v.toLocaleString()} />
             <Tooltip
-              labelFormatter={(ts: number) => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }}
+              labelFormatter={(ts: number) => { const d = new Date(ts); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; }}
               formatter={(value: number, name: string) => [
                 value?.toFixed(2) ?? 'N/A',
                 name === 'measurement' ? 'Measured' : name === 'pchip' ? 'PCHIP' : name === 'elm' ? 'ELM' : name === 'model' ? 'ELM' : name === 'smooth' ? 'MAvg' : name
