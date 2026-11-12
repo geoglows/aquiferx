@@ -170,7 +170,7 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
             {wellMetrics.check ? (
               <span
                 className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-medium cursor-help"
-                title={`The ${wellMetrics.check.n} readings from ${wellMetrics.check.from} to ${wellMetrics.check.to} were hidden, the well was fitted again without them, and the stretch was filled by the model and by the PCHIP curve across it. RMSE of each against the hidden readings.`}
+                title={`Readings from ${wellMetrics.check.from} to ${wellMetrics.check.to} were hidden, the well was fitted again without them, and the stretch was filled by the model and by the PCHIP curve across it. RMSE of each against the ${wellMetrics.check.n} hidden readings in the months the model fills.`}
               >
                 Hidden readings: model {wellMetrics.check.model.toFixed(2)} · PCHIP {wellMetrics.check.pchip.toFixed(2)} {lengthUnit}
               </span>
