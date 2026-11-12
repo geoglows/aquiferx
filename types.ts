@@ -256,6 +256,7 @@ export interface ImputationParams {
   padSize: number;       // days
   hiddenUnits: number;
   lambda: number;
+  fits?: number;         // ELM fits averaged for each well; absent in models made before averaging, which used one
 }
 
 /**

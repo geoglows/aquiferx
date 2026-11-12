@@ -55,6 +55,7 @@ const ModelInfoDialog: React.FC<ModelInfoDialogProps> = ({ meta, onClose }) => {
               <div className={rowCls}><span className={labelCls}>Pad Size</span><span className={valueCls}>{meta.params.padSize} days</span></div>
               <div className={rowCls}><span className={labelCls}>Hidden Units</span><span className={valueCls}>{meta.params.hiddenUnits}</span></div>
               <div className={rowCls}><span className={labelCls}>Lambda</span><span className={valueCls}>{meta.params.lambda}</span></div>
+              <div className={rowCls}><span className={labelCls}>Fits Averaged</span><span className={valueCls}>{meta.params.fits ?? 1}</span></div>
             </div>
           </section>
 

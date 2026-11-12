@@ -24,6 +24,7 @@ export interface ImputationPipelineInput {
   padSize: number;    // days (Python default: 180)
   hiddenUnits: number;
   lambda: number;
+  fits: number;       // ELM fits, each with its own random weights, averaged for each well and for each check
 }
 
 function yieldToUI(): Promise<void> {
@@ -80,6 +81,7 @@ export async function runImputationPipeline(
   isCancelled?: () => boolean,
 ): Promise<ImputationModelResult> {
   const { title, startDate, endDate, minSamples, gapSize, padSize, hiddenUnits, lambda } = input;
+  const fits = Math.max(1, Math.round(input.fits));
 
   // The run's log goes into the model file, so the chart's Processing Log shows it after a reload and for Sample Data
   const logLines: string[] = [];
@@ -268,6 +270,7 @@ export async function runImputationPipeline(
   // ===== PHASE D: Build feature matrix for ALL valid rows =====
   // Columns: 5 z-scored GLDAS + 1 min-max year + 12 one-hot month + 1 bias = 19
   // Matches Python: names = ['soilw', ..., 'soilw_yr10', 'year', 'month_1', ..., 'month_12'] + bias
+  log(`Each well's model is the mean of ${fits} ELM fit${fits === 1 ? '' : 's'} (${hiddenUnits} hidden units, λ=${lambda})`);
   onProgress('Building feature matrix...', 18);
   await tick();
 
@@ -304,7 +307,9 @@ export async function runImputationPipeline(
   /**
    * Fit the ELM to a well's PCHIP values at the rows (null where there is none) and predict every row, in the well's units.
    * The targets are z-scored with the mean and sample standard deviation of the well's own PCHIP values
-   * (Python: norm_df[well] = (combined_df[well] - mean) / std); R² and RMSE compare the fit with them.
+   * (Python: norm_df[well] = (combined_df[well] - mean) / std). The model is the mean of `fits` ELMs, each with its own
+   * random weights, which more than halves how much the filled values change from one run to the next. R² and RMSE compare
+   * the mean with the PCHIP values.
    */
   const fitSeries = (pchipAtRows: (number | null)[]) => {
     const values = pchipAtRows.filter((v): v is number => v !== null);
@@ -314,16 +319,23 @@ export async function runImputationPipeline(
     const trainIndices: number[] = [];
     const trainTargets: number[] = [];
     pchipAtRows.forEach((v, r) => { if (v !== null) { trainIndices.push(r); trainTargets.push((v - mean) / std); } });
-    // Matches Python: W_out = np.linalg.lstsq(X.T.dot(X) + lamb*I, X.T.dot(ty))
-    const elmResult = trainElm(trainIndices.map(r => allFeatures[r]), trainTargets, hiddenUnits, lambda);
+    const trainX = trainIndices.map(r => allFeatures[r]);
+    const trainSum = new Array(trainIndices.length).fill(0);
+    const predSum = new Array(allFeatures.length).fill(0);
+    for (let f = 0; f < fits; f++) {
+      // Matches Python: W_out = np.linalg.lstsq(X.T.dot(X) + lamb*I, X.T.dot(ty))
+      const elmResult = trainElm(trainX, trainTargets, hiddenUnits, lambda);
+      elmResult.trainPredictions.forEach((v, i) => { trainSum[i] += v; });
+      // Predict for ALL valid rows (Python: predict(all_tx_values, W_in, b, W_out))
+      predictElm(elmResult.model, allFeatures).forEach((v, i) => { predSum[i] += v; });
+    }
     let ssTot = 0, ssRes = 0;
     trainIndices.forEach((r, i) => {
       const actual = pchipAtRows[r] as number;
       ssTot += (actual - mean) ** 2;
-      ssRes += (actual - (elmResult.trainPredictions[i] * std + mean)) ** 2;
+      ssRes += (actual - ((trainSum[i] / fits) * std + mean)) ** 2;
     });
-    // Predict for ALL valid rows (Python: predict(all_tx_values, W_in, b, W_out)), back in the well's units
-    const pred = predictElm(elmResult.model, allFeatures).map(v => v * std + mean);
+    const pred = predSum.map(v => (v / fits) * std + mean);  // the mean of the fits, back in the well's units
     return { pred, r2: ssTot === 0 ? 0 : 1 - ssRes / ssTot, rmse: Math.sqrt(ssRes / trainIndices.length), nTrain: trainIndices.length };
   };
 
@@ -446,6 +458,7 @@ export async function runImputationPipeline(
     padSize,
     hiddenUnits,
     lambda,
+    fits,
   };
 
   const result: ImputationModelResult = {

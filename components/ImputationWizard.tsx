@@ -208,6 +208,7 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
       padSize: padSizeDays,
       hiddenUnits: 500,
       lambda: 100,
+      fits: 5,
     };
 
     try {
@@ -534,7 +535,7 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
                   <div><span className="text-slate-400">Min Samples:</span> {minSamples}</div>
                   <div><span className="text-slate-400">Gap Size:</span> {gapSizeDays} days</div>
                   <div><span className="text-slate-400">Pad Size:</span> {padSizeDays} days</div>
-                  <div title="Extreme learning machine: a fast single-layer neural network, trained here on each well's measurements and soil moisture to estimate water levels across long gaps"><span className="text-slate-400">Model:</span> ELM (500 units, λ=100)</div>
+                  <div title="Extreme learning machine: a fast single-layer neural network, trained here on each well's measurements and soil moisture to estimate water levels across long gaps. Each well's model is the mean of five, each with its own random weights."><span className="text-slate-400">Model:</span> ELM (500 units, λ=100, mean of 5 fits)</div>
                   <div><span className="text-slate-400">Wells:</span> {qualifiedWellCount} qualified</div>
                 </div>
               </div>
