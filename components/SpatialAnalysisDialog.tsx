@@ -61,8 +61,8 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
 
   // --- Spatial options (Step 2) ---
   const [spatialMethod, setSpatialMethod] = useState<SpatialMethod>('kriging');
-  const [variogramModel, setVariogramModel] = useState<VariogramModel>('gaussian');
-  const [nuggetEnabled, setNuggetEnabled] = useState(true);
+  const [variogramModel, setVariogramModel] = useState<VariogramModel>('exponential');
+  const [nuggetEnabled, setNuggetEnabled] = useState(false);
   const [rangeMode, setRangeMode] = useState<KrigingRangeMode>('auto');
   const [rangeValue, setRangeValue] = useState<number>(33);
   const [idwExponent, setIdwExponent] = useState(2);
