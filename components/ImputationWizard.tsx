@@ -11,6 +11,7 @@ import { isPipelineCancelled } from '../services/pipelineCancel';
 import { slugify } from '../utils/strings';
 import PchipPreviewCanvas from './PchipPreviewCanvas';
 import { featureDateRange, monthlyTimestamps, pchipMonthMask, MIN_TRAINING_MONTHS } from '../utils/imputationMonths';
+import { summarizeChecks } from '../utils/imputationSeries';
 
 interface ImputationWizardProps {
   aquifer: Aquifer;
@@ -575,6 +576,15 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
                 <h3 className="text-lg font-semibold text-slate-800">Imputation Complete</h3>
                 <div className="text-sm text-slate-600 text-center space-y-1">
                   <p>{Object.keys(result.wellMetrics).length} wells modeled &bull; {result.data.length} data rows</p>
+                  {(() => {
+                    const c = summarizeChecks(result.wellMetrics);
+                    return c && (
+                      <p>
+                        Hidden readings check: the model was closer than PCHIP at {c.modelCloser} of {c.wells} wells
+                        (median RMSE {c.medianModel.toFixed(2)} vs {c.medianPchip.toFixed(2)})
+                      </p>
+                    );
+                  })()}
                   <p>{result.params.startDate} to {result.params.endDate}</p>
                   <p>{result.aquiferName}</p>
                 </div>

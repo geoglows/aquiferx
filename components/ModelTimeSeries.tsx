@@ -7,6 +7,7 @@ import { ImputationModelResult, Well, Measurement } from '../types';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { smoothModelCombined } from '../utils/interpolation';
 import { niceDomain, yearTicks as yearTicksBetween } from '../utils/chartAxes';
+import { summarizeChecks } from '../utils/imputationSeries';
 
 interface ModelTimeSeriesProps {
   model: ImputationModelResult;
@@ -27,6 +28,8 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
   const [logExpanded, setLogExpanded] = useState(false);
 
   const wellMetrics = model.wellMetrics[well.id];
+  // A model made before the hold-out check has no check for any well; then the band says nothing about it
+  const modelHasChecks = useMemo(() => summarizeChecks(model.wellMetrics) !== null, [model.wellMetrics]);
 
   // Get original WTE measurements for this well
   const wteMeas = useMemo(() =>
@@ -44,7 +47,7 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
     if (!showCombined || !showSmooth || modelRows.length < 2) return null;
     const combinedRows = modelRows.map(row => ({
       date: row.date,
-      combined: row.pchip !== null ? row.pchip : row.model,
+      combined: row.combined,
     }));
     const { dates, values } = smoothModelCombined(combinedRows, smoothMonths);
     const map = new Map<number, number>();
@@ -61,7 +64,7 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
         return {
           date: ts,
           pchip: row.pchip,
-          elm: row.pchip !== null ? null : row.model,
+          elm: row.pchip !== null ? null : row.combined,  // the saved series: the model shifted to meet PCHIP
           smooth: smoothedData?.get(ts) ?? null,
         };
       });
@@ -164,6 +167,21 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">
               RMSE = {wellMetrics.rmse.toFixed(2)} {lengthUnit}
             </span>
+            {wellMetrics.check ? (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-medium cursor-help"
+                title={`The ${wellMetrics.check.n} readings from ${wellMetrics.check.from} to ${wellMetrics.check.to} were hidden, the well was fitted again without them, and the stretch was filled by the model and by the PCHIP curve across it. RMSE of each against the hidden readings.`}
+              >
+                Hidden readings: model {wellMetrics.check.model.toFixed(2)} · PCHIP {wellMetrics.check.pchip.toFixed(2)} {lengthUnit}
+              </span>
+            ) : modelHasChecks && (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-400 font-medium cursor-help"
+                title="This well has too few readings around the middle of its record to hide a stretch of them and still fit the model."
+              >
+                No hidden-reading check
+              </span>
+            )}
           </div>
         )}
       </div>

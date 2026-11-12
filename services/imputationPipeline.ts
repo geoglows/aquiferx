@@ -1,13 +1,16 @@
 import { saveFiles } from './dataStore';
 import {
   Aquifer, Region, Well, Measurement,
-  ImputationParams, ImputationDataRow, ImputationModelResult, ImputationWellMetrics,
+  ImputationParams, ImputationDataRow, ImputationModelResult, ImputationWellMetrics, ImputationCheck,
 } from '../types';
 import { fetchGldasFeatures, GldasFeatures } from './gldasFetch';
 import { trainElm, predictElm } from './elm';
 import { interpolatePCHIP } from '../utils/interpolation';
 import { slugify } from '../utils/strings';
 import { pchipMonthMask, MIN_TRAINING_MONTHS } from '../utils/imputationMonths';
+import {
+  shiftedSeries, checkWindow, summarizeChecks, CHECK_MIN_BEFORE, CHECK_MIN_AFTER, CHECK_MIN_SCORED,
+} from '../utils/imputationSeries';
 import { PipelineCancelledError } from './pipelineCancel';
 
 export interface ImputationPipelineInput {
@@ -251,29 +254,11 @@ export async function runImputationPipeline(
     featureStds.push(nRows > 1 ? Math.sqrt(sumSq / (nRows - 1)) || 1 : 1);
   }
 
-  // Per-well target z-score stats (from non-NaN PCHIP values in valid GLDAS rows)
-  // Matches Python: combined_df[well_names].mean() / .std() (per-column, skipna=True, ddof=1)
-  const wellTargetStats = new Map<string, { mean: number; std: number }>();
+  // PCHIP at the valid soil moisture rows, per well
   const wellPchipAtRows = new Map<string, (number | null)[]>();
-
   for (const { well } of activeWells) {
     const pchipFull = wellPchip.get(well.id);
-    if (!pchipFull) continue;
-
-    // Get PCHIP values at valid GLDAS rows
-    const pchipAtRows = validRowIndices.map(i => pchipFull[i]);
-    wellPchipAtRows.set(well.id, pchipAtRows);
-
-    const nonNull = pchipAtRows.filter((v): v is number => v !== null);
-    if (nonNull.length < 2) continue;
-
-    const mean = nonNull.reduce((a, b) => a + b, 0) / nonNull.length;
-    let sumSq = 0;
-    for (const v of nonNull) sumSq += (v - mean) ** 2;
-    // Sample std (ddof=1)
-    const std = Math.sqrt(sumSq / (nonNull.length - 1)) || 1;
-
-    wellTargetStats.set(well.id, { mean, std });
+    if (pchipFull) wellPchipAtRows.set(well.id, validRowIndices.map(i => pchipFull[i]));
   }
 
   // ===== PHASE D: Build feature matrix for ALL valid rows =====
@@ -311,101 +296,125 @@ export async function runImputationPipeline(
 
   // ===== PHASE E: Per-well ELM training and prediction =====
   // Matches Python: impute_data(norm_df, well_names, names) — trains ELM for EVERY well
+
+  /**
+   * Fit the ELM to a well's PCHIP values at the rows (null where there is none) and predict every row, in the well's units.
+   * The targets are z-scored with the mean and sample standard deviation of the well's own PCHIP values
+   * (Python: norm_df[well] = (combined_df[well] - mean) / std); R² and RMSE compare the fit with them.
+   */
+  const fitSeries = (pchipAtRows: (number | null)[]) => {
+    const values = pchipAtRows.filter((v): v is number => v !== null);
+    if (values.length < 3) return null;
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    const std = Math.sqrt(values.reduce((a, v) => a + (v - mean) ** 2, 0) / (values.length - 1)) || 1;
+    const trainIndices: number[] = [];
+    const trainTargets: number[] = [];
+    pchipAtRows.forEach((v, r) => { if (v !== null) { trainIndices.push(r); trainTargets.push((v - mean) / std); } });
+    // Matches Python: W_out = np.linalg.lstsq(X.T.dot(X) + lamb*I, X.T.dot(ty))
+    const elmResult = trainElm(trainIndices.map(r => allFeatures[r]), trainTargets, hiddenUnits, lambda);
+    let ssTot = 0, ssRes = 0;
+    trainIndices.forEach((r, i) => {
+      const actual = pchipAtRows[r] as number;
+      ssTot += (actual - mean) ** 2;
+      ssRes += (actual - (elmResult.trainPredictions[i] * std + mean)) ** 2;
+    });
+    // Predict for ALL valid rows (Python: predict(all_tx_values, W_in, b, W_out)), back in the well's units
+    const pred = predictElm(elmResult.model, allFeatures).map(v => v * std + mean);
+    return { pred, r2: ssTot === 0 ? 0 : 1 - ssRes / ssTot, rmse: Math.sqrt(ssRes / trainIndices.length), nTrain: trainIndices.length };
+  };
+
+  const rowTs = validRowIndices.map(i => monthlyTimestamps[i]);
+  const isoDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const rmseOf = (errors: number[]) => Math.sqrt(errors.reduce((a, e) => a + e * e, 0) / errors.length);
+
+  /**
+   * The hold-out check: hide a stretch from the middle of the well's record (checkWindow), fit the well again on the other
+   * readings, and score the hidden readings that fall between two months the model fills, against the shifted model and
+   * against the PCHIP curve through the other readings. Null when the well has too few readings for it.
+   */
+  const runCheck = (sorted: { ts: number; value: number }[]): ImputationCheck | null => {
+    const { from, to } = checkWindow(sorted.map(m => m.ts), gapSizeMs, padSizeMs);
+    const kept = sorted.filter(m => m.ts <= from || m.ts >= to);
+    const hidden = sorted.filter(m => m.ts > from && m.ts < to);
+    if (kept.filter(m => m.ts <= from).length < CHECK_MIN_BEFORE || kept.filter(m => m.ts >= to).length < CHECK_MIN_AFTER
+      || hidden.length < CHECK_MIN_SCORED) return null;
+    const keptTs = kept.map(m => m.ts), keptValues = kept.map(m => m.value);
+    const monthIdx = pchipMonthMask(keptTs, monthlyTimestamps, gapSizeMs, padSizeMs).flatMap((m, i) => (m ? [i] : []));
+    const full: (number | null)[] = new Array(monthlyDates.length).fill(null);
+    if (monthIdx.length > 0) {
+      const v = interpolatePCHIP(keptTs, keptValues, monthIdx.map(i => monthlyTimestamps[i]));
+      monthIdx.forEach((k, j) => { full[k] = v[j]; });
+    }
+    const atRows = validRowIndices.map(i => full[i]);
+    if (atRows.filter(v => v !== null).length < minMonths) return null;
+    const fit = fitSeries(atRows);
+    if (!fit) return null;
+    const series = shiftedSeries(atRows, fit.pred);
+    const scored: { ts: number; value: number; model: number }[] = [];
+    for (const h of hidden) {
+      let lo = 0, hi = rowTs.length;  // k = the last row at or before the reading
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (rowTs[mid] <= h.ts) lo = mid + 1; else hi = mid; }
+      const k = lo - 1;
+      if (k < 0 || k >= rowTs.length - 1 || atRows[k] !== null || atRows[k + 1] !== null) continue;
+      const f = (h.ts - rowTs[k]) / (rowTs[k + 1] - rowTs[k]);
+      scored.push({ ts: h.ts, value: h.value, model: series[k] + f * (series[k + 1] - series[k]) });
+    }
+    if (scored.length < CHECK_MIN_SCORED) return null;
+    const pchipAt = interpolatePCHIP(keptTs, keptValues, scored.map(m => m.ts));
+    return {
+      from: isoDate(from), to: isoDate(to), n: scored.length,
+      model: rmseOf(scored.map(m => m.model - m.value)),
+      pchip: rmseOf(scored.map((m, i) => pchipAt[i] - m.value)),
+    };
+  };
+
   const allDataRows: ImputationDataRow[] = [];
   const wellMetrics: Record<string, ImputationWellMetrics> = {};
 
   for (let wi = 0; wi < activeWells.length; wi++) {
-    const { well } = activeWells[wi];
+    const { well, sorted } = activeWells[wi];
     const pct = 20 + (wi / activeWells.length) * 70;
     onProgress(`ELM training well ${wi + 1}/${activeWells.length}...`, pct);
-    // Yield before each well's SVD solve (~0.5-2s each) so progress text
-    // can repaint and Cancel takes effect between wells
+    // Yield before each well's solve so progress text can repaint and Cancel takes effect between wells
     await tick();
 
-    const targetStats = wellTargetStats.get(well.id);
     const pchipAtRows = wellPchipAtRows.get(well.id);
-    if (!targetStats || !pchipAtRows) {
+    if (!pchipAtRows || pchipAtRows.filter(v => v !== null).length < 3) {
       onLog(`Well ${well.name}: skipped (too few months of record with soil moisture)`);
       continue;
     }
 
-    // Z-score the PCHIP values for this well
-    // Matches Python: norm_df[well] = (combined_df[well] - mean) / std
-    const zPchip: (number | null)[] = pchipAtRows.map(v =>
-      v !== null ? (v - targetStats.mean) / targetStats.std : null
-    );
-
-    // Training rows: where z-scored PCHIP is non-NaN
-    // Matches Python: train_nona_df = comb_df.dropna(subset=[well])
-    const trainIndices: number[] = [];
-    const trainTargets: number[] = [];
-    for (let r = 0; r < nRows; r++) {
-      if (zPchip[r] !== null) {
-        trainIndices.push(r);
-        trainTargets.push(zPchip[r]!);
-      }
-    }
-
-    if (trainIndices.length < 3) {
-      onLog(`Well ${well.name}: too few training points (${trainIndices.length}), skipping`);
-      continue;
-    }
-
-    // Training feature matrix (subset of allFeatures)
-    // Matches Python: tx = train_nona_df[names].values
-    const trainX = trainIndices.map(r => allFeatures[r]);
-
     try {
-      // Train ELM on pre-normalized data
-      // Matches Python: W_out = np.linalg.lstsq(X.T.dot(X) + lamb*I, X.T.dot(ty))
-      const elmResult = trainElm(trainX, trainTargets, hiddenUnits, lambda);
+      const fit = fitSeries(pchipAtRows)!;
+      const combined = shiftedSeries(pchipAtRows, fit.pred);
+      const check = runCheck(sorted);
+      wellMetrics[well.id] = check ? { r2: fit.r2, rmse: fit.rmse, check } : { r2: fit.r2, rmse: fit.rmse };
+      onLog(`Well ${well.name}: ELM R²=${fit.r2.toFixed(4)}, RMSE=${fit.rmse.toFixed(2)} (${fit.nTrain} training pts); `
+        + (check ? `check, ${check.n} readings hidden from ${check.from} to ${check.to}: model RMSE ${check.model.toFixed(2)}, PCHIP ${check.pchip.toFixed(2)}`
+          : 'no check (too few readings)'));
 
-      // Compute R²/RMSE on original (denormalized) scale
-      const trainPredDenorm = elmResult.trainPredictions.map(v => v * targetStats.std + targetStats.mean);
-      const trainTargetsDenorm = trainTargets.map(v => v * targetStats.std + targetStats.mean);
-      const trainMean = trainTargetsDenorm.reduce((a, b) => a + b, 0) / trainTargetsDenorm.length;
-      let ssTot = 0, ssRes = 0;
-      for (let i = 0; i < trainTargetsDenorm.length; i++) {
-        ssTot += (trainTargetsDenorm[i] - trainMean) ** 2;
-        ssRes += (trainTargetsDenorm[i] - trainPredDenorm[i]) ** 2;
-      }
-      const r2 = ssTot === 0 ? 0 : 1 - ssRes / ssTot;
-      const rmse = Math.sqrt(ssRes / trainTargetsDenorm.length);
-
-      wellMetrics[well.id] = { r2, rmse };
-      onLog(`Well ${well.name}: ELM R²=${r2.toFixed(4)}, RMSE=${rmse.toFixed(2)} (${trainIndices.length} training pts)`);
-
-      // Predict for ALL valid rows (full extrapolation)
-      // Matches Python: predict(all_tx_values, W_in, b, W_out)
-      const allPredNorm = predictElm(elmResult.model, allFeatures);
-
-      // Denormalize predictions
-      // Matches Python: reverse_zscore_data(imputed_norm_df, ref_df)
-      // = imputed * ref_df.std() + ref_df.mean()
-      const allPredDenorm = allPredNorm.map(v => v * targetStats.std + targetStats.mean);
-
-      // Assemble data rows: PCHIP where available, else ELM
-      const pchipFull = wellPchip.get(well.id)!;
+      // Rows: PCHIP where available, else the model shifted to meet it
       for (let r = 0; r < nRows; r++) {
-        const monthlyIdx = validRowIndices[r];
-        const pchipVal = pchipFull[monthlyIdx];
-        const modelVal = allPredDenorm[r];
-        const combined = pchipVal !== null ? pchipVal : modelVal;
-
         allDataRows.push({
           well_id: well.id,
-          date: monthlyDates[monthlyIdx],
-          model: modelVal,
-          pchip: pchipVal,
-          combined,
+          date: monthlyDates[validRowIndices[r]],
+          model: fit.pred[r],
+          pchip: pchipAtRows[r],
+          combined: combined[r],
         });
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       onLog(`Well ${well.name}: ELM training failed: ${msg}`);
     }
-
   }
+
+  const checks = summarizeChecks(wellMetrics);
+  onLog(checks
+    ? `Check: ${checks.wells} of ${Object.keys(wellMetrics).length} wells; the model was closer than PCHIP to the hidden readings at `
+      + `${checks.modelCloser} (${Math.round((100 * checks.modelCloser) / checks.wells)}%); median RMSE model ${checks.medianModel.toFixed(2)}, `
+      + `PCHIP ${checks.medianPchip.toFixed(2)}`
+    : 'Check: no well had enough readings to hide a stretch');
 
   // ===== Step 5: Save result (90-100%) =====
   onProgress('Saving model...', 90);

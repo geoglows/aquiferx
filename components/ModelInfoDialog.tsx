@@ -1,6 +1,7 @@
 import React from 'react';
 import { X } from 'lucide-react';
 import { ImputationModelMeta, ImputationWellMetrics } from '../types';
+import { summarizeChecks, CHECK_YEARS } from '../utils/imputationSeries';
 
 interface ModelInfoDialogProps {
   meta: ImputationModelMeta;
@@ -18,6 +19,7 @@ const ModelInfoDialog: React.FC<ModelInfoDialogProps> = ({ meta, onClose }) => {
   const rmseValues = metrics.map(w => w.rmse);
   const avgR2 = r2Values.length > 0 ? (r2Values.reduce((a, b) => a + b, 0) / r2Values.length) : null;
   const avgRmse = rmseValues.length > 0 ? (rmseValues.reduce((a, b) => a + b, 0) / rmseValues.length) : null;
+  const checks = summarizeChecks(meta.wellMetrics);
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40">
@@ -68,6 +70,27 @@ const ModelInfoDialog: React.FC<ModelInfoDialogProps> = ({ meta, onClose }) => {
                 <div className={rowCls}><span className={labelCls}>Avg RMSE</span><span className={valueCls}>{avgRmse.toFixed(4)}</span></div>
               )}
             </div>
+          </section>
+
+          {/* Hold-out check */}
+          <section>
+            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-2">Hidden Readings Check</h3>
+            {checks ? (
+              <>
+                <p className="text-slate-500 mb-2 leading-relaxed">
+                  {CHECK_YEARS} years from the middle of each well's record were hidden, filled by the model and by the PCHIP
+                  curve, and compared with the hidden readings.
+                </p>
+                <div className="space-y-0">
+                  <div className={rowCls}><span className={labelCls}>Wells Checked</span><span className={valueCls}>{checks.wells} of {wellCount}</span></div>
+                  <div className={rowCls}><span className={labelCls}>Model Closer</span><span className={valueCls}>{checks.modelCloser} wells ({Math.round((100 * checks.modelCloser) / checks.wells)}%)</span></div>
+                  <div className={rowCls}><span className={labelCls}>Median RMSE, Model</span><span className={valueCls}>{checks.medianModel.toFixed(2)}</span></div>
+                  <div className={rowCls}><span className={labelCls}>Median RMSE, PCHIP</span><span className={valueCls}>{checks.medianPchip.toFixed(2)}</span></div>
+                </div>
+              </>
+            ) : (
+              <p className="text-slate-500 leading-relaxed">None: the model was made before the check, or no well had enough readings for it.</p>
+            )}
           </section>
         </div>
 

@@ -991,8 +991,7 @@ const App: React.FC = () => {
 
       const headers = 'Date,PCHIP,ELM,Combined';
       const csvRows = modelRows.map(r => {
-        const combined = r.pchip != null ? r.pchip : r.model;
-        return `${r.date},${r.pchip ?? ''},${r.model ?? ''},${combined ?? ''}`;
+        return `${r.date},${r.pchip ?? ''},${r.model ?? ''},${r.combined ?? ''}`;
       });
 
       const csvContent = [headers, ...csvRows].join('\n');

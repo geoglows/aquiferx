@@ -258,9 +258,23 @@ export interface ImputationParams {
   lambda: number;
 }
 
+/**
+ * A well's hold-out check: the readings between `from` and `to` were left out, the well was fitted again on the rest, and
+ * the stretch was filled both by the model (shifted, as saved) and by the PCHIP curve across it. `model` and `pchip` are
+ * the RMSE of each against the `n` hidden readings scored, in the region's length unit.
+ */
+export interface ImputationCheck {
+  from: string;
+  to: string;
+  n: number;
+  model: number;
+  pchip: number;
+}
+
 export interface ImputationWellMetrics {
   r2: number;
   rmse: number;
+  check?: ImputationCheck;  // absent when the well has too few readings to hide a stretch, and in models made before the check
 }
 
 export interface ImputationDataRow {
@@ -268,7 +282,8 @@ export interface ImputationDataRow {
   date: string;          // ISO date, monthly
   model: number | null;  // ELM prediction
   pchip: number | null;  // PCHIP interpolation
-  combined: number;      // resolved: pchip where available, else model
+  combined: number;      // the saved series: pchip where available, else the model shifted to meet pchip (models made before
+                         // the shift hold the model unshifted)
 }
 
 export interface ImputationModelResult {
