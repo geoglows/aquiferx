@@ -337,7 +337,7 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
                       wteMeasurements={wteMeasurements}
                       startTs={startTs}
                       endTs={endTs}
-                      gldasRange={modelRange ? { min: new Date(modelRange.min).getTime(), max: new Date(modelRange.max).getTime() } : undefined}
+                      shadeRange={modelRange ? { min: new Date(modelRange.min).getTime(), max: new Date(modelRange.max).getTime() } : undefined}
                     />
                   </div>
                 </div>

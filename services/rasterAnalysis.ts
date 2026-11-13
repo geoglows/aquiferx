@@ -278,6 +278,21 @@ export async function runRasterAnalysis(
         }
       }
 
+      // Hold: the method's value at the first reading before it, and at the last reading after it
+      const holdMs = (temporal.holdYears ?? 0) * 365.25 * 24 * 60 * 60 * 1000;
+      if (holdMs > 0) {
+        const ends = [minT, maxT];
+        const [atFirst, atLast] = temporal.method === 'moving-average' ? kernelSmooth(xValues, yValues, ends, temporal.maWindow)
+          : temporal.method === 'linear' ? interpolateLinear(xValues, yValues, ends)
+          : interpolatePCHIP(xValues, yValues, ends);
+        interpValues = interpValues.map((v, i) => {
+          const t = intervalTimestamps[i];
+          if (t < minT && t >= minT - holdMs) return atFirst;
+          if (t > maxT && t <= maxT + holdMs) return atLast;
+          return v;
+        });
+      }
+
       wellInterp.set(wellId, { well, values: interpValues });
     }
   }

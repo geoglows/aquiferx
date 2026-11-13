@@ -675,6 +675,7 @@ const App: React.FC = () => {
     const dataType = rasterResult.dataType;
     const minObs = opts?.temporal.minObservations ?? 2;
     const minSpanYears = opts?.temporal.minTimeSpan ?? 0;
+    const holdMs = (opts?.temporal.holdYears ?? 0) * 365.25 * 24 * 60 * 60 * 1000;
 
     // Single pass over measurements (was O(wells x measurements), which
     // froze the tab when toggling Active Wells on large datasets)
@@ -700,7 +701,7 @@ const App: React.FC = () => {
       if (!entry || entry.count < Math.max(2, minObs)) continue;
       const spanYears = (entry.maxT - entry.minT) / (365.25 * 24 * 60 * 60 * 1000);
       if (spanYears < minSpanYears) continue;
-      ranges.set(w.id, [entry.minT, entry.maxT]);
+      ranges.set(w.id, [entry.minT - holdMs, entry.maxT + holdMs]);
     }
     return ranges;
   }, [showActiveWells, rasterResult, filteredWells, measurements]);

@@ -12,13 +12,16 @@ const PREVIEW_COLORS = [
 interface PchipPreviewCanvasProps {
   wells: Well[];
   wteMeasurements: Measurement[];
+  /** Wells drawn in colour (the rest in grey); all in colour when absent */
+  highlightIds?: Set<string>;
   startTs?: number;
   endTs?: number;
-  gldasRange?: { min: number; max: number };
+  /** A stretch of time shaded behind the lines, e.g. a model's months */
+  shadeRange?: { min: number; max: number };
 }
 
 const PchipPreviewCanvas: React.FC<PchipPreviewCanvasProps> = ({
-  wells, wteMeasurements, startTs, endTs, gldasRange,
+  wells, wteMeasurements, highlightIds, startTs, endTs, shadeRange,
 }) => {
   const theme = useTheme();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -32,7 +35,7 @@ const PchipPreviewCanvas: React.FC<PchipPreviewCanvasProps> = ({
       byWell.get(m.wellId)!.push(m);
     }
 
-    const series: { points: [number, number][]; color: string }[] = [];
+    const series: { points: [number, number][]; color: string | null }[] = [];
     let colorIdx = 0;
 
     for (const [wellId, meas] of byWell) {
@@ -57,12 +60,17 @@ const PchipPreviewCanvas: React.FC<PchipPreviewCanvasProps> = ({
       const interpolatedY = interpolatePCHIP(xValues, yValues, targetX);
       const points: [number, number][] = targetX.map((x, i) => [x, interpolatedY[i]]);
 
-      series.push({ points, color: PREVIEW_COLORS[colorIdx % PREVIEW_COLORS.length] });
-      colorIdx++;
+      if (highlightIds && !highlightIds.has(wellId)) {
+        series.push({ points, color: null });
+      } else {
+        series.push({ points, color: PREVIEW_COLORS[colorIdx % PREVIEW_COLORS.length] });
+        colorIdx++;
+      }
     }
 
-    return series;
-  }, [wteMeasurements]);
+    // Grey lines first, so the coloured ones lie on top
+    return [...series.filter(s => s.color === null), ...series.filter(s => s.color !== null)];
+  }, [wteMeasurements, highlightIds]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -98,10 +106,10 @@ const PchipPreviewCanvas: React.FC<PchipPreviewCanvasProps> = ({
     }
     if (xMin >= xMax || yMin >= yMax) return;
 
-    // Extend x-axis to the union of data span and GLDAS span so output-date markers are visible
-    if (gldasRange) {
-      if (gldasRange.min < xMin) xMin = gldasRange.min;
-      if (gldasRange.max > xMax) xMax = gldasRange.max;
+    // Extend x-axis to the shaded stretch so its markers are visible
+    if (shadeRange) {
+      if (shadeRange.min < xMin) xMin = shadeRange.min;
+      if (shadeRange.max > xMax) xMax = shadeRange.max;
     }
 
     // Add 5% Y padding
@@ -116,10 +124,10 @@ const PchipPreviewCanvas: React.FC<PchipPreviewCanvasProps> = ({
     ctx.fillStyle = cssVar('--bg');
     ctx.fillRect(0, 0, W, H);
 
-    // GLDAS range shading
-    if (gldasRange) {
-      const gx1 = Math.max(margin.left, toX(gldasRange.min));
-      const gx2 = Math.min(W - margin.right, toX(gldasRange.max));
+    // Shaded stretch
+    if (shadeRange) {
+      const gx1 = Math.max(margin.left, toX(shadeRange.min));
+      const gx2 = Math.min(W - margin.right, toX(shadeRange.max));
       if (gx2 > gx1) {
         ctx.fillStyle = 'rgba(59, 130, 246, 0.07)';
         ctx.fillRect(gx1, margin.top, gx2 - gx1, plotH);
@@ -163,9 +171,9 @@ const PchipPreviewCanvas: React.FC<PchipPreviewCanvasProps> = ({
 
     // Draw wells
     for (const s of wellSeries) {
-      ctx.strokeStyle = s.color;
+      ctx.strokeStyle = s.color ?? '#94a3b8';
       ctx.lineWidth = 0.8;
-      ctx.globalAlpha = 0.6;
+      ctx.globalAlpha = s.color ? 0.6 : 0.3;
       ctx.beginPath();
       for (let i = 0; i < s.points.length; i++) {
         const px = toX(s.points[i][0]);
@@ -199,7 +207,7 @@ const PchipPreviewCanvas: React.FC<PchipPreviewCanvasProps> = ({
       const py = margin.top + (i / 4) * plotH;
       ctx.fillText(val.toFixed(0), margin.left - 4, py + 3);
     }
-  }, [wellSeries, startTs, endTs, gldasRange, theme]);
+  }, [wellSeries, startTs, endTs, shadeRange, theme]);
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => draw());

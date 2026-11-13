@@ -136,6 +136,9 @@ export interface TemporalOptions {
   interval: '3months' | '6months' | '1year';
   minObservations: number;
   minTimeSpan: number;
+  /** Measurements only: before a well's first reading its value there is used, and after its last reading the value at
+   *  the last one, up to this many years. Absent or 0: a well has values only from its first reading to its last. */
+  holdYears?: number;
   modelCode?: string;
   modelFilePath?: string;
 }

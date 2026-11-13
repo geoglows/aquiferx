@@ -44,9 +44,21 @@ const RasterInfoDialog: React.FC<RasterInfoDialogProps> = ({ meta, onClose }) =>
               <div className="space-y-0">
                 <div className={rowCls}><span className={labelCls}>Dates</span><span className={valueCls}>{opts.temporal.startDate} to {opts.temporal.endDate}</span></div>
                 <div className={rowCls}><span className={labelCls}>Interval</span><span className={valueCls}>{opts.temporal.interval}</span></div>
-                <div className={rowCls}><span className={labelCls}>Method</span><span className={valueCls}>{opts.temporal.method === 'pchip' ? 'PCHIP' : opts.temporal.method === 'linear' ? 'Linear' : `Moving Average (${opts.temporal.maWindow}mo)`}</span></div>
-                <div className={rowCls}><span className={labelCls}>Min Observations</span><span className={valueCls}>{opts.temporal.minObservations}</span></div>
-                <div className={rowCls}><span className={labelCls}>Min Time Span</span><span className={valueCls}>{opts.temporal.minTimeSpan} years</span></div>
+                <div className={rowCls}><span className={labelCls}>Data</span><span className={valueCls}>{opts.temporal.modelCode ? `Imputed Data (${opts.temporal.modelCode})` : 'Measurements'}</span></div>
+                <div className={rowCls}><span className={labelCls}>Method</span><span className={valueCls}>{
+                  opts.temporal.method === 'pchip' ? 'PCHIP'
+                    : opts.temporal.method === 'linear' ? 'Linear'
+                    : opts.temporal.method === 'model-direct' ? 'Direct'
+                    : opts.temporal.method === 'model' ? 'PCHIP of the monthly values'
+                    : `Moving Average (${opts.temporal.maWindow} months)`
+                }</span></div>
+                {!opts.temporal.modelCode && (
+                  <>
+                    <div className={rowCls}><span className={labelCls}>Min Observations</span><span className={valueCls}>{opts.temporal.minObservations}</span></div>
+                    <div className={rowCls}><span className={labelCls}>Min Time Span</span><span className={valueCls}>{opts.temporal.minTimeSpan} years</span></div>
+                    <div className={rowCls}><span className={labelCls}>First and last readings</span><span className={valueCls}>{opts.temporal.holdYears ? `held up to ${opts.temporal.holdYears} years` : 'not held'}</span></div>
+                  </>
+                )}
               </div>
             ) : (
               <div className="space-y-0">

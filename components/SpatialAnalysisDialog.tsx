@@ -1,8 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { X, ChevronLeft, ChevronRight, Play, Loader2, CheckCircle2, AlertTriangle, Download } from 'lucide-react';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ReferenceLine, Cell
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import {
   Aquifer, Region, Well, Measurement, DataType, RasterAnalysisResult,
@@ -34,6 +33,11 @@ interface SpatialAnalysisDialogProps {
   availableModels?: ImputationModelMeta[];
 }
 
+const MS_PER_YEAR = 365.25 * 86400000;
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const INTERVAL_LABELS = { '1year': '1 year', '6months': '6 months', '3months': '3 months' } as const;
+const pct = (x: number) => `${Math.round(100 * x)}%`;
+
 // 2 is shown only when the aquifer has wells at one place
 type Step = 1 | 2 | 3 | 4 | 'running' | 'complete';
 
@@ -53,11 +57,14 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
   const [interval, setInterval] = useState<'3months' | '6months' | '1year'>('1year');
   const [minObs, setMinObs] = useState(5);
   const [minSpanYears, setMinSpanYears] = useState(5);
-  const [smoothingMethod, setSmoothingMethod] = useState<'pchip' | 'linear' | 'moving-average' | 'model' | 'model-direct' | 'model-mavg'>('pchip');
+  const [smoothingMethod, setSmoothingMethod] = useState<'pchip' | 'moving-average' | 'model-direct' | 'model-mavg'>('pchip');
   const [smoothingMonths, setSmoothingMonths] = useState(12);
   const [selectedModelCode, setSelectedModelCode] = useState<string>('');
   const [selectedModelFilePath, setSelectedModelFilePath] = useState<string>('');
   const [dataSource, setDataSource] = useState<'raw' | 'model'>('raw');
+  // Hold each well's first reading before its record and its last reading after it, up to holdYears
+  const [hold, setHold] = useState(dataType.code === 'wte');
+  const [holdYears, setHoldYears] = useState(10);
 
   // --- Spatial options (Step 2) ---
   const [spatialMethod, setSpatialMethod] = useState<SpatialMethod>('kriging');
@@ -111,95 +118,76 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
     }
   }, [wteMeasurements]);
 
-  // Data density analysis: 6-month bins
-  const { densityData, defaultStartDate, defaultEndDate } = useMemo(() => {
-    const byWellDate = new Map<string, Set<string>>();
-    for (const m of wteMeasurements) {
-      if (!byWellDate.has(m.wellId)) byWellDate.set(m.wellId, new Set());
-      byWellDate.get(m.wellId)!.add(m.date);
-    }
-
-    // Find overall date range
-    let allMin = Infinity, allMax = -Infinity;
+  // Each well's readings, sorted by time
+  const readings = useMemo(() => {
+    const out = new Map<string, Reading[]>();
     for (const m of wteMeasurements) {
       const t = new Date(m.date).getTime();
-      if (!isNaN(t)) {
-        if (t < allMin) allMin = t;
-        if (t > allMax) allMax = t;
-      }
+      if (isNaN(t) || !Number.isFinite(m.value)) continue;
+      let list = out.get(m.wellId);
+      if (!list) out.set(m.wellId, list = []);
+      list.push({ t, v: m.value });
     }
-
-    if (allMin === Infinity) {
-      return { densityData: [], defaultStartDate: '', defaultEndDate: '' };
-    }
-
-    const minYear = new Date(allMin).getFullYear();
-    const maxYear = new Date(allMax).getFullYear();
-    const minDateStr = `${minYear}-01-01`;
-    const maxDateStr = `${maxYear + 1}-01-01`;
-
-    // Build bins
-    const bins: { label: string; start: Date; end: Date }[] = [];
-    for (let y = minYear; y <= maxYear; y++) {
-      bins.push({ label: `${y} H1`, start: new Date(y, 0, 1), end: new Date(y, 6, 1) });
-      bins.push({ label: `${y} H2`, start: new Date(y, 6, 1), end: new Date(y + 1, 0, 1) });
-    }
-
-    // Count wells per bin
-    const densityData = bins.map(bin => {
-      const wellsInBin = new Set<string>();
-      for (const [wellId, dates] of byWellDate) {
-        for (const d of dates) {
-          const t = new Date(d);
-          if (t >= bin.start && t < bin.end) {
-            wellsInBin.add(wellId);
-            break;
-          }
-        }
-      }
-      return { label: bin.label, count: wellsInBin.size, startTs: bin.start.getTime() };
-    }).filter(b => b.startTs >= allMin - 365 * 86400000 && b.startTs <= allMax + 365 * 86400000);
-
-    // Compute per-well time series span [minDate, maxDate]
-    const wellSpans: { min: number; max: number }[] = [];
-    for (const [, dates] of byWellDate) {
-      let wMin = Infinity, wMax = -Infinity;
-      for (const d of dates) {
-        const t = new Date(d).getTime();
-        if (!isNaN(t)) { if (t < wMin) wMin = t; if (t > wMax) wMax = t; }
-      }
-      if (wMin < Infinity) wellSpans.push({ min: wMin, max: wMax });
-    }
-
-    // Find default start/end: first/last Jan 1 where ≥5% of wells (min 10) have spanning coverage
-    const threshold = Math.max(10, Math.ceil(wellSpans.length * 0.05));
-    let defStartYear = -1, defEndYear = -1;
-    for (let y = minYear; y <= maxYear; y++) {
-      const jan1 = new Date(y, 0, 1).getTime();
-      let spanning = 0;
-      for (const span of wellSpans) {
-        if (span.min <= jan1 && span.max >= jan1) spanning++;
-      }
-      if (spanning >= threshold) {
-        if (defStartYear === -1) defStartYear = y;
-        defEndYear = y;
-      }
-    }
-
-    let defStart: string, defEnd: string;
-    if (defStartYear >= 0) {
-      defStart = `${defStartYear}-01-01`;
-      defEnd = `${defEndYear}-01-01`;
-    } else {
-      defStart = minDateStr;
-      defEnd = maxDateStr;
-    }
-
-    return { densityData, defaultStartDate: defStart, defaultEndDate: defEnd };
+    for (const list of out.values()) list.sort((a, b) => a.t - b.t);
+    return out;
   }, [wteMeasurements]);
 
-  const [startDate, setStartDate] = useState(defaultStartDate);
-  const [endDate, setEndDate] = useState(defaultEndDate);
+  // Wells with at least 2 readings (drawn on the preview)
+  const usableWellCount = useMemo(() => [...readings.values()].filter(l => l.length >= 2).length, [readings]);
+
+  // The wells that go on a map of measurements: at least minObs readings over at least minSpanYears, as the pipeline counts them
+  const qualifiedIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const [id, list] of readings) {
+      if (list.length < Math.max(2, minObs)) continue;
+      if ((list[list.length - 1].t - list[0].t) / MS_PER_YEAR >= minSpanYears) ids.add(id);
+    }
+    return ids;
+  }, [readings, minObs, minSpanYears]);
+  const qualifiedWellCount = qualifiedIds.size;
+  const omittedWellCount = readings.size - qualifiedWellCount;
+
+  // Map dates fall on the 1st of one month each year (a 6- or 3-month interval starts from it). The month starts as the
+  // one with the most readings of the wells that go on the map.
+  const monthShares = useMemo(() => {
+    const counts = new Array(12).fill(0);
+    let n = 0;
+    for (const [id, list] of readings) {
+      if (!qualifiedIds.has(id)) continue;
+      for (const r of list) { counts[new Date(r.t).getUTCMonth()]++; n++; }
+    }
+    return n > 0 ? counts.map(c => c / n) : null;
+  }, [readings, qualifiedIds]);
+  const busiestMonth = monthShares ? monthShares.indexOf(Math.max(...monthShares)) + 1 : 1;
+  const [monthChoice, setMonthChoice] = useState<number | null>(null);   // null: the busiest month
+  const month = monthChoice ?? busiestMonth;
+
+  // The Start and End years the dialog fills in: the first and last year in which at least 1 in 5 of the wells that go on
+  // the map (and at least 10) have a reading before that year's map date and one after it. Held years do not count.
+  const defaultYears = useMemo(() => {
+    const spans: [number, number][] = [];
+    for (const [id, list] of readings) if (qualifiedIds.has(id)) spans.push([list[0].t, list[list.length - 1].t]);
+    const pool = spans.length > 0 ? spans
+      : [...readings.values()].filter(l => l.length > 0).map(l => [l[0].t, l[l.length - 1].t] as [number, number]);
+    if (pool.length === 0) return null;
+    let lo = Infinity, hi = -Infinity;
+    for (const [a, b] of pool) { if (a < lo) lo = a; if (b > hi) hi = b; }
+    const y0 = new Date(lo).getUTCFullYear(), y1 = new Date(hi).getUTCFullYear();
+    const need = Math.max(10, Math.ceil(spans.length * 0.2));
+    let first: number | null = null, last: number | null = null;
+    if (spans.length > 0) {
+      for (let y = y0; y <= y1; y++) {
+        const t = Date.UTC(y, month - 1, 1);
+        let k = 0;
+        for (const [a, b] of spans) if (a <= t && t <= b) k++;
+        if (k >= need) { if (first === null) first = y; last = y; }
+      }
+    }
+    return first !== null && last !== null ? { first, last } : { first: y0, last: y1 };
+  }, [readings, qualifiedIds, month]);
+  // Years typed by the user; null: the default
+  const [startYearChoice, setStartYearChoice] = useState<number | null>(null);
+  const [endYearChoice, setEndYearChoice] = useState<number | null>(null);
 
   // Model date range for clamping
   const modelDateRange = useMemo(() => {
@@ -209,10 +197,29 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
     return { min: m.params.startDate, max: m.params.endDate };
   }, [dataSource, selectedModelCode, availableModels]);
 
+  // With a model, the years whose map date lies inside the model's months
+  const mm = String(month).padStart(2, '0');
+  const yearBounds = useMemo(() => {
+    if (!modelDateRange) return null;
+    let lo = parseInt(modelDateRange.min);
+    if (`${lo}-${mm}-01` < modelDateRange.min) lo++;
+    let hi = parseInt(modelDateRange.max);
+    if (`${hi}-${mm}-01` > modelDateRange.max) hi--;
+    return { lo, hi };
+  }, [modelDateRange, mm]);
+  const clampYear = (y: number) => (yearBounds ? Math.min(yearBounds.hi, Math.max(yearBounds.lo, y)) : y);
+  const startYear = defaultYears ? clampYear(startYearChoice ?? defaultYears.first) : null;
+  const endYear = defaultYears ? clampYear(endYearChoice ?? defaultYears.last) : null;
+  const startDate = startYear != null ? `${startYear}-${mm}-01` : '';
+  const endDate = endYear != null ? `${endYear}-${mm}-01` : '';
+  const stepMonths = interval === '1year' ? 12 : interval === '6months' ? 6 : 3;
+  const mapCount = startYear != null && endYear != null && endYear >= startYear
+    ? Math.floor(((endYear - startYear) * 12) / stepMonths) + 1 : 0;
+
   // Show data source toggle only when WTE + models exist
   const showDataSource = dataType.code === 'wte' && availableModels && availableModels.length > 0;
 
-  // Handle switching between raw and model data source
+  // Handle switching between measurements and model data source
   const handleDataSourceChange = useCallback((source: 'raw' | 'model') => {
     setDataSource(source);
     if (source === 'model') {
@@ -221,38 +228,25 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
         const m = availableModels[0];
         setSelectedModelCode(m.code);
         setSelectedModelFilePath(m.filePath);
-        if (m.params) {
-          setStartDate(m.params.startDate);
-          setEndDate(m.params.endDate);
-        }
       }
       setSmoothingMethod('model-direct');
     } else {
       setSmoothingMethod('pchip');
-      setStartDate(defaultStartDate);
-      setEndDate(defaultEndDate);
     }
-  }, [availableModels, defaultStartDate, defaultEndDate]);
+  }, [availableModels]);
 
-  // When model selection changes, re-clamp dates
+  // The years are clamped to the chosen model's months as they are read
   const handleModelChange = useCallback((code: string) => {
     setSelectedModelCode(code);
     const m = availableModels?.find(mm => mm.code === code);
-    if (m) {
-      setSelectedModelFilePath(m.filePath);
-      if (m.params) {
-        // Clamp dates to new model range
-        setStartDate(prev => prev < m.params.startDate ? m.params.startDate : prev > m.params.endDate ? m.params.endDate : prev);
-        setEndDate(prev => prev > m.params.endDate ? m.params.endDate : prev < m.params.startDate ? m.params.startDate : prev);
-      }
-    }
+    if (m) setSelectedModelFilePath(m.filePath);
   }, [availableModels]);
 
   const code = slugify(title);
   const hasConflict = existingCodes.includes(code);
 
   // Validation
-  const step1Valid = startDate && endDate && startDate < endDate && wells.length > 0;
+  const step1Valid = startYear != null && endYear != null && startYear <= endYear && wells.length > 0;
   const spatialValid = (() => {
     if (spatialMethod === 'idw' && nodalFunction === 'quadratic' && neighborMode === 'nearest' && neighborCount < 6) return false;
     if (rangeMode === 'custom' && (rangeValue <= 0)) return false;
@@ -276,7 +270,8 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
         interval,
         minObservations: minObs,
         minTimeSpan: minSpanYears,
-        ...((smoothingMethod === 'model' || smoothingMethod === 'model-direct' || smoothingMethod === 'model-mavg') ? { modelCode: selectedModelCode, modelFilePath: selectedModelFilePath } : {}),
+        ...(dataSource === 'raw' && hold ? { holdYears } : {}),
+        ...((smoothingMethod === 'model-direct' || smoothingMethod === 'model-mavg') ? { modelCode: selectedModelCode, modelFilePath: selectedModelFilePath } : {}),
       },
       spatial: {
         method: spatialMethod,
@@ -361,46 +356,8 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
   };
 
   // Date range markers for charts
-  const startTs = startDate ? new Date(startDate).getTime() : undefined;
-  const endTs = endDate ? new Date(endDate).getTime() : undefined;
-
-  // Count wells with >= 2 measurements (usable for PCHIP preview)
-  const usableWellCount = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const m of wteMeasurements) {
-      counts.set(m.wellId, (counts.get(m.wellId) || 0) + 1);
-    }
-    let count = 0;
-    for (const c of counts.values()) if (c >= 2) count++;
-    return count;
-  }, [wteMeasurements]);
-
-  // Well qualification based on minObs and minSpanYears, as the pipeline does it
-  const { qualifiedWellCount, omittedWellCount, qualifiedIds } = useMemo(() => {
-    const MS_PER_YEAR = 365.25 * 86400000;
-    const byWell = new Map<string, number[]>();
-    for (const m of wteMeasurements) {
-      const t = new Date(m.date).getTime();
-      if (!isNaN(t)) {
-        if (!byWell.has(m.wellId)) byWell.set(m.wellId, []);
-        byWell.get(m.wellId)!.push(t);
-      }
-    }
-    let qualified = 0, omitted = 0;
-    const ids = new Set<string>();
-    for (const [wellId, times] of byWell) {
-      if (times.length < 2) { omitted++; continue; } // need >= 2 for PCHIP
-      const obsCount = times.length;
-      const span = (Math.max(...times) - Math.min(...times)) / MS_PER_YEAR;
-      if (obsCount >= minObs && span >= minSpanYears) {
-        qualified++;
-        ids.add(wellId);
-      } else {
-        omitted++;
-      }
-    }
-    return { qualifiedWellCount: qualified, omittedWellCount: omitted, qualifiedIds: ids };
-  }, [wteMeasurements, minObs, minSpanYears]);
+  const startTs = startDate ? Date.parse(startDate) : undefined;
+  const endTs = endDate ? Date.parse(endDate) : undefined;
 
   // ---------------------------------------------------------------------------
   // Wells at one place: wells less than placeMeters apart among the wells the
@@ -420,19 +377,37 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
   }, [dataSource, selectedModelFilePath]);
   const placesLoading = dataSource === 'model' && modelWellIds === null;
 
-  // Each well's measurements as sorted readings
-  const readings = useMemo(() => {
-    const out = new Map<string, Reading[]>();
-    for (const m of wteMeasurements) {
-      const t = new Date(m.date).getTime();
-      if (isNaN(t) || !Number.isFinite(m.value)) continue;
-      let list = out.get(m.wellId);
-      if (!list) out.set(m.wellId, list = []);
-      list.push({ t, v: m.value });
+  // The wells that go on the map: the model's wells for Imputed Data, else those meeting the two minimums
+  const mapIds = useMemo(
+    () => (dataSource === 'model' ? (modelWellIds ?? new Set<string>()) : qualifiedIds),
+    [dataSource, modelWellIds, qualifiedIds],
+  );
+
+  // Wells read in each half-year, split into the wells that go on the map and the rest
+  const densityData = useMemo(() => {
+    let lo = Infinity, hi = -Infinity;
+    for (const list of readings.values()) {
+      if (list.length === 0) continue;
+      if (list[0].t < lo) lo = list[0].t;
+      if (list[list.length - 1].t > hi) hi = list[list.length - 1].t;
     }
-    for (const list of out.values()) list.sort((a, b) => a.t - b.t);
-    return out;
-  }, [wteMeasurements]);
+    if (lo === Infinity) return [];
+    const y0 = new Date(lo).getUTCFullYear(), y1 = new Date(hi).getUTCFullYear();
+    const nBins = (y1 - y0 + 1) * 2;
+    const onMap = new Array(nBins).fill(0), other = new Array(nBins).fill(0);
+    for (const [id, list] of readings) {
+      const bins = new Set<number>();
+      for (const r of list) {
+        const d = new Date(r.t);
+        bins.add((d.getUTCFullYear() - y0) * 2 + (d.getUTCMonth() < 6 ? 0 : 1));
+      }
+      const into = mapIds.has(id) ? onMap : other;
+      for (const b of bins) into[b]++;
+    }
+    return Array.from({ length: nBins }, (_, b) => ({
+      label: `${y0 + (b >> 1)} ${b & 1 ? 'H2' : 'H1'}`, onMap: onMap[b], other: other[b],
+    }));
+  }, [readings, mapIds]);
 
   const toPoint = (w: Well): PlacePoint => ({ id: w.id, name: w.name, lat: w.lat, lng: w.lng, ...(w.depth != null ? { depth: w.depth } : {}) });
 
@@ -544,7 +519,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                   <div className="flex items-center gap-3">
                     <div className="flex gap-2">
                       <button onClick={() => handleDataSourceChange('raw')} className={radioCls(dataSource === 'raw')}>
-                        Raw Data
+                        Measurements
                       </button>
                       <button onClick={() => handleDataSourceChange('model')} className={radioCls(dataSource === 'model')}>
                         Imputed Data
@@ -569,19 +544,20 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                 </div>
               )}
 
-              {/* PCHIP Preview */}
+              {/* Time series preview: the wells that go on the map in colour, the rest in grey */}
               {wteMeasurements.length > 0 && (
                 <div>
                   <h3 className="text-sm font-semibold text-slate-700 mb-1">
-                    {dataType.name} Time Series Preview ({usableWellCount} wells with 2+ observations)
+                    {dataType.name}: {mapIds.size} wells on the maps (of {usableWellCount} with 2 or more readings)
                   </h3>
                   <div className="h-[180px] bg-slate-50 rounded-lg border border-slate-200">
                     <PchipPreviewCanvas
                       wells={wells}
                       wteMeasurements={wteMeasurements}
+                      highlightIds={mapIds}
                       startTs={startTs}
                       endTs={endTs}
-                      gldasRange={modelDateRange ? {
+                      shadeRange={modelDateRange ? {
                         min: new Date(modelDateRange.min).getTime(),
                         max: new Date(modelDateRange.max).getTime(),
                       } : undefined}
@@ -590,17 +566,16 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                 </div>
               )}
 
-              {/* Data Density Histogram */}
+              {/* Wells read in each half-year */}
               {densityData.length > 0 && (
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-700 mb-1">Data Density (wells per 6-month bin)</h3>
+                  <h3 className="text-sm font-semibold text-slate-700 mb-1">Wells read in each half-year</h3>
                   <div className="rfs-chart h-[130px] bg-slate-50 rounded-lg border border-slate-200 p-1">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={densityData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                         <XAxis dataKey="label" stroke="var(--chart-axis)" fontSize={9} interval="preserveStartEnd" />
                         <YAxis stroke="var(--chart-axis)" fontSize={10} />
-                        <ReferenceLine y={10} stroke="#ef4444" strokeDasharray="4 3" strokeWidth={1.5} />
                         <Tooltip
                           content={({ payload }) => {
                             if (!payload || payload.length === 0) return null;
@@ -608,20 +583,14 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                             return (
                               <div className="bg-white rounded shadow-md px-2 py-1 text-[10px] border border-slate-200">
                                 <div className="text-slate-700 font-medium">{d?.label}</div>
-                                <div className="text-slate-500">{d?.count} wells</div>
+                                <div className="text-emerald-700">{d?.onMap} wells on the maps</div>
+                                <div className="text-slate-500">{d?.other} other wells</div>
                               </div>
                             );
                           }}
                         />
-                        <Bar dataKey="count" radius={[2, 2, 0, 0]}>
-                          {densityData.map((entry, i) => (
-                            <Cell
-                              key={i}
-                              fill={entry.count >= 10 ? '#10b981' : '#94a3b8'}
-                              fillOpacity={entry.count >= 10 ? 0.8 : 0.4}
-                            />
-                          ))}
-                        </Bar>
+                        <Bar dataKey="onMap" stackId="wells" fill="#10b981" fillOpacity={0.8} />
+                        <Bar dataKey="other" stackId="wells" fill="#94a3b8" fillOpacity={0.4} radius={[2, 2, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -631,57 +600,41 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
               {/* Options Form */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className={labelCls}>Start Date</label>
-                  <div className="flex items-center gap-1">
-                    <input type="date" value={startDate}
-                      min={modelDateRange?.min} max={modelDateRange?.max}
-                      onChange={e => setStartDate(e.target.value)} className={inputCls + ' flex-1'} />
-                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
-                      const y = parseInt(startDate); if (isNaN(y)) return;
-                      let next = `${y - 1}-01-01`;
-                      if (modelDateRange && next < modelDateRange.min) next = modelDateRange.min;
-                      setStartDate(next);
-                    }}>
-                      <svg width="14" height="14" viewBox="0 0 14 14"><path d="M9 2L4 7l5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    </button>
-                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
-                      const y = parseInt(startDate); if (isNaN(y)) return;
-                      let next = `${y + 1}-01-01`;
-                      if (modelDateRange && next > modelDateRange.max) next = modelDateRange.max;
-                      setStartDate(next);
-                    }}>
-                      <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 2l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    </button>
-                  </div>
+                  <label className={labelCls}>Start Year</label>
+                  <input type="number" value={startYear ?? ''} step={1} min={yearBounds?.lo} max={yearBounds?.hi}
+                    onChange={e => { const y = parseInt(e.target.value); if (!isNaN(y)) setStartYearChoice(y); }}
+                    className={inputCls} />
                 </div>
                 <div>
-                  <label className={labelCls}>End Date</label>
-                  <div className="flex items-center gap-1">
-                    <input type="date" value={endDate}
-                      min={modelDateRange?.min} max={modelDateRange?.max}
-                      onChange={e => setEndDate(e.target.value)} className={inputCls + ' flex-1'} />
-                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
-                      const y = parseInt(endDate); if (isNaN(y)) return;
-                      let next = `${y - 1}-01-01`;
-                      if (modelDateRange && next < modelDateRange.min) next = modelDateRange.min;
-                      setEndDate(next);
-                    }}>
-                      <svg width="14" height="14" viewBox="0 0 14 14"><path d="M9 2L4 7l5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    </button>
-                    <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
-                      const y = parseInt(endDate); if (isNaN(y)) return;
-                      let next = `${y + 1}-01-01`;
-                      if (modelDateRange && next > modelDateRange.max) next = modelDateRange.max;
-                      setEndDate(next);
-                    }}>
-                      <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 2l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    </button>
-                  </div>
+                  <label className={labelCls}>End Year</label>
+                  <input type="number" value={endYear ?? ''} step={1} min={yearBounds?.lo} max={yearBounds?.hi}
+                    onChange={e => { const y = parseInt(e.target.value); if (!isNaN(y)) setEndYearChoice(y); }}
+                    className={inputCls} />
                 </div>
                 <div>
-                  <label className={labelCls}>Resolution (columns)</label>
-                  <input type="number" value={resolution} min={10} max={500} step={10}
-                    onChange={e => setResolution(Math.max(10, parseInt(e.target.value) || 100))} className={inputCls} />
+                  <label className={labelCls}>Month</label>
+                  <select value={month} onChange={e => setMonthChoice(parseInt(e.target.value))} className={inputCls}>
+                    {MONTH_NAMES.map((name, i) => <option key={name} value={i + 1}>{name}</option>)}
+                  </select>
+                  {monthShares && (
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Most readings fall in {MONTH_NAMES[busiestMonth - 1]} ({pct(monthShares[busiestMonth - 1])}).
+                      {month !== busiestMonth && ` ${MONTH_NAMES[month - 1]}: ${pct(monthShares[month - 1])}.`}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className={labelCls}>Interval</label>
+                  <select value={interval} onChange={e => setInterval(e.target.value as any)} className={inputCls}>
+                    <option value="3months">3 months</option>
+                    <option value="6months">6 months</option>
+                    <option value="1year">1 year</option>
+                  </select>
+                  {mapCount > 0 && (
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      {mapCount} map{mapCount === 1 ? '' : 's'}, each on the 1st of the month, from {MONTH_NAMES[month - 1]} {startYear} to {MONTH_NAMES[month - 1]} {endYear}
+                    </p>
+                  )}
                 </div>
                 {dataSource !== 'model' && (
                   <div>
@@ -707,14 +660,23 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                     </div>
                   </div>
                 )}
-                <div>
-                  <label className={labelCls}>Interval</label>
-                  <select value={interval} onChange={e => setInterval(e.target.value as any)} className={inputCls}>
-                    <option value="3months">3 months</option>
-                    <option value="6months">6 months</option>
-                    <option value="1year">1 year</option>
-                  </select>
-                </div>
+                {dataSource !== 'model' && (
+                  <div className="col-span-2">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-600">
+                      <input type="checkbox" checked={hold} onChange={e => setHold(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded accent-emerald-600" />
+                      Hold each well's first and last readings for up to
+                      <input type="number" value={holdYears} min={1} max={50} step={1} disabled={!hold}
+                        onChange={e => setHoldYears(Math.max(1, Math.min(50, parseInt(e.target.value) || 10)))}
+                        className="w-14 px-2 py-0.5 border border-slate-300 rounded-md text-sm disabled:opacity-50" />
+                      years
+                    </label>
+                    <p className="text-[10px] text-slate-400 mt-0.5 ml-5">
+                      Before a well's first reading the map uses that reading, and after its last reading the last one, so the
+                      well stays on maps up to this many years beyond its record.
+                    </p>
+                  </div>
+                )}
                 <div>
                   <label className={labelCls}>Temporal Method</label>
                   {dataSource === 'model' ? (
@@ -725,7 +687,6 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                   ) : (
                     <select value={smoothingMethod} onChange={e => setSmoothingMethod(e.target.value as any)} className={inputCls}>
                       <option value="pchip">PCHIP</option>
-                      <option value="linear">Linear</option>
                       <option value="moving-average">Moving Average</option>
                     </select>
                   )}
@@ -883,6 +844,14 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                   <button onClick={() => setSpatialMethod('idw')} className={radioCls(spatialMethod === 'idw')}>
                     IDW (Inverse Distance)
                   </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={labelCls}>Resolution (columns)</label>
+                  <input type="number" value={resolution} min={10} max={500} step={10}
+                    onChange={e => setResolution(Math.max(10, parseInt(e.target.value) || 100))} className={inputCls} />
                 </div>
               </div>
 
@@ -1058,18 +1027,24 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
               <div className="bg-slate-50 rounded-lg border border-slate-200 p-4">
                 <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Options Summary</h4>
                 <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-slate-600">
-                  <div><span className="text-slate-400">Dates:</span> {startDate} to {endDate}</div>
-                  <div><span className="text-slate-400">Interval:</span> {interval}</div>
-                  <div><span className="text-slate-400">Resolution:</span> {resolution} cols</div>
+                  <div><span className="text-slate-400">Maps:</span> {mapCount}, {MONTH_NAMES[month - 1]} {startYear} to {MONTH_NAMES[month - 1]} {endYear}</div>
+                  <div><span className="text-slate-400">Interval:</span> {INTERVAL_LABELS[interval]}</div>
+                  <div><span className="text-slate-400">Data:</span> {dataSource === 'model' ? `Imputed Data (${availableModels?.find(m => m.code === selectedModelCode)?.title ?? selectedModelCode})` : 'Measurements'}</div>
                   <div><span className="text-slate-400">Temporal:</span> {
                     smoothingMethod === 'pchip' ? 'PCHIP' :
-                    smoothingMethod === 'linear' ? 'Linear' :
-                    smoothingMethod === 'model' ? `Model (${selectedModelCode})` :
-                    smoothingMethod === 'model-direct' ? `Model Direct (${selectedModelCode})` :
-                    smoothingMethod === 'model-mavg' ? `Model MA ${smoothingMonths}mo (${selectedModelCode})` :
-                    `MA ${smoothingMonths}mo`
+                    smoothingMethod === 'model-direct' ? 'Direct' :
+                    `Moving Average, ${smoothingMonths} months`
                   }</div>
-                  <div><span className="text-slate-400">Wells:</span> {qualifiedWellCount} qualified</div>
+                  {dataSource !== 'model' && (
+                    <>
+                      <div><span className="text-slate-400">Wells:</span> {qualifiedWellCount}, with {minObs}+ readings over {minSpanYears}+ years</div>
+                      <div><span className="text-slate-400">First and last readings:</span> {hold ? `held up to ${holdYears} years` : 'not held'}</div>
+                    </>
+                  )}
+                  {dataSource === 'model' && (
+                    <div><span className="text-slate-400">Wells:</span> {mapIds.size}, the model's</div>
+                  )}
+                  <div><span className="text-slate-400">Resolution:</span> {resolution} columns</div>
                   <div><span className="text-slate-400">Method:</span> {spatialMethod === 'kriging' ? `Kriging (${variogramModel})` : `IDW (p=${idwExponent})`}</div>
                   {spatialMethod === 'kriging' && (
                     <>
