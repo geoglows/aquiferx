@@ -48,8 +48,14 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
   const [holdYears, setHoldYears] = useState(10);
   const [runCheck, setRunCheck] = useState(true);
 
-  // --- Step 2 ---
-  const [title, setTitle] = useState('');
+  // --- Step 2: the title starts as the method's name, numbered when the aquifer already has one (decision 107a) ---
+  const defaultTitle = useMemo(() => {
+    for (let k = 1; ; k++) {
+      const t = k === 1 ? 'MC+LNN' : `MC+LNN ${k}`;
+      if (!existingModelCodes.includes(slugify(t))) return t;
+    }
+  }, [existingModelCodes]);
+  const [title, setTitle] = useState(defaultTitle);
   const code = slugify(title);
   const hasConflict = existingModelCodes.includes(code);
 
@@ -319,8 +325,8 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
 
               <div>
                 <label className={labelCls}>Title</label>
-                <input type="text" value={title} onChange={e => setTitle(e.target.value.replace(/[^a-zA-Z0-9 _-]/g, ''))}
-                  placeholder="e.g. Gap filling 2026" className={inputCls} />
+                <input type="text" value={title} onChange={e => setTitle(e.target.value.replace(/[^a-zA-Z0-9 _+-]/g, ''))}
+                  placeholder={defaultTitle} className={inputCls} />
                 {title && (
                   <div className="mt-1 flex items-center gap-2">
                     <span className="text-[10px] text-slate-400">{slugify(aquifer.name)}/model_wte_{code}.json</span>
