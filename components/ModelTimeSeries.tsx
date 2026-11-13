@@ -153,7 +153,7 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
 
   const line = (key: string, color: string, width = 1.5, dash?: string, connect = false) => (
     <Line key={key} type="monotone" dataKey={key} stroke={color} strokeWidth={width} strokeDasharray={dash}
-      dot={false} connectNulls={connect} name={NAMES[key]} animationDuration={400} />
+      dot={false} connectNulls={connect} name={NAMES[key]} isAnimationActive={false} />
   );
 
   return (
