@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { Region, Aquifer, RasterAnalysisMeta, ImputationModelMeta, MapDisplay } from '../types';
+import { Region, Aquifer, RasterAnalysisMeta, ImputationModelMeta, MapDisplay, isCurrentModel } from '../types';
 import { MapPin, Droplets, MoreVertical, Pencil, Trash2, Download, Layers, Loader2, Info, Check, X as XIcon, ChevronRight, ChevronDown, Activity, Eye, EyeOff, Copy, Plus, Upload, Settings } from 'lucide-react';
 import type { DataSource } from '../services/dataStore';
 import PanelActions from './PanelActions';
@@ -810,7 +810,8 @@ const Sidebar: React.FC<SidebarProps> = ({
             {isModelLoading
               ? <Loader2 size={12} className="flex-shrink-0 animate-spin" />
               : <Activity size={12} className="flex-shrink-0 opacity-70" />}
-            <span className="truncate">{m.title}</span>
+            <span className={`truncate ${isCurrentModel(m) ? '' : 'opacity-60 line-through'}`}>{m.title}</span>
+            {!isCurrentModel(m) && <span className="text-[9px] text-[var(--text-faint)] flex-shrink-0">older method</span>}
             {isActive && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-current flex-shrink-0" />}
           </button>
           <div
@@ -865,9 +866,14 @@ const Sidebar: React.FC<SidebarProps> = ({
         <div className="absolute left-full ml-2 top-0 hidden group-hover/model:block z-[60] pointer-events-none">
           <div className="rfs-tip text-[11px] p-3 min-w-[220px] leading-relaxed">
             <div className="font-semibold text-[var(--model)] mb-1.5">{m.title}</div>
-            <div><span className="text-[var(--text-faint)]">Dates:</span> {m.params.startDate} &mdash; {m.params.endDate}</div>
-            <div><span className="text-[var(--text-faint)]">Gap Size:</span> {m.params.gapSize} days</div>
-            <div><span className="text-[var(--text-faint)]">Wells Modeled:</span> {Object.keys(m.wellMetrics).length}</div>
+            {isCurrentModel(m) ? (
+              <>
+                <div><span className="text-[var(--text-faint)]">Months:</span> {m.params.startDate.slice(0, 7)} &mdash; {m.params.endDate.slice(0, 7)}</div>
+                <div><span className="text-[var(--text-faint)]">Wells filled:</span> {Object.keys(m.wellMetrics).length}, {Object.values(m.wellMetrics).filter(w => w.filled === 'mc-lnn').length} by MC+LNN</div>
+              </>
+            ) : (
+              <div className="text-[var(--text-faint)]">Made by the ELM, an older method. Delete it and run Impute Gaps again.</div>
+            )}
             <div className="mt-1.5 text-[var(--text-faint)] text-[10px]">Created {new Date(m.createdAt).toLocaleDateString()}</div>
           </div>
         </div>

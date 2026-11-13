@@ -25,8 +25,7 @@
     "react-dom": "^19.2.4",
     "react-is": "^19.2.4",
     "recharts": "^3.7.0",
-    "shpjs": "^6.2.0",
-    "zarrita": "^0.5.4"
+    "shpjs": "^6.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

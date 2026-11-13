@@ -32,11 +32,11 @@
 - `components/CatalogBrowser.tsx` — read-only catalog viewer, opened from DataTypeEditor and MeasurementImporter
 - `components/import/` — ImportDataHub (adding only; edits and deletes are in the region tree menus), RegionImporter, AquiferImporter, WellImporter, MeasurementImporter, DataTypeEditor, ColumnMapperModal, ConfirmDialog
 - `public/data/catalog_wq.json` — global water quality parameter catalog (~38 entries with WQP mapping + MCL/WHO)
-- `services/gldasFetch.ts` — imputation's soil moisture (NOAA CPC v2, 1948 on) read with zarrita from `cdn.apps.geoglows.org/aqx/cpc-soil-moisture-0.5-v1.zarr`, built by `scripts/soil_moisture_store.py`
+- `services/imputationPipeline.ts` — Impute Gaps: PCHIP across gaps under 6 months, MC+LNN across longer ones and beyond each record (else the first or last reading held), up to a set number of years; `services/mclnn/` is MC+LNN ported from the Python (`~/papers_git/2026_gated-mc-lnn`), matching it to rounding; `workers/mclnnWorker.ts` runs the fills, several at once (`services/analysisClient.ts`)
 - `components/PanelActions.tsx` — My Data's Add Data / Back up / Restore row (shown only in My Data), backup status note, restore dialog. Panel order: data set switch, actions, region tree, then the open region's options (data type when it has more than one, map labels, well filters). Settings is the header gear
 - `components/SettingsDialog.tsx` — light mode, map label size, storage use, Delete all My Data
 - Map display options (`MapDisplay` in types.ts) live in App, are set from the panel's MAP section and read by MapView
-- `vite.config.ts` — strips non-sample regions from `dist/`; dev-only `/local-zarr/` server for previewing a zarr store (`LOCAL_ZARR_DIR`)
+- `vite.config.ts` — strips non-sample regions from `dist/`
 - `scripts/make-backup.mjs` — package region folders (`public/data`, or `--from <dir>`) as a backup zip to Restore into My Data
 
 ## Conventions

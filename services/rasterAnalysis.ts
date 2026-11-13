@@ -3,7 +3,7 @@ import {
   Aquifer, Region, Well, Measurement,
   RasterAnalysisParams, RasterAnalysisResult, RasterGrid, RasterFrame, RasterFrameStats,
   SpatialMethod, KrigingOptions, IdwOptions, GeneralInterpolationOptions, TemporalOptions, RasterOptions,
-  ImputationModelResult, RasterPlaceOptions,
+  ImputationModelResult, RasterPlaceOptions, isCurrentModel,
 } from '../types';
 import { isPointInGeoJSON, groupNearbyPoints, COLOCATED_METERS } from '../utils/geo';
 import { interpolatePCHIP, interpolateLinear, kernelSmooth, smoothModelCombined } from '../utils/interpolation';
@@ -116,106 +116,42 @@ export async function runRasterAnalysis(
   const wellInterp = new Map<string, { well: Well; values: (number | null)[] }>();
   const wellById = new Map(wells.map(w => [w.id, w]));
 
-  if (temporal.method === 'model' && temporal.modelFilePath) {
-    // Model-based temporal interpolation: fetch model JSON, use combined column
+  if ((temporal.method === 'model-direct' || temporal.method === 'model-mavg') && temporal.modelFilePath) {
+    // A gap-filling model's monthly series: its value at the map date, or its moving average
     onProgress('Loading imputation model...', 5);
     await tick();
 
     const modelResult = await readJson<ImputationModelResult>(temporal.modelFilePath);
     if (!modelResult) throw new Error(`Failed to load model: ${temporal.modelFilePath}`);
+    if (!isCurrentModel(modelResult)) throw new Error('This model was made with an older method. Run Impute Gaps again.');
 
-    // Group model data by well
-    const modelByWell = new Map<string, { dates: number[]; values: number[] }>();
-    for (const row of modelResult.data) {
-      if (!modelByWell.has(row.well_id)) modelByWell.set(row.well_id, { dates: [], values: [] });
-      const entry = modelByWell.get(row.well_id)!;
-      entry.dates.push(new Date(row.date).getTime());
-      entry.values.push(row.combined);
-    }
-
-    const modelWellIds = wells.map(w => w.id).filter(id => modelByWell.has(id));
-
+    const modelWellIds = wells.map(w => w.id).filter(id => modelResult.data[id]);
     for (let wi = 0; wi < modelWellIds.length; wi++) {
       const wellId = modelWellIds[wi];
       const well = wellById.get(wellId)!;
-      const { dates: modelDates, values: modelValues } = modelByWell.get(wellId)!;
-
-      onProgress(`Model interpolation well ${wi + 1}/${modelWellIds.length}...`, 5 + (wi / modelWellIds.length) * 25);
-      if (wi % 5 === 0) await tick();
-
-      if (modelDates.length < 2) continue;
-
-      const minT = modelDates[0];
-      const maxT = modelDates[modelDates.length - 1];
-
-      // PCHIP interpolate the monthly model data to the requested interval timestamps
-      const validTargets: number[] = [];
-      const validIndices: number[] = [];
-      for (let i = 0; i < intervalTimestamps.length; i++) {
-        const t = intervalTimestamps[i];
-        if (t >= minT && t <= maxT) {
-          validTargets.push(t);
-          validIndices.push(i);
-        }
-      }
-
-      const interpValues: (number | null)[] = intervalTimestamps.map(() => null);
-      if (validTargets.length > 0) {
-        const interpolated = interpolatePCHIP(modelDates, modelValues, validTargets);
-        for (let i = 0; i < validIndices.length; i++) {
-          interpValues[validIndices[i]] = interpolated[i];
-        }
-      }
-
-      wellInterp.set(wellId, { well, values: interpValues });
-    }
-  } else if ((temporal.method === 'model-direct' || temporal.method === 'model-mavg') && temporal.modelFilePath) {
-    // Model-based: direct lookup or smoothed moving average
-    onProgress('Loading imputation model...', 5);
-    await tick();
-
-    const modelResult = await readJson<ImputationModelResult>(temporal.modelFilePath);
-    if (!modelResult) throw new Error(`Failed to load model: ${temporal.modelFilePath}`);
-
-    // Group model data by well
-    const modelByWell = new Map<string, { date: string; combined: number }[]>();
-    for (const row of modelResult.data) {
-      if (!modelByWell.has(row.well_id)) modelByWell.set(row.well_id, []);
-      modelByWell.get(row.well_id)!.push({ date: row.date, combined: row.combined });
-    }
-
-    const modelWellIds = wells.map(w => w.id).filter(id => modelByWell.has(id));
-
-    for (let wi = 0; wi < modelWellIds.length; wi++) {
-      const wellId = modelWellIds[wi];
-      const well = wellById.get(wellId)!;
-      const rows = modelByWell.get(wellId)!;
+      const series = modelResult.data[wellId];
 
       onProgress(`Model ${temporal.method === 'model-direct' ? 'direct' : 'MA'} well ${wi + 1}/${modelWellIds.length}...`, 5 + (wi / modelWellIds.length) * 25);
       if (wi % 5 === 0) await tick();
 
-      // Build timestamp→value map (direct or smoothed)
-      let tsMap: Map<number, number>;
+      const y = parseInt(series.start.slice(0, 4)), mo = parseInt(series.start.slice(5, 7)) - 1;
+      const rows = series.values.map((combined, k) => ({ date: new Date(Date.UTC(y, mo + k, 1)).toISOString().slice(0, 10), combined }));
 
+      // Timestamp → value, direct or smoothed
+      const tsMap = new Map<number, number>();
       if (temporal.method === 'model-mavg') {
         const { dates, values } = smoothModelCombined(rows, temporal.maWindow);
-        tsMap = new Map();
         for (let i = 0; i < dates.length; i++) tsMap.set(dates[i], values[i]);
       } else {
-        // model-direct: exact lookup by timestamp
-        tsMap = new Map();
-        for (const r of rows) tsMap.set(new Date(r.date).getTime(), r.combined);
+        for (const r of rows) tsMap.set(Date.parse(r.date), r.combined);
       }
 
-      // Map interval timestamps to values via exact lookup or nearest 1st-of-month
+      // Map dates fall on the 1st of a month; any other date takes its month's value
       const interpValues: (number | null)[] = intervalTimestamps.map(t => {
         const exact = tsMap.get(t);
         if (exact !== undefined) return exact;
-        // Try snapping to 1st of month (intervals should already align)
         const d = new Date(t);
-        const snap = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
-        const snapped = tsMap.get(snap);
-        return snapped !== undefined ? snapped : null;
+        return tsMap.get(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)) ?? null;
       });
 
       wellInterp.set(wellId, { well, values: interpValues });

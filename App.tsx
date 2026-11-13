@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Layers, Map as MapIcon, ChevronRight, Activity, Wand2, Grid3x3, Upload, Loader2, Download, Table, BarChart3, Maximize2, X } from 'lucide-react';
-import { Region, Aquifer, Well, Measurement, DataType, RasterAnalysisResult, RasterAnalysisMeta, CrossSectionProfile, ImputationModelResult, ImputationModelMeta, MapDisplay, DEFAULT_MAP_DISPLAY } from './types';
+import { Region, Aquifer, Well, Measurement, DataType, RasterAnalysisResult, RasterAnalysisMeta, CrossSectionProfile, ImputationModelResult, ImputationModelMeta, MapDisplay, DEFAULT_MAP_DISPLAY, isCurrentModel } from './types';
 import { loadAllData } from './services/dataLoader';
 import { toCsv, escapeCsvField, WELLS_CSV_HEADERS } from './services/importUtils';
 import { saveFiles, deleteFile, deleteFolder, readJson, renameAnalysis, downloadRegion, copyToMyData, DataSource } from './services/dataStore';
@@ -17,7 +17,6 @@ import { isoDate, dateTime } from './utils/dates';
 import SpatialAnalysisDialog from './components/SpatialAnalysisDialog';
 import ImputationWizard from './components/ImputationWizard';
 import ModelTimeSeries from './components/ModelTimeSeries';
-import { fetchGldasDateRange } from './services/gldasFetch';
 import RasterInfoDialog from './components/RasterInfoDialog';
 import ModelInfoDialog from './components/ModelInfoDialog';
 import RasterOverlay from './components/RasterOverlay';
@@ -105,7 +104,8 @@ const App: React.FC = () => {
   const [modelMeta, setModelMeta] = useState<ImputationModelMeta[]>([]);
   const [imputationDialogOpen, setImputationDialogOpen] = useState(false);
   const [selectedModel, setSelectedModel] = useState<ImputationModelResult | null>(null);
-  const [gldasDateRange, setGldasDateRange] = useState<{ min: string; max: string } | null>(null);
+  // A model made by the ELM, clicked: it can only be deleted (decision 102)
+  const [oldModelNotice, setOldModelNotice] = useState<ImputationModelMeta | null>(null);
   const [showCombinedModel, setShowCombinedModel] = useState(false);
   const [crossSectionProfile, setCrossSectionProfile] = useState<CrossSectionProfile | null>(null);
   const [activeTimeSeriesTab, setActiveTimeSeriesTab] = useState<'waterLevel' | 'storageChange' | 'rasterStats' | 'crossSection'>('waterLevel');
@@ -537,6 +537,10 @@ const App: React.FC = () => {
 
   // --- Imputation model handlers ---
   const handleLoadModel = async (meta: ImputationModelMeta) => {
+    if (!isCurrentModel(meta)) {
+      setOldModelNotice(meta);
+      return;
+    }
     setLoadingModelCode(meta.code);
     try {
       const fullResult = await readJson<ImputationModelResult>(meta.filePath);
@@ -609,16 +613,7 @@ const App: React.FC = () => {
       setCopyPrompt({ regionId: selectedRegion.id, action: 'impute its water levels' });
       return;
     }
-    // Open immediately; fetch the GLDAS date range in the background.
-    // Awaiting it first made the button appear dead for up to 15s when the
-    // GLDAS service is slow — the wizard already handles a null range and
-    // back-fills once it arrives.
     setImputationDialogOpen(true);
-    if (!gldasDateRange) {
-      fetchGldasDateRange()
-        .then(range => setGldasDateRange(range))
-        .catch(e => console.warn('Could not read the soil moisture record dates:', e));
-    }
   };
 
   // Active data type object
@@ -985,14 +980,16 @@ const App: React.FC = () => {
 
     // Model-aware export
     if (selectedModel && selectedWells.length === 1) {
-      const modelRows = selectedModel.data
-        .filter(r => r.well_id === selectedWells[0].id)
-        .sort((a, b) => a.date.localeCompare(b.date));
-      if (modelRows.length === 0) return;
+      const series = selectedModel.data[selectedWells[0].id];
+      if (!series) return;
 
-      const headers = 'Date,PCHIP,ELM,Combined';
-      const csvRows = modelRows.map(r => {
-        return `${r.date},${r.pchip ?? ''},${r.model ?? ''},${r.combined ?? ''}`;
+      // One row per month: the filled value, how it was filled, and MC+LNN's own estimate
+      const how: Record<string, string> = { p: 'PCHIP', m: 'MC+LNN', h: 'held reading' };
+      const y = parseInt(series.start.slice(0, 4)), mo = parseInt(series.start.slice(5, 7)) - 1;
+      const headers = 'Date,Value,Filled by,MC+LNN';
+      const csvRows = series.values.map((v, k) => {
+        const date = new Date(Date.UTC(y, mo + k, 1)).toISOString().slice(0, 10);
+        return `${date},${v},${how[series.source[k]] ?? ''},${series.model?.[k] ?? ''}`;
       });
 
       const csvContent = [headers, ...csvRows].join('\n');
@@ -1890,6 +1887,18 @@ const App: React.FC = () => {
         />
       )}
 
+      {oldModelNotice && (
+        <ConfirmDialog
+          title="Made with an older method"
+          message={`"${oldModelNotice.title}" was made by the ELM, which Impute Gaps no longer uses, so it can't be opened. Delete it and run Impute Gaps again. Maps made from it keep working.`}
+          confirmLabel="Delete model"
+          cancelLabel="Keep for now"
+          variant="danger"
+          onCancel={() => setOldModelNotice(null)}
+          onConfirm={() => { const m = oldModelNotice; setOldModelNotice(null); handleDeleteModel(m); }}
+        />
+      )}
+
       {/* Import Data Hub */}
       {isDataManagerOpen && (
         <ImportDataHub
@@ -1908,7 +1917,7 @@ const App: React.FC = () => {
           measurements={measurements}
           dataType={activeDataType}
           existingCodes={rasterMeta.filter(a => a.aquiferId === selectedAquifer.id && a.regionId === selectedAquifer.regionId && a.dataType === activeDataType.code).map(a => a.code)}
-          availableModels={modelMeta.filter(m => m.aquiferId === selectedAquifer.id && m.regionId === selectedAquifer.regionId)}
+          availableModels={modelMeta.filter(m => m.aquiferId === selectedAquifer.id && m.regionId === selectedAquifer.regionId && isCurrentModel(m))}
           onClose={() => setRasterDialogOpen(false)}
           onComplete={(result) => {
             setRasterResult(result);
@@ -1940,7 +1949,6 @@ const App: React.FC = () => {
           wells={wells.filter(w => w.aquiferId === selectedAquifer.id && w.regionId === selectedAquifer.regionId)}
           measurements={measurements}
           existingModelCodes={modelMeta.filter(m => m.aquiferId === selectedAquifer.id && m.regionId === selectedAquifer.regionId).map(m => m.code)}
-          gldasDateRange={gldasDateRange}
           onClose={() => setImputationDialogOpen(false)}
           onComplete={(result) => {
             setSelectedModel(result);

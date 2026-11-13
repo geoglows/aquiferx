@@ -1,468 +1,266 @@
+// Impute Gaps: fill each well's water levels month by month (decisions 88a, 91a, 92b, 99a, 100a, 101b).
+//   inside a well's record   PCHIP across gaps under 6 months; MC+LNN across longer ones, where it can fill the well
+//   before / after it        MC+LNN where it can (wells with under 60 measured months: at most 12 months out), else the
+//                            first / last reading held; in all, at most holdYears beyond the record
+// Wells MC+LNN cannot fill (under 12 measured months, or no correlated neighbours) get PCHIP and the held readings only.
+//
+// The work is split in three: planImputation (the monthly matrix and one task per well, plus one per check),
+// the MC+LNN fills of those tasks (fillTask; analysisClient spreads them over workers), and assembleModel.
+
 import { saveFiles } from './dataStore';
 import {
   Aquifer, Region, Well, Measurement,
-  ImputationParams, ImputationDataRow, ImputationModelResult, ImputationWellMetrics, ImputationCheck,
+  ImputationParams, ImputationModelResult, ImputationWellMetrics, ImputationWellSeries, ImputationCheck,
 } from '../types';
-import { fetchGldasFeatures, GldasFeatures } from './gldasFetch';
-import { trainElm, predictElm } from './elm';
 import { interpolatePCHIP } from '../utils/interpolation';
 import { slugify } from '../utils/strings';
-import { pchipMonthMask, MIN_TRAINING_MONTHS } from '../utils/imputationMonths';
-import {
-  shiftedSeries, checkWindow, summarizeChecks, CHECK_MIN_BEFORE, CHECK_MIN_AFTER, CHECK_MIN_SCORED,
-} from '../utils/imputationSeries';
+import { checkWindow, summarizeChecks, CHECK_MIN_AFTER, CHECK_MIN_BEFORE, CHECK_MIN_SCORED } from '../utils/imputationSeries';
+import { Basin, fillTarget, prepareBasin, MIN_EXTRAP_OBS, MIN_MATRIX_MONTHS, MIN_MEAS, SPARSE_EXTRAP } from './mclnn/core';
 import { PipelineCancelledError } from './pipelineCancel';
 
 export interface ImputationPipelineInput {
   title: string;
-  startDate: string;
-  endDate: string;
-  gldasStartDate: string;  // first month of the soil moisture record (from fetchGldasDateRange)
-  gldasEndDate: string;    // last month of the soil moisture record
-  minSamples: number;
-  gapSize: number;    // days (Python default: 730)
-  padSize: number;    // days (Python default: 180)
-  hiddenUnits: number;
-  lambda: number;
-  fits: number;       // ELM fits, each with its own random weights, averaged for each well and for each check
-}
-
-function yieldToUI(): Promise<void> {
-  return new Promise(r => setTimeout(r, 0));
-}
-
-/**
- * Generate monthly date grid from startDate to endDate (inclusive), UTC-based.
- * Matches Python: pd.date_range(start, freq='1MS', end=end)
- */
-function generateMonthlyDates(startDate: string, endDate: string): string[] {
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  // An Invalid Date makes `d > end` always false — without this guard the
-  // loop below would never terminate
-  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-    throw new Error(`Invalid date range: "${startDate}" – "${endDate}"`);
-  }
-  const dates: string[] = [];
-  let year = start.getUTCFullYear();
-  let month = start.getUTCMonth();
-  const MAX_MONTHS = 10000; // backstop: ~833 years
-  for (let i = 0; i < MAX_MONTHS; i++) {
-    const d = new Date(Date.UTC(year, month, 1));
-    if (d > end) break;
-    dates.push(d.toISOString().slice(0, 10));
-    month++;
-    if (month > 11) { month = 0; year++; }
-  }
-  return dates;
+  minObservations: number;
+  minTimeSpan: number;  // years
+  holdYears: number;
+  check: boolean;
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const MS_PER_YEAR = 365.25 * MS_PER_DAY;
+/** Gaps between readings this long or longer are MC+LNN's; shorter ones keep PCHIP (decision 92b) */
+export const MCLNN_GAP_DAYS = 183;
 
-/**
- * Run the full imputation pipeline.
- *
- * Matches the Python notebook flow:
- * 1. interp_well — PCHIP per well with gap/pad blanking
- * 2. Build combined dataframe (well PCHIP + GLDAS features)
- * 3. zscore_training_data — global z-score normalization
- * 4. Add year (min-max) and month (one-hot) features
- * 5. impute_data — per-well ELM training on ALL wells
- * 6. reverse_zscore_data — per-well denormalization
- */
-export async function runImputationPipeline(
-  input: ImputationPipelineInput,
-  aquifer: Aquifer,
-  region: Region,
-  wells: Well[],
-  measurements: Measurement[],
-  onLog: (msg: string) => void,
-  onProgress: (step: string, pct: number) => void,
-  isCancelled?: () => boolean,
-): Promise<ImputationModelResult> {
-  const { title, startDate, endDate, minSamples, gapSize, padSize, hiddenUnits, lambda } = input;
-  const fits = Math.max(1, Math.round(input.fits));
+interface Reading { ts: number; value: number }
 
-  // The run's log goes into the model file, so the chart's Processing Log shows it after a reload and for Sample Data
-  const logLines: string[] = [];
-  const log = (msg: string) => { logLines.push(msg); onLog(msg); };
+interface TargetPlan {
+  well: Well;
+  readings: Reading[];       // sorted, one per time (readings at the same time averaged)
+  row: number;               // the well's row in the MC+LNN matrix; -1 under MIN_MATRIX_MONTHS measured months
+  check?: { from: number; to: number; hiddenMonths: number[] };
+}
 
-  // Yield point: lets the UI repaint AND aborts the pipeline when the
-  // user cancelled — without this the ELM training grinds on (and saves
-  // its model file) after the wizard closes
-  const tick = async () => {
-    if (isCancelled?.()) throw new PipelineCancelledError();
-    await yieldToUI();
-  };
+/** One MC+LNN fill: matrix row `row` with the months `hidden` left out (a check), or none (the well's fill) */
+export interface FillTask { id: string; row: number; hidden: number[] }
+export interface FillResult { inside: Float64Array; outside: Float64Array | null; neighbours: number }
 
-  // Gap/pad are already in days (matching Python's gap_size=730, pad=180)
-  const gapSizeMs = gapSize * MS_PER_DAY;
-  const padSizeMs = padSize * MS_PER_DAY;
+export interface ImputationPlan {
+  months: string[];          // the model's months, YYYY-MM-01
+  monthTs: number[];
+  calendarMonth: number[];   // 1-12
+  raw: Float64Array[];       // monthly means of the matrix wells (every aquifer well with MIN_MATRIX_MONTHS measured months)
+  targets: TargetPlan[];
+  tasks: FillTask[];
+  omitted: number;           // wells with readings that miss the two minimums
+}
 
-  // ===== Step 1: Fetch GLDAS data (0-5%) =====
-  onProgress('Reading soil moisture...', 0);
-  log(`Reading soil moisture for aquifer "${aquifer.name}"...`);
-  await tick();
+const isoDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
-  let gldas: GldasFeatures;
-  try {
-    // Cache key must include the region — every single-unit region uses
-    // aquifer_id=0, so a bare aquifer id collides across regions
-    gldas = await fetchGldasFeatures(`${region.id}:${aquifer.id}`, aquifer.geojson, input.gldasStartDate, input.gldasEndDate);
-    log(`Soil moisture features: ${gldas.dates.length} months, ${gldas.dates[0]} to ${gldas.dates[gldas.dates.length - 1]}`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`ERROR: Could not read soil moisture: ${msg}`);
-    throw new Error(`Could not read soil moisture: ${msg}`);
+/** The monthly matrix, the wells to fill, and the MC+LNN tasks */
+export function planImputation(input: ImputationPipelineInput, wells: Well[], measurements: Measurement[]): ImputationPlan {
+  const byWell = new Map<string, Map<number, number[]>>();
+  for (const m of measurements) {
+    if (m.dataType !== 'wte' || !Number.isFinite(m.value)) continue;
+    const ts = new Date(m.date).getTime();
+    if (isNaN(ts)) continue;
+    let w = byWell.get(m.wellId);
+    if (!w) byWell.set(m.wellId, w = new Map());
+    const list = w.get(ts);
+    if (list) list.push(m.value); else w.set(ts, [m.value]);
   }
-  onProgress('Soil moisture loaded', 5);
+  const readingsOf = (id: string): Reading[] => [...(byWell.get(id) ?? new Map<number, number[]>()).entries()]
+    .map(([ts, v]) => ({ ts, value: v.reduce((a, b) => a + b, 0) / v.length }))
+    .sort((a, b) => a.ts - b.ts);
 
-  // ===== Step 2: Prepare well data (5-10%) =====
-  onProgress('Preparing well data...', 5);
-  await tick();
+  const wellReadings = wells.map(w => ({ well: w, readings: readingsOf(w.id) })).filter(x => x.readings.length > 0);
+  if (wellReadings.length === 0) throw new Error('No wells of this aquifer have water level readings.');
 
-  const wteMeasurements = measurements.filter(m => m.dataType === 'wte');
-  const byWell = new Map<string, Measurement[]>();
-  for (const m of wteMeasurements) {
-    if (!byWell.has(m.wellId)) byWell.set(m.wellId, []);
-    byWell.get(m.wellId)!.push(m);
+  // The months from the aquifer's first reading to its last
+  let lo = Infinity, hi = -Infinity;
+  for (const { readings } of wellReadings) { lo = Math.min(lo, readings[0].ts); hi = Math.max(hi, readings[readings.length - 1].ts); }
+  const y0 = new Date(lo).getUTCFullYear(), m0 = new Date(lo).getUTCMonth();
+  const monthIndex = (ts: number) => { const d = new Date(ts); return (d.getUTCFullYear() - y0) * 12 + d.getUTCMonth() - m0; };
+  const T = monthIndex(hi) + 1;
+  const monthTs = Array.from({ length: T }, (_, t) => Date.UTC(y0, m0 + t, 1));
+  const months = monthTs.map(isoDate);
+  const calendarMonth = monthTs.map(ts => new Date(ts).getUTCMonth() + 1);
+
+  // The matrix: monthly means of every well with enough measured months, filled or not (they all serve as neighbours)
+  const raw: Float64Array[] = [];
+  const rowOf = new Map<string, number>();
+  for (const { well, readings } of wellReadings) {
+    const sum = new Map<number, [number, number]>();
+    for (const r of readings) {
+      const k = monthIndex(r.ts);
+      const s = sum.get(k);
+      if (s) { s[0] += r.value; s[1]++; } else sum.set(k, [r.value, 1]);
+    }
+    if (sum.size < MIN_MATRIX_MONTHS) continue;
+    const row = new Float64Array(T).fill(NaN);
+    for (const [k, [s, n]] of sum) row[k] = s / n;
+    rowOf.set(well.id, raw.length);
+    raw.push(row);
   }
 
-  // Filter wells by minSamples (matches Python: wells_df.dropna(thresh=min_samples, axis=1))
-  interface QualifiedWell {
-    well: Well;
-    sorted: { date: string; ts: number; value: number }[];
-  }
-  const qualifiedWells: QualifiedWell[] = [];
+  // The wells to fill: at least minObservations readings over at least minTimeSpan years (as Spatial Analysis)
+  const targets: TargetPlan[] = [];
   let omitted = 0;
-
-  for (const well of wells) {
-    const sorted = (byWell.get(well.id) ?? [])
-      .filter(m => !isNaN(new Date(m.date).getTime()))
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-      .map(m => ({ date: m.date, ts: new Date(m.date).getTime(), value: m.value }));
-    if (sorted.length < Math.max(2, minSamples)) {
-      omitted++;
-      continue;
+  for (const { well, readings } of wellReadings) {
+    const span = (readings[readings.length - 1].ts - readings[0].ts) / MS_PER_YEAR;
+    if (readings.length < Math.max(2, input.minObservations) || span < input.minTimeSpan) { omitted++; continue; }
+    const target: TargetPlan = { well, readings, row: rowOf.get(well.id) ?? -1 };
+    if (input.check && target.row >= 0) {
+      const { from, to } = checkWindow(readings.map(r => r.ts));
+      const before = readings.filter(r => r.ts <= from).length, after = readings.filter(r => r.ts >= to).length;
+      const hidden = readings.filter(r => r.ts > from && r.ts < to);
+      if (before >= CHECK_MIN_BEFORE && after >= CHECK_MIN_AFTER && hidden.length >= CHECK_MIN_SCORED) {
+        target.check = { from, to, hiddenMonths: [...new Set(hidden.map(r => monthIndex(r.ts)))] };
+      }
     }
-    qualifiedWells.push({ well, sorted });
+    targets.push(target);
+  }
+  if (targets.length === 0) {
+    throw new Error(`No wells have ${input.minObservations} readings over ${input.minTimeSpan} years.`);
   }
 
-  log(`${qualifiedWells.length} wells qualified (>= ${minSamples} measurements), ${omitted} omitted`);
-
-  if (qualifiedWells.length === 0) {
-    throw new Error(`No wells have >= ${minSamples} measurements. Adjust min samples or date range.`);
+  // Tasks, most measured months first (the slowest), so the workers finish together
+  const measured = (row: number) => raw[row].reduce((a, v) => a + (Number.isNaN(v) ? 0 : 1), 0);
+  const tasks: FillTask[] = [];
+  for (const t of [...targets].filter(t => t.row >= 0).sort((a, b) => measured(b.row) - measured(a.row))) {
+    if (measured(t.row) < MIN_MEAS) continue;
+    tasks.push({ id: `${t.well.id}|fill`, row: t.row, hidden: [] });
+    if (t.check) tasks.push({ id: `${t.well.id}|check`, row: t.row, hidden: t.check.hiddenMonths });
   }
+  return { months, monthTs, calendarMonth, raw, targets, tasks, omitted };
+}
 
-  onProgress('Well data prepared', 10);
+/** The basin the fills share, built once per worker */
+export function basinOf(plan: Pick<ImputationPlan, 'raw' | 'calendarMonth'>): Basin {
+  return prepareBasin(plan.raw, plan.calendarMonth);
+}
 
-  // ===== Step 3: Generate monthly date grid from actual GLDAS feature dates =====
-  // Use the actual trimmed GLDAS dates (not WMS capabilities dates) to match Python
-  const gldasFeatureStart = gldas.dates[0];
-  const gldasFeatureEnd = gldas.dates[gldas.dates.length - 1];
-  const monthlyDates = generateMonthlyDates(gldasFeatureStart, gldasFeatureEnd);
-  const monthlyTimestamps = monthlyDates.map(d => new Date(d).getTime());
-  log(`Training date grid: ${monthlyDates.length} months from ${gldasFeatureStart} to ${gldasFeatureEnd}`);
-  log(`Output will be clipped to: ${startDate} to ${endDate}`);
+/** One MC+LNN fill; null when MC+LNN cannot fill the well */
+export function fillTask(basin: Basin, task: FillTask): FillResult | null {
+  const series = Float64Array.from(basin.raw[task.row]);
+  for (const t of task.hidden) series[t] = NaN;
+  return fillTarget(basin, task.row, series);
+}
 
-  // Build GLDAS lookup by date
-  const gldasByDate = new Map<string, number>();
-  for (let i = 0; i < gldas.dates.length; i++) {
-    gldasByDate.set(gldas.dates[i], i);
-  }
+const round = (v: number) => Math.round(v * 1000) / 1000;
+const rmseOf = (e: number[]) => Math.sqrt(e.reduce((a, x) => a + x * x, 0) / e.length);
 
-  // ===== PHASE A: PCHIP interpolation for ALL wells =====
-  // Matches Python interp_well(wells_df, gap_size, pad, spacing)
-  onProgress('PCHIP interpolation...', 12);
-  await tick();
-
-  const wellPchip = new Map<string, (number | null)[]>();
-
-  for (const { well, sorted } of qualifiedWells) {
-    const measTimestamps = sorted.map(m => m.ts);
-    const measValues = sorted.map(m => m.value);
-
-    // PCHIP at the months from the first reading up to (not including) the last, as Python blanks
-    // index >= end_meas_date, less the inside of each gap longer than gapSize, which keeps padSize of
-    // PCHIP at each end (Python: x_diff > gap_size; interp_df[meas + pad : next - pad] = np.nan)
-    const mask = pchipMonthMask(measTimestamps, monthlyTimestamps, gapSizeMs, padSizeMs);
-    const pchipIndices = mask.flatMap((m, i) => (m ? [i] : []));
-    const pchipFull: (number | null)[] = new Array(monthlyDates.length).fill(null);
-    if (pchipIndices.length > 0) {
-      const pchipValues = interpolatePCHIP(measTimestamps, measValues, pchipIndices.map(i => monthlyTimestamps[i]));
-      pchipIndices.forEach((idx, j) => { pchipFull[idx] = pchipValues[j]; });
-    }
-
-    wellPchip.set(well.id, pchipFull);
-  }
-
-  // Second filter: drop wells with < minSamples non-NaN PCHIP values
-  // Matches Python: well_interp_df.dropna(thresh=min_samples, axis=1). The fit needs
-  // MIN_TRAINING_MONTHS too; the wizard counts wells by the same rule.
-  const minMonths = Math.max(minSamples, MIN_TRAINING_MONTHS);
-  const activeWells: QualifiedWell[] = [];
-  for (const qw of qualifiedWells) {
-    const pchip = wellPchip.get(qw.well.id);
-    if (!pchip) continue;
-    const nonNullCount = pchip.filter(v => v !== null).length;
-    if (nonNullCount >= minMonths) {
-      activeWells.push(qw);
-    } else {
-      wellPchip.delete(qw.well.id);
-      log(`Well ${qw.well.name}: dropped after PCHIP (only ${nonNullCount} non-NaN values)`);
-    }
-  }
-
-  log(`PCHIP interpolation complete: ${activeWells.length} wells retained`);
-
-  // ===== PHASE B: Identify valid GLDAS rows =====
-  // Matches Python: combined_df.dropna(subset=names) — keep rows where GLDAS features are present
-  const validRowIndices: number[] = [];
-  for (let i = 0; i < monthlyDates.length; i++) {
-    if (gldasByDate.has(monthlyDates[i])) {
-      validRowIndices.push(i);
-    }
-  }
-  const nRows = validRowIndices.length;
-  log(`${nRows} months with soil moisture`);
-
-  if (nRows === 0) {
-    throw new Error('No soil moisture in the selected date range');
-  }
-
-  // GLDAS feature arrays for valid rows
-  const gldasSoilw = validRowIndices.map(i => gldas.soilw[gldasByDate.get(monthlyDates[i])!]);
-  const gldasYr01 = validRowIndices.map(i => gldas.soilw_yr01[gldasByDate.get(monthlyDates[i])!]);
-  const gldasYr03 = validRowIndices.map(i => gldas.soilw_yr03[gldasByDate.get(monthlyDates[i])!]);
-  const gldasYr05 = validRowIndices.map(i => gldas.soilw_yr05[gldasByDate.get(monthlyDates[i])!]);
-  const gldasYr10 = validRowIndices.map(i => gldas.soilw_yr10[gldasByDate.get(monthlyDates[i])!]);
-
-  // ===== PHASE C: Compute z-score statistics =====
-  // Matches Python: norm_df = zscore_training_data(combined_df, combined_df)
-  // Global per-column mean/std using sample std (ddof=1, pandas default)
-  onProgress('Computing normalization statistics...', 15);
-  await tick();
-
-  // Feature z-score stats (global, from ALL valid rows)
-  const gArrays = [gldasSoilw, gldasYr01, gldasYr03, gldasYr05, gldasYr10];
-  const featureMeans: number[] = [];
-  const featureStds: number[] = [];
-
-  for (let f = 0; f < 5; f++) {
-    let sum = 0;
-    for (let r = 0; r < nRows; r++) sum += gArrays[f][r];
-    const mean = sum / nRows;
-    featureMeans.push(mean);
-
-    let sumSq = 0;
-    for (let r = 0; r < nRows; r++) sumSq += (gArrays[f][r] - mean) ** 2;
-    // Sample std (ddof=1) matching pandas .std() default
-    featureStds.push(nRows > 1 ? Math.sqrt(sumSq / (nRows - 1)) || 1 : 1);
-  }
-
-  // PCHIP at the valid soil moisture rows, per well
-  const wellPchipAtRows = new Map<string, (number | null)[]>();
-  for (const { well } of activeWells) {
-    const pchipFull = wellPchip.get(well.id);
-    if (pchipFull) wellPchipAtRows.set(well.id, validRowIndices.map(i => pchipFull[i]));
-  }
-
-  // ===== PHASE D: Build feature matrix for ALL valid rows =====
-  // Columns: 5 z-scored GLDAS + 1 min-max year + 12 one-hot month + 1 bias = 19
-  // Matches Python: names = ['soilw', ..., 'soilw_yr10', 'year', 'month_1', ..., 'month_12'] + bias
-  log(`Each well's model is the mean of ${fits} ELM fit${fits === 1 ? '' : 's'} (${hiddenUnits} hidden units, λ=${lambda})`);
-  onProgress('Building feature matrix...', 18);
-  await tick();
-
-  // Year min-max normalization (matches Python: (year - min) / (max - min))
-  const years = validRowIndices.map(i => new Date(monthlyDates[i]).getUTCFullYear());
-  const yearMin = Math.min(...years);
-  const yearMax = Math.max(...years);
-  const yearRange = yearMax - yearMin || 1;
-
-  const allFeatures: number[][] = [];
-  for (let r = 0; r < nRows; r++) {
-    const d = new Date(monthlyDates[validRowIndices[r]]);
-    const year = d.getUTCFullYear();
-    const month = d.getUTCMonth(); // 0-11 (matches Python's 1-12 one-hot encoding order)
-
-    // Z-score GLDAS features (using global stats)
-    const zGldas = gArrays.map((arr, f) => (arr[r] - featureMeans[f]) / featureStds[f]);
-
-    // Min-max normalized year
-    const normYear = (year - yearMin) / yearRange;
-
-    // One-hot month (12 columns)
-    const monthOneHot = new Array(12).fill(0);
-    monthOneHot[month] = 1;
-
-    // Combine: 5 GLDAS + 1 year + 12 month + 1 bias = 19
-    // Bias matches Python: np.hstack((tx, np.ones(n).T))
-    allFeatures.push([...zGldas, normYear, ...monthOneHot, 1.0]);
-  }
-
-  // ===== PHASE E: Per-well ELM training and prediction =====
-  // Matches Python: impute_data(norm_df, well_names, names) — trains ELM for EVERY well
-
-  /**
-   * Fit the ELM to a well's PCHIP values at the rows (null where there is none) and predict every row, in the well's units.
-   * The targets are z-scored with the mean and sample standard deviation of the well's own PCHIP values
-   * (Python: norm_df[well] = (combined_df[well] - mean) / std). The model is the mean of `fits` ELMs, each with its own
-   * random weights, which more than halves how much the filled values change from one run to the next. R² and RMSE compare
-   * the mean with the PCHIP values.
-   */
-  const fitSeries = (pchipAtRows: (number | null)[]) => {
-    const values = pchipAtRows.filter((v): v is number => v !== null);
-    if (values.length < 3) return null;
-    const mean = values.reduce((a, b) => a + b, 0) / values.length;
-    const std = Math.sqrt(values.reduce((a, v) => a + (v - mean) ** 2, 0) / (values.length - 1)) || 1;
-    const trainIndices: number[] = [];
-    const trainTargets: number[] = [];
-    pchipAtRows.forEach((v, r) => { if (v !== null) { trainIndices.push(r); trainTargets.push((v - mean) / std); } });
-    const trainX = trainIndices.map(r => allFeatures[r]);
-    const trainSum = new Array(trainIndices.length).fill(0);
-    const predSum = new Array(allFeatures.length).fill(0);
-    for (let f = 0; f < fits; f++) {
-      // Matches Python: W_out = np.linalg.lstsq(X.T.dot(X) + lamb*I, X.T.dot(ty))
-      const elmResult = trainElm(trainX, trainTargets, hiddenUnits, lambda);
-      elmResult.trainPredictions.forEach((v, i) => { trainSum[i] += v; });
-      // Predict for ALL valid rows (Python: predict(all_tx_values, W_in, b, W_out))
-      predictElm(elmResult.model, allFeatures).forEach((v, i) => { predSum[i] += v; });
-    }
-    let ssTot = 0, ssRes = 0;
-    trainIndices.forEach((r, i) => {
-      const actual = pchipAtRows[r] as number;
-      ssTot += (actual - mean) ** 2;
-      ssRes += (actual - ((trainSum[i] / fits) * std + mean)) ** 2;
-    });
-    const pred = predSum.map(v => (v / fits) * std + mean);  // the mean of the fits, back in the well's units
-    return { pred, r2: ssTot === 0 ? 0 : 1 - ssRes / ssTot, rmse: Math.sqrt(ssRes / trainIndices.length), nTrain: trainIndices.length };
-  };
-
-  const rowTs = validRowIndices.map(i => monthlyTimestamps[i]);
-  const isoDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-  const rmseOf = (errors: number[]) => Math.sqrt(errors.reduce((a, e) => a + e * e, 0) / errors.length);
-
-  /**
-   * The hold-out check: hide a stretch from the middle of the well's record (checkWindow), fit the well again on the other
-   * readings, and score the hidden readings that fall between two months the model fills, against the shifted model and
-   * against the PCHIP curve through the other readings. Null when the well has too few readings for it.
-   */
-  const runCheck = (sorted: { ts: number; value: number }[]): ImputationCheck | null => {
-    const { from, to } = checkWindow(sorted.map(m => m.ts), gapSizeMs, padSizeMs);
-    const kept = sorted.filter(m => m.ts <= from || m.ts >= to);
-    const hidden = sorted.filter(m => m.ts > from && m.ts < to);
-    if (kept.filter(m => m.ts <= from).length < CHECK_MIN_BEFORE || kept.filter(m => m.ts >= to).length < CHECK_MIN_AFTER
-      || hidden.length < CHECK_MIN_SCORED) return null;
-    const keptTs = kept.map(m => m.ts), keptValues = kept.map(m => m.value);
-    const monthIdx = pchipMonthMask(keptTs, monthlyTimestamps, gapSizeMs, padSizeMs).flatMap((m, i) => (m ? [i] : []));
-    const full: (number | null)[] = new Array(monthlyDates.length).fill(null);
-    if (monthIdx.length > 0) {
-      const v = interpolatePCHIP(keptTs, keptValues, monthIdx.map(i => monthlyTimestamps[i]));
-      monthIdx.forEach((k, j) => { full[k] = v[j]; });
-    }
-    const atRows = validRowIndices.map(i => full[i]);
-    if (atRows.filter(v => v !== null).length < minMonths) return null;
-    const fit = fitSeries(atRows);
-    if (!fit) return null;
-    const series = shiftedSeries(atRows, fit.pred);
-    const scored: { ts: number; value: number; model: number }[] = [];
-    for (const h of hidden) {
-      let lo = 0, hi = rowTs.length;  // k = the last row at or before the reading
-      while (lo < hi) { const mid = (lo + hi) >> 1; if (rowTs[mid] <= h.ts) lo = mid + 1; else hi = mid; }
-      const k = lo - 1;
-      if (k < 0 || k >= rowTs.length - 1 || atRows[k] !== null || atRows[k + 1] !== null) continue;
-      const f = (h.ts - rowTs[k]) / (rowTs[k + 1] - rowTs[k]);
-      scored.push({ ts: h.ts, value: h.value, model: series[k] + f * (series[k + 1] - series[k]) });
-    }
-    if (scored.length < CHECK_MIN_SCORED) return null;
-    const pchipAt = interpolatePCHIP(keptTs, keptValues, scored.map(m => m.ts));
-    return {
-      from: isoDate(from), to: isoDate(to), n: scored.length,
-      model: rmseOf(scored.map(m => m.model - m.value)),
-      pchip: rmseOf(scored.map((m, i) => pchipAt[i] - m.value)),
-    };
-  };
-
-  const allDataRows: ImputationDataRow[] = [];
+/** Each well's series, metrics and check from the MC+LNN fills (keyed by task id), saved as the model file */
+export async function assembleModel(
+  input: ImputationPipelineInput, aquifer: Aquifer, region: Region, plan: ImputationPlan,
+  fills: Map<string, FillResult | null>, log: (msg: string) => void,
+): Promise<ImputationModelResult> {
+  const { monthTs, raw, targets } = plan;
+  const T = monthTs.length;
+  const y0 = new Date(monthTs[0]).getUTCFullYear(), m0 = new Date(monthTs[0]).getUTCMonth();
+  const monthOf = (ts: number) => { const d = new Date(ts); return (d.getUTCFullYear() - y0) * 12 + d.getUTCMonth() - m0; };
+  const holdMonths = Math.round(input.holdYears * 12);
+  const data: Record<string, ImputationWellSeries> = {};
   const wellMetrics: Record<string, ImputationWellMetrics> = {};
 
-  for (let wi = 0; wi < activeWells.length; wi++) {
-    const { well, sorted } = activeWells[wi];
-    const pct = 20 + (wi / activeWells.length) * 70;
-    onProgress(`ELM training well ${wi + 1}/${activeWells.length}...`, pct);
-    // Yield before each well's solve so progress text can repaint and Cancel takes effect between wells
-    await tick();
+  for (const target of targets) {
+    const { well, readings, row } = target;
+    const xs = readings.map(r => r.ts), ys = readings.map(r => r.value);
+    const mFirst = monthOf(xs[0]), mLast = monthOf(xs[xs.length - 1]);
+    const readMonths = new Set(xs.map(monthOf));
+    const fill = row >= 0 ? fills.get(`${well.id}|fill`) ?? null : null;
+    const nMeasured = row >= 0 ? raw[row].reduce((a, v) => a + (Number.isNaN(v) ? 0 : 1), 0) : readMonths.size;
+    const reach = nMeasured >= MIN_EXTRAP_OBS ? Infinity : SPARSE_EXTRAP;
 
-    const pchipAtRows = wellPchipAtRows.get(well.id);
-    if (!pchipAtRows || pchipAtRows.filter(v => v !== null).length < 3) {
-      log(`Well ${well.name}: skipped (too few months of record with soil moisture)`);
-      continue;
-    }
-
-    try {
-      const fit = fitSeries(pchipAtRows)!;
-      const combined = shiftedSeries(pchipAtRows, fit.pred);
-      const check = runCheck(sorted);
-      wellMetrics[well.id] = check ? { r2: fit.r2, rmse: fit.rmse, check } : { r2: fit.r2, rmse: fit.rmse };
-      log(`Well ${well.name}: ELM R²=${fit.r2.toFixed(4)}, RMSE=${fit.rmse.toFixed(2)} (${fit.nTrain} training pts); `
-        + (check ? `check, ${check.n} readings hidden from ${check.from} to ${check.to}: model RMSE ${check.model.toFixed(2)}, PCHIP ${check.pchip.toFixed(2)}`
-          : 'no check (too few readings)'));
-
-      // Rows: PCHIP where available, else the model shifted to meet it
-      for (let r = 0; r < nRows; r++) {
-        allDataRows.push({
-          well_id: well.id,
-          date: monthlyDates[validRowIndices[r]],
-          model: fit.pred[r],
-          pchip: pchipAtRows[r],
-          combined: combined[r],
-        });
+    const start = Math.max(0, mFirst - holdMonths), end = Math.min(T - 1, mLast + holdMonths);
+    const pchipAt = interpolatePCHIP(xs, ys, monthTs.slice(start, end + 1).map(ts => Math.min(Math.max(ts, xs[0]), xs[xs.length - 1])));
+    const values: number[] = [], model: (number | null)[] = [];
+    let source = '';
+    let k = 0;   // the last reading before the month
+    for (let m = start; m <= end; m++) {
+      const ts = monthTs[m];
+      if (m < mFirst || m > mLast) {
+        const out = m < mFirst ? mFirst - m : m - mLast;
+        const v = fill?.outside && out <= reach ? fill.outside[m] : NaN;
+        model.push(Number.isFinite(v) ? round(v) : null);
+        if (Number.isFinite(v)) { values.push(round(v)); source += 'm'; }
+        else { values.push(round(m < mFirst ? ys[0] : ys[ys.length - 1])); source += 'h'; }
+        continue;
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`Well ${well.name}: ELM training failed: ${msg}`);
+      const inside = fill ? fill.inside[m] : NaN;
+      model.push(Number.isFinite(inside) ? round(inside) : null);
+      while (k < xs.length - 2 && xs[k + 1] < ts) k++;
+      const longGap = !readMonths.has(m) && xs[k] < ts && ts < xs[k + 1] && (xs[k + 1] - xs[k]) / MS_PER_DAY >= MCLNN_GAP_DAYS;
+      if (longGap && Number.isFinite(inside)) { values.push(round(inside)); source += 'm'; }
+      else { values.push(round(pchipAt[m - start])); source += 'p'; }
     }
+    data[well.id] = { start: plan.months[start], values, source, ...(fill ? { model } : {}) };
+
+    // Metrics: MC+LNN's cross-fitted estimates at the measured months against the monthly readings
+    let metrics: ImputationWellMetrics;
+    if (fill) {
+      const obs: number[] = [], est: number[] = [];
+      raw[row].forEach((v, m) => { if (!Number.isNaN(v)) { obs.push(v); est.push(fill.inside[m]); } });
+      const mean = obs.reduce((a, b) => a + b, 0) / obs.length;
+      const ssTot = obs.reduce((a, v) => a + (v - mean) ** 2, 0);
+      const ssRes = obs.reduce((a, v, i) => a + (v - est[i]) ** 2, 0);
+      metrics = { filled: 'mc-lnn', neighbours: fill.neighbours, r2: ssTot > 0 ? 1 - ssRes / ssTot : 0, rmse: Math.sqrt(ssRes / obs.length) };
+    } else {
+      const reason = row < 0 ? `fewer than ${MIN_MATRIX_MONTHS} months with readings`
+        : nMeasured < MIN_MEAS ? `fewer than ${MIN_MEAS} months with readings`
+        : 'no nearby wells whose readings track it';
+      metrics = { filled: 'simple', reason };
+    }
+
+    // The check: the hidden readings against MC+LNN filled without them, and against PCHIP through the rest
+    const checkFill = target.check ? fills.get(`${well.id}|check`) ?? null : null;
+    let check: ImputationCheck | undefined;
+    if (target.check && checkFill) {
+      const { from, to } = target.check;
+      const kept = readings.filter(r => r.ts <= from || r.ts >= to), hidden = readings.filter(r => r.ts > from && r.ts < to);
+      const pchip = interpolatePCHIP(kept.map(r => r.ts), kept.map(r => r.value), hidden.map(r => r.ts));
+      const scored = hidden.map((r, i) => ({ r, model: checkFill.inside[monthOf(r.ts)], pchip: pchip[i] })).filter(s => Number.isFinite(s.model));
+      if (scored.length >= CHECK_MIN_SCORED) {
+        check = {
+          from: isoDate(from), to: isoDate(to), n: scored.length,
+          model: rmseOf(scored.map(s => s.model - s.r.value)), pchip: rmseOf(scored.map(s => s.pchip - s.r.value)),
+        };
+        metrics.check = check;
+      }
+    }
+    wellMetrics[well.id] = metrics;
+
+    const counts = { p: 0, m: 0, h: 0 } as Record<string, number>;
+    for (const c of source) counts[c]++;
+    log(`Well ${well.name || well.id}: `
+      + (fill ? `MC+LNN (${fill.neighbours} neighbours, R² ${metrics.r2!.toFixed(3)}, RMSE ${metrics.rmse!.toFixed(2)})` : `PCHIP and held readings only: ${metrics.reason}`)
+      + `; months: ${counts.p} PCHIP, ${counts.m} MC+LNN, ${counts.h} held`
+      + (check ? `; check, ${check.n} readings hidden ${check.from} to ${check.to}: MC+LNN ${check.model.toFixed(2)}, PCHIP ${check.pchip.toFixed(2)}` : ''));
   }
 
+  const filled = Object.values(wellMetrics).filter(m => m.filled === 'mc-lnn').length;
+  log(`${targets.length} wells filled, ${filled} by MC+LNN; ${plan.omitted} wells with readings left out (fewer than `
+    + `${input.minObservations} readings over ${input.minTimeSpan} years)`);
   const checks = summarizeChecks(wellMetrics);
-  log(checks
-    ? `Check: ${checks.wells} of ${Object.keys(wellMetrics).length} wells; the model was closer than PCHIP to the hidden readings at `
-      + `${checks.modelCloser} (${Math.round((100 * checks.modelCloser) / checks.wells)}%); median RMSE model ${checks.medianModel.toFixed(2)}, `
-      + `PCHIP ${checks.medianPchip.toFixed(2)}`
-    : 'Check: no well had enough readings to hide a stretch');
+  if (input.check) {
+    log(checks
+      ? `Check: ${checks.wells} wells; MC+LNN was closer than PCHIP to the hidden readings at ${checks.modelCloser} `
+        + `(${Math.round((100 * checks.modelCloser) / checks.wells)}%); median RMSE MC+LNN ${checks.medianModel.toFixed(2)}, PCHIP ${checks.medianPchip.toFixed(2)}`
+      : 'Check: no well had enough readings to hide a stretch');
+  }
 
-  // ===== Step 5: Save result (90-100%) =====
-  onProgress('Saving model...', 90);
-  await tick();
-
-  const code = slugify(title);
-  const aquiferSlug = slugify(aquifer.name);
-  const filePath = `${region.id}/${aquiferSlug}/model_wte_${code}.json`;
-
-  // Filter output rows to the user's requested date range
-  const outputStartTs = new Date(startDate).getTime();
-  const outputEndTs = new Date(endDate).getTime();
-  const outputRows = allDataRows.filter(row => {
-    const ts = new Date(row.date).getTime();
-    return ts >= outputStartTs && ts <= outputEndTs;
-  });
-
+  const code = slugify(input.title);
+  const filePath = `${region.id}/${slugify(aquifer.name)}/model_wte_${code}.json`;
   const params: ImputationParams = {
-    startDate,
-    endDate,
-    gldasStartDate: gldasFeatureStart,
-    gldasEndDate: gldasFeatureEnd,
-    minSamples,
-    gapSize,
-    padSize,
-    hiddenUnits,
-    lambda,
-    fits,
+    version: 2,
+    startDate: plan.months[0],
+    endDate: plan.months[T - 1],
+    minObservations: input.minObservations,
+    minTimeSpan: input.minTimeSpan,
+    holdYears: input.holdYears,
+    check: input.check,
   };
-
   const result: ImputationModelResult = {
-    title,
+    title: input.title,
     code,
     aquiferId: aquifer.id,
     aquiferName: aquifer.name,
@@ -472,15 +270,48 @@ export async function runImputationPipeline(
     createdAt: new Date().toISOString(),
     params,
     wellMetrics,
-    data: outputRows,
-    log: logLines,
+    data,
+    log: [],
   };
-
-  // Save to My Data
-  await saveFiles([{ path: filePath, content: JSON.stringify(result) }]);
-
-  onProgress('Complete!', 100);
-  onLog('Imputation complete! Model saved.');
-
   return result;
+}
+
+/** Saves a model with its log */
+export async function saveModel(result: ImputationModelResult, logLines: string[]): Promise<void> {
+  result.log = logLines;
+  await saveFiles([{ path: result.filePath, content: JSON.stringify(result) }]);
+}
+
+/**
+ * The whole run on this thread, for when workers are unavailable: plan, every fill in turn (yielding between them, so the
+ * page stays responsive and Cancel takes effect), assemble, save.
+ */
+export async function runImputationPipeline(
+  input: ImputationPipelineInput, aquifer: Aquifer, region: Region, wells: Well[], measurements: Measurement[],
+  onLog: (msg: string) => void, onProgress: (step: string, pct: number) => void, isCancelled?: () => boolean,
+): Promise<ImputationModelResult> {
+  const logLines: string[] = [];
+  const log = (msg: string) => { logLines.push(msg); onLog(msg); };
+  const plan = planImputation(input, wells, measurements);
+  log(describePlan(plan));
+  const basin = basinOf(plan);
+  const fills = new Map<string, FillResult | null>();
+  for (let i = 0; i < plan.tasks.length; i++) {
+    if (isCancelled?.()) throw new PipelineCancelledError();
+    onProgress(`MC+LNN: ${i} of ${plan.tasks.length} fills done`, 5 + (90 * i) / plan.tasks.length);
+    await new Promise(r => setTimeout(r, 0));
+    fills.set(plan.tasks[i].id, fillTask(basin, plan.tasks[i]));
+  }
+  onProgress('Saving model...', 95);
+  const result = await assembleModel(input, aquifer, region, plan, fills, log);
+  await saveModel(result, logLines);
+  onProgress('Complete!', 100);
+  return result;
+}
+
+export function describePlan(plan: ImputationPlan): string {
+  const checks = plan.tasks.filter(t => t.hidden.length > 0).length;
+  return `${plan.months.length} months, ${plan.months[0].slice(0, 7)} to ${plan.months[plan.months.length - 1].slice(0, 7)}; `
+    + `${plan.targets.length} wells to fill, ${plan.raw.length} wells with ${MIN_MATRIX_MONTHS}+ months of readings as neighbours; `
+    + `${plan.tasks.length - checks} MC+LNN fills and ${checks} checks`;
 }

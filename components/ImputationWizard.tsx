@@ -1,17 +1,13 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { X, ChevronLeft, ChevronRight, Play, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ReferenceLine, ReferenceArea, Cell,
-} from 'recharts';
+import { X, ChevronLeft, ChevronRight, Play, Loader2, CheckCircle2, AlertTriangle, Info } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Aquifer, Region, Well, Measurement, ImputationModelResult } from '../types';
 import { ImputationPipelineInput } from '../services/imputationPipeline';
 import { startImputation, AnalysisRun } from '../services/analysisClient';
 import { isPipelineCancelled } from '../services/pipelineCancel';
 import { slugify } from '../utils/strings';
 import PchipPreviewCanvas from './PchipPreviewCanvas';
-import { featureDateRange, monthlyTimestamps, pchipMonthMask, MIN_TRAINING_MONTHS } from '../utils/imputationMonths';
-import { summarizeChecks } from '../utils/imputationSeries';
+import { summarizeChecks, CHECK_YEARS } from '../utils/imputationSeries';
 
 interface ImputationWizardProps {
   aquifer: Aquifer;
@@ -19,7 +15,6 @@ interface ImputationWizardProps {
   wells: Well[];
   measurements: Measurement[];
   existingModelCodes: string[];
-  gldasDateRange: { min: string; max: string } | null;
   onClose: () => void;
   onComplete: (result: ImputationModelResult) => void;
 }
@@ -27,10 +22,10 @@ interface ImputationWizardProps {
 type Step = 1 | 2 | 'running' | 'complete';
 
 const STEP_LABELS = ['Wells & Options', 'Title & Run'];
+const MS_PER_YEAR = 365.25 * 86400000;
 
 const ImputationWizard: React.FC<ImputationWizardProps> = ({
-  aquifer, region, wells, measurements, existingModelCodes,
-  gldasDateRange, onClose, onComplete,
+  aquifer, region, wells, measurements, existingModelCodes, onClose, onComplete,
 }) => {
   const [step, setStep] = useState<Step>(1);
   const [progressText, setProgressText] = useState('');
@@ -43,177 +38,89 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
   // --- Log state ---
   const [logMessages, setLogMessages] = useState<string[]>([]);
   const logContainerRef = useRef<HTMLDivElement>(null);
-
-  // Auto-scroll log
   useEffect(() => {
-    if (logContainerRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-    }
+    if (logContainerRef.current) logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
   }, [logMessages]);
 
-  // --- Step 1 options ---
-  const [minSamples, setMinSamples] = useState(5);
-  const [gapSizeDays, setGapSizeDays] = useState(730);
-  const [padSizeDays, setPadSizeDays] = useState(180);
+  // --- Step 1 options: the same two well settings as Spatial Analysis (decision 100a) ---
+  const [minObs, setMinObs] = useState(5);
+  const [minSpanYears, setMinSpanYears] = useState(5);
+  const [holdYears, setHoldYears] = useState(10);
+  const [runCheck, setRunCheck] = useState(true);
 
   // --- Step 2 ---
   const [title, setTitle] = useState('');
+  const code = slugify(title);
+  const hasConflict = existingModelCodes.includes(code);
 
-  // Build well key set for fast lookup
   const wellKeySet = useMemo(() => new Set(wells.map(w => `${w.regionId}:${w.aquiferId}:${w.id}`)), [wells]);
-
-  // WTE measurements for this aquifer
   const wteMeasurements = useMemo(() =>
     measurements.filter(m => m.dataType === 'wte' && wellKeySet.has(`${m.regionId}:${m.aquiferId}:${m.wellId}`)),
   [measurements, wellKeySet]);
 
-  // The months a model can cover: the soil moisture record less its first ten years
-  const modelRange = useMemo(() => (gldasDateRange ? featureDateRange(gldasDateRange) : null), [gldasDateRange]);
-
-  // Data density analysis (same as SpatialAnalysisDialog but with 3%/5 threshold)
-  const { densityData, gldasFirstLabel, gldasLastLabel } = useMemo(() => {
-    const byWellDate = new Map<string, Set<string>>();
-    for (const m of wteMeasurements) {
-      if (!byWellDate.has(m.wellId)) byWellDate.set(m.wellId, new Set());
-      byWellDate.get(m.wellId)!.add(m.date);
-    }
-
-    let allMin = Infinity, allMax = -Infinity;
+  // Each well's reading times
+  const readingTimes = useMemo(() => {
+    const out = new Map<string, number[]>();
     for (const m of wteMeasurements) {
       const t = new Date(m.date).getTime();
-      if (!isNaN(t)) {
-        if (t < allMin) allMin = t;
-        if (t > allMax) allMax = t;
-      }
+      if (isNaN(t) || !Number.isFinite(m.value)) continue;
+      let list = out.get(m.wellId);
+      if (!list) out.set(m.wellId, list = []);
+      list.push(t);
     }
-
-    if (allMin === Infinity) {
-      return { densityData: [] };
-    }
-
-    const minYear = new Date(allMin).getFullYear();
-    const maxYear = new Date(allMax).getFullYear();
-
-    const bins: { label: string; start: Date; end: Date }[] = [];
-    for (let y = minYear; y <= maxYear; y++) {
-      bins.push({ label: `${y} H1`, start: new Date(y, 0, 1), end: new Date(y, 6, 1) });
-      bins.push({ label: `${y} H2`, start: new Date(y, 6, 1), end: new Date(y + 1, 0, 1) });
-    }
-
-    const densityData = bins.map(bin => {
-      const wellsInBin = new Set<string>();
-      for (const [wellId, dates] of byWellDate) {
-        for (const d of dates) {
-          const t = new Date(d);
-          if (t >= bin.start && t < bin.end) {
-            wellsInBin.add(wellId);
-            break;
-          }
-        }
-      }
-      return { label: bin.label, count: wellsInBin.size, startTs: bin.start.getTime() };
-    }).filter(b => b.startTs >= allMin - 365 * 86400000 && b.startTs <= allMax + 365 * 86400000);
-
-    // Bin labels of the model's months, shaded on the histogram
-    let gldasFirstLabel: string | undefined;
-    let gldasLastLabel: string | undefined;
-    if (modelRange) {
-      const gMin = new Date(modelRange.min).getTime();
-      const gMax = new Date(modelRange.max).getTime();
-      for (const b of densityData) {
-        if (b.startTs >= gMin && !gldasFirstLabel) gldasFirstLabel = b.label;
-        if (b.startTs <= gMax) gldasLastLabel = b.label;
-      }
-    }
-
-    return { densityData, gldasFirstLabel, gldasLastLabel };
-  }, [wteMeasurements, modelRange]);
-
-  // Output dates start as the model's months, set once the soil moisture record's dates arrive,
-  // unless they have been changed by then
-  const [startDate, setStartDate] = useState(modelRange?.min ?? '');
-  const [endDate, setEndDate] = useState(modelRange?.max ?? '');
-  const datesEdited = useRef(false);
-  const editStart = (v: string) => { datesEdited.current = true; setStartDate(v); };
-  const editEnd = (v: string) => { datesEdited.current = true; setEndDate(v); };
-  useEffect(() => {
-    if (modelRange && !datesEdited.current) {
-      setStartDate(modelRange.min);
-      setEndDate(modelRange.max);
-    }
-  }, [modelRange]);
-
-  const code = slugify(title);
-  const hasConflict = existingModelCodes.includes(code);
-
-  // Usable well count
-  const usableWellCount = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const m of wteMeasurements) {
-      counts.set(m.wellId, (counts.get(m.wellId) || 0) + 1);
-    }
-    let count = 0;
-    for (const c of counts.values()) if (c >= 2) count++;
-    return count;
+    for (const list of out.values()) list.sort((a, b) => a - b);
+    return out;
   }, [wteMeasurements]);
 
-  // Wells the run will model, by its own rule: at least minSamples readings, and at least
-  // minSamples (and MIN_TRAINING_MONTHS) months of PCHIP in the model's months, long gaps excepted
-  const minMonths = Math.max(minSamples, MIN_TRAINING_MONTHS);
-  const { qualifiedWellCount, fewReadings, fewMonths } = useMemo(() => {
-    const byWell = new Map<string, number[]>();
-    for (const m of wteMeasurements) {
-      const t = new Date(m.date).getTime();
-      if (isNaN(t)) continue;
-      if (!byWell.has(m.wellId)) byWell.set(m.wellId, []);
-      byWell.get(m.wellId)!.push(t);
-    }
-    if (!modelRange) return { qualifiedWellCount: 0, fewReadings: 0, fewMonths: 0 };
-    const months = monthlyTimestamps(modelRange.min, modelRange.max);
-    let qualified = 0, readings = 0, monthsShort = 0;
-    for (const ts of byWell.values()) {
-      if (ts.length < Math.max(2, minSamples)) { readings++; continue; }
-      ts.sort((a, b) => a - b);
-      const n = pchipMonthMask(ts, months, gapSizeDays * 86400000, padSizeDays * 86400000).filter(Boolean).length;
-      if (n >= minMonths) qualified++;
-      else monthsShort++;
-    }
-    return { qualifiedWellCount: qualified, fewReadings: readings, fewMonths: monthsShort };
-  }, [wteMeasurements, modelRange, minSamples, minMonths, gapSizeDays, padSizeDays]);
+  const usableWellCount = useMemo(() => [...readingTimes.values()].filter(l => l.length >= 2).length, [readingTimes]);
 
-  const gldasInfo = useMemo(() => {
-    if (!gldasDateRange || !modelRange) return 'Reading the dates of the soil moisture record...';
-    return `The model covers ${modelRange.min} to ${modelRange.max}: the soil moisture record from ${gldasDateRange.min}, less its first ten years, which go into the 10-year average. Output dates clip the result.`;
-  }, [gldasDateRange, modelRange]);
+  // The wells the run fills (the pipeline applies the same rule)
+  const qualifiedIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const [id, list] of readingTimes) {
+      if (list.length >= Math.max(2, minObs) && (list[list.length - 1] - list[0]) / MS_PER_YEAR >= minSpanYears) ids.add(id);
+    }
+    return ids;
+  }, [readingTimes, minObs, minSpanYears]);
 
-  // Validation
-  const step1Valid = startDate && endDate && startDate < endDate && wells.length > 0 && qualifiedWellCount > 0;
+  // The model's months: the aquifer's first reading to its last
+  const span = useMemo(() => {
+    let lo = Infinity, hi = -Infinity;
+    for (const list of readingTimes.values()) { lo = Math.min(lo, list[0]); hi = Math.max(hi, list[list.length - 1]); }
+    return lo === Infinity ? null : { from: new Date(lo).toISOString().slice(0, 7), to: new Date(hi).toISOString().slice(0, 7) };
+  }, [readingTimes]);
+
+  // Wells read in each half-year, split into the wells the run fills and the rest
+  const densityData = useMemo(() => {
+    let lo = Infinity, hi = -Infinity;
+    for (const list of readingTimes.values()) { lo = Math.min(lo, list[0]); hi = Math.max(hi, list[list.length - 1]); }
+    if (lo === Infinity) return [];
+    const y0 = new Date(lo).getUTCFullYear(), y1 = new Date(hi).getUTCFullYear();
+    const nBins = (y1 - y0 + 1) * 2;
+    const filled = new Array(nBins).fill(0), other = new Array(nBins).fill(0);
+    for (const [id, list] of readingTimes) {
+      const bins = new Set<number>();
+      for (const t of list) { const d = new Date(t); bins.add((d.getUTCFullYear() - y0) * 2 + (d.getUTCMonth() < 6 ? 0 : 1)); }
+      const into = qualifiedIds.has(id) ? filled : other;
+      for (const b of bins) into[b]++;
+    }
+    return Array.from({ length: nBins }, (_, b) => ({ label: `${y0 + (b >> 1)} ${b & 1 ? 'H2' : 'H1'}`, filled: filled[b], other: other[b] }));
+  }, [readingTimes, qualifiedIds]);
+
+  const step1Valid = qualifiedIds.size > 0 && holdYears >= 0;
   const step2Valid = title.trim().length > 0 && !hasConflict;
 
   const handleRun = async () => {
-    if (step === 'running') return; // a pipeline is already in flight
+    if (step === 'running') return; // a run is already in flight
     cancelledRef.current = false;
     setStep('running');
     setErrorMessage(null);
     setLogMessages([]);
 
-    const input: ImputationPipelineInput = {
-      title,
-      startDate,
-      endDate,
-      gldasStartDate: gldasDateRange?.min ?? startDate,
-      gldasEndDate: gldasDateRange?.max ?? endDate,
-      minSamples,
-      gapSize: gapSizeDays,
-      padSize: padSizeDays,
-      hiddenUnits: 500,
-      lambda: 100,
-      fits: 5,
-    };
+    const input: ImputationPipelineInput = { title, minObservations: minObs, minTimeSpan: minSpanYears, holdYears, check: runCheck };
 
     try {
-      // Batch log updates per animation frame — copying the accumulator
-      // and re-rendering per message is O(n²) over the run
+      // Batch log updates per animation frame — copying the accumulator and re-rendering per message is O(n²) over the run
       const logAccumulator: string[] = [];
       let logFlushScheduled = false;
       const pushLog = (msg: string) => {
@@ -228,27 +135,17 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
       };
 
       const run = startImputation(
-        {
-          input,
-          aquifer,
-          region,
-          wells,
-          measurements: measurements.filter(m => wellKeySet.has(`${m.regionId}:${m.aquiferId}:${m.wellId}`)),
-        },
+        { input, aquifer, region, wells, measurements: measurements.filter(m => wellKeySet.has(`${m.regionId}:${m.aquiferId}:${m.wellId}`)) },
         pushLog,
         (stepText, pct) => {
-          if (!cancelledRef.current) {
-            setProgressText(stepText);
-            setProgressPct(pct);
-          }
+          if (!cancelledRef.current) { setProgressText(stepText); setProgressPct(pct); }
         },
       );
       runRef.current = run;
-      const result = await run.promise;
-
+      const res = await run.promise;
       if (!cancelledRef.current) {
-        result.log = logAccumulator;
-        setResult(result);
+        setLogMessages([...logAccumulator]);
+        setResult(res);
         setStep('complete');
       }
     } catch (err) {
@@ -273,13 +170,10 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
     setErrorMessage(null);
   };
 
-  const startTs = startDate ? new Date(startDate).getTime() : undefined;
-  const endTs = endDate ? new Date(endDate).getTime() : undefined;
-
   const stepNumber = typeof step === 'number' ? step : null;
-
   const inputCls = "w-full px-2 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-2 focus:ring-amber-500 focus:border-amber-500";
   const labelCls = "block text-xs font-medium text-slate-600 mb-1";
+  const omitted = readingTimes.size - qualifiedIds.size;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40">
@@ -325,38 +219,26 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
           {/* ===== STEP 1: Wells & Options ===== */}
           {step === 1 && (
             <div className="space-y-5">
-              {/* PCHIP Preview */}
               {wteMeasurements.length > 0 && (
                 <div>
                   <h3 className="text-sm font-semibold text-slate-700 mb-1">
-                    WTE Time Series Preview ({usableWellCount} wells with 2+ observations)
+                    Water levels: {qualifiedIds.size} wells to fill (of {usableWellCount} with 2 or more readings)
                   </h3>
                   <div className="h-[180px] bg-slate-50 rounded-lg border border-slate-200">
-                    <PchipPreviewCanvas
-                      wells={wells}
-                      wteMeasurements={wteMeasurements}
-                      startTs={startTs}
-                      endTs={endTs}
-                      shadeRange={modelRange ? { min: new Date(modelRange.min).getTime(), max: new Date(modelRange.max).getTime() } : undefined}
-                    />
+                    <PchipPreviewCanvas wells={wells} wteMeasurements={wteMeasurements} highlightIds={qualifiedIds} />
                   </div>
                 </div>
               )}
 
-              {/* Data Density Histogram */}
               {densityData.length > 0 && (
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-700 mb-1">Data Density (wells per 6-month bin)</h3>
+                  <h3 className="text-sm font-semibold text-slate-700 mb-1">Wells read in each half-year</h3>
                   <div className="rfs-chart h-[130px] bg-slate-50 rounded-lg border border-slate-200 p-1">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={densityData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                         <XAxis dataKey="label" stroke="var(--chart-axis)" fontSize={9} interval="preserveStartEnd" />
                         <YAxis stroke="var(--chart-axis)" fontSize={10} />
-                        {gldasFirstLabel && gldasLastLabel && (
-                          <ReferenceArea x1={gldasFirstLabel} x2={gldasLastLabel} {...{ fill: '#3b82f6', fillOpacity: 0.08 } as any} />
-                        )}
-                        <ReferenceLine y={5} stroke="#f59e0b" strokeDasharray="4 3" strokeWidth={1.5} />
                         <Tooltip
                           content={({ payload }) => {
                             if (!payload || payload.length === 0) return null;
@@ -364,137 +246,61 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
                             return (
                               <div className="bg-white rounded shadow-md px-2 py-1 text-[10px] border border-slate-200">
                                 <div className="text-slate-700 font-medium">{d?.label}</div>
-                                <div className="text-slate-500">{d?.count} wells</div>
+                                <div className="text-amber-700">{d?.filled} wells to fill</div>
+                                <div className="text-slate-500">{d?.other} other wells</div>
                               </div>
                             );
                           }}
                         />
-                        <Bar dataKey="count" radius={[2, 2, 0, 0]}>
-                          {densityData.map((entry, i) => (
-                            <Cell
-                              key={i}
-                              fill={entry.count >= 5 ? '#f59e0b' : '#94a3b8'}
-                              fillOpacity={entry.count >= 5 ? 0.8 : 0.4}
-                            />
-                          ))}
-                        </Bar>
+                        <Bar dataKey="filled" stackId="wells" fill="#d97706" fillOpacity={0.8} />
+                        <Bar dataKey="other" stackId="wells" fill="#94a3b8" fillOpacity={0.4} radius={[2, 2, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
               )}
 
-              {/* Date Controls */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className={labelCls}>Output Start Date</label>
-                  <div className="flex items-center gap-1">
-                    <input type="date" value={startDate}
-                      min={modelRange?.min}
-                      max={endDate || modelRange?.max}
-                      onChange={e => {
-                        let v = e.target.value;
-                        if (modelRange && v < modelRange.min) v = modelRange.min;
-                        editStart(v);
-                      }}
-                      className={inputCls + ' flex-1'} />
-                    {!(modelRange && startDate <= modelRange.min) && (
-                      <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
-                        const y = parseInt(startDate); if (isNaN(y)) return;
-                        let next = `${y - 1}-01-01`;
-                        if (modelRange && next < modelRange.min) next = modelRange.min;
-                        editStart(next);
-                      }}>
-                        <svg width="14" height="14" viewBox="0 0 14 14"><path d="M9 2L4 7l5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      </button>
-                    )}
-                    {!(modelRange && startDate >= modelRange.max) && (
-                      <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
-                        const y = parseInt(startDate); if (isNaN(y)) return;
-                        let next = `${y + 1}-01-01`;
-                        if (modelRange && next > modelRange.max) next = modelRange.max;
-                        editStart(next);
-                      }}>
-                        <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 2l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      </button>
-                    )}
-                  </div>
+                  <label className={labelCls}>Min Observations / Well</label>
+                  <input type="number" value={minObs} min={2} max={500} step={1}
+                    onChange={e => setMinObs(Math.max(2, parseInt(e.target.value) || 5))} className={inputCls} />
                 </div>
                 <div>
-                  <label className={labelCls}>Output End Date</label>
-                  <div className="flex items-center gap-1">
-                    <input type="date" value={endDate}
-                      min={startDate || modelRange?.min}
-                      max={modelRange?.max}
-                      onChange={e => {
-                        let v = e.target.value;
-                        if (modelRange && v > modelRange.max) v = modelRange.max;
-                        editEnd(v);
-                      }}
-                      className={inputCls + ' flex-1'} />
-                    {!(modelRange && endDate <= modelRange.min) && (
-                      <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
-                        const y = parseInt(endDate); if (isNaN(y)) return;
-                        let next = `${y - 1}-01-01`;
-                        if (modelRange && next < modelRange.min) next = modelRange.min;
-                        editEnd(next);
-                      }}>
-                        <svg width="14" height="14" viewBox="0 0 14 14"><path d="M9 2L4 7l5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      </button>
-                    )}
-                    {!(modelRange && endDate >= modelRange.max) && (
-                      <button type="button" className="p-1 text-slate-400 hover:text-slate-700" onClick={() => {
-                        const y = parseInt(endDate); if (isNaN(y)) return;
-                        let next = `${y + 1}-01-01`;
-                        if (modelRange && next > modelRange.max) next = modelRange.max;
-                        editEnd(next);
-                      }}>
-                        <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 2l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      </button>
-                    )}
-                  </div>
+                  <label className={labelCls}>Min Time Span / Well (years)</label>
+                  <input type="number" value={minSpanYears} min={0} max={50} step={1}
+                    onChange={e => setMinSpanYears(Math.max(0, parseFloat(e.target.value) || 0))} className={inputCls} />
                 </div>
-
-                <div>
-                  <label className={labelCls}>Min Samples / Well</label>
-                  <input type="number" value={minSamples} min={2} max={500} step={1}
-                    onChange={e => setMinSamples(Math.max(2, parseInt(e.target.value) || 10))} className={inputCls} />
+                <div className="col-span-2 flex items-center gap-3 text-xs">
+                  <span className="text-amber-600 font-medium">{qualifiedIds.size} wells will be filled</span>
+                  {omitted > 0 && <span className="text-slate-400">{omitted} left out</span>}
                 </div>
                 <div>
-                  <label className={labelCls}>Gap Size (days)</label>
-                  <input type="number" value={gapSizeDays} min={1} max={7300} step={1}
-                    onChange={e => setGapSizeDays(Math.max(1, parseInt(e.target.value) || 730))} className={inputCls} />
-                  <p className="text-[10px] text-slate-400 mt-0.5">Gaps longer than this are filled by the <abbr title="Extreme learning machine: a fast single-layer neural network, trained here on each well's measurements and soil moisture to estimate water levels across long gaps" className="cursor-help">ELM</abbr> model</p>
+                  <label className={labelCls}>Fill beyond each record for up to (years)</label>
+                  <input type="number" value={holdYears} min={0} max={50} step={1}
+                    onChange={e => setHoldYears(Math.max(0, Math.min(50, parseInt(e.target.value) || 0)))} className={inputCls} />
                 </div>
-                <div>
-                  <label className={labelCls}>Pad Size (days)</label>
-                  <input type="number" value={padSizeDays} min={0} max={1800} step={1}
-                    onChange={e => setPadSizeDays(Math.max(0, parseInt(e.target.value) || 180))} className={inputCls} />
-                  <p className="text-[10px] text-slate-400 mt-0.5">PCHIP padding at gap boundaries</p>
-                </div>
-
-                <div className="col-span-2">
-                  <div className="flex items-center gap-3 text-xs">
-                    <span className="text-amber-600 font-medium">{modelRange ? `${qualifiedWellCount} wells qualify` : 'Counting wells...'}</span>
-                    {fewReadings > 0 && (
-                      <span className="text-slate-400">{fewReadings} with fewer than {Math.max(2, minSamples)} readings</span>
-                    )}
-                    {fewMonths > 0 && modelRange && (
-                      <span className="text-slate-400" title="Months from the first reading to the last, not counting the inside of gaps longer than the gap size">
-                        {fewMonths} with fewer than {minMonths} months of record from {modelRange.min}
-                      </span>
-                    )}
-                  </div>
+                <div className="flex items-end pb-1">
+                  <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-600">
+                    <input type="checkbox" checked={runCheck} onChange={e => setRunCheck(e.target.checked)} className="w-3.5 h-3.5 rounded accent-amber-600" />
+                    Check: hide {CHECK_YEARS} years of each well and fill them again (about twice as long)
+                  </label>
                 </div>
               </div>
 
-              {/* The model's months */}
-              {gldasInfo && (
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-start gap-2">
-                  <AlertTriangle size={14} className="text-blue-500 mt-0.5 shrink-0" />
-                  <p className="text-xs text-blue-700">{gldasInfo}</p>
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-start gap-2">
+                <Info size={14} className="text-blue-500 mt-0.5 shrink-0" />
+                <div className="text-xs text-blue-700 space-y-1">
+                  <p>
+                    Every month {span ? `from ${span.from} to ${span.to}` : ''} is filled. PCHIP fills gaps under 6 months. MC+LNN fills
+                    longer gaps and the years before and after each record, from nearby wells whose readings track the well.
+                  </p>
+                  <p>
+                    A well with fewer than 12 months of readings, or with no such nearby wells, gets PCHIP across all its gaps, and its
+                    first and last readings are held before and after its record.
+                  </p>
                 </div>
-              )}
+              </div>
             </div>
           )}
 
@@ -513,12 +319,8 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
 
               <div>
                 <label className={labelCls}>Title</label>
-                <input type="text" value={title} onChange={e => {
-                  const v = e.target.value.replace(/[^a-zA-Z0-9 _-]/g, '');
-                  setTitle(v);
-                }}
-                  placeholder="e.g. ELM Imputation 2024"
-                  className={inputCls} />
+                <input type="text" value={title} onChange={e => setTitle(e.target.value.replace(/[^a-zA-Z0-9 _-]/g, ''))}
+                  placeholder="e.g. Gap filling 2026" className={inputCls} />
                 {title && (
                   <div className="mt-1 flex items-center gap-2">
                     <span className="text-[10px] text-slate-400">{slugify(aquifer.name)}/model_wte_{code}.json</span>
@@ -527,16 +329,15 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
                 )}
               </div>
 
-              {/* Options summary */}
               <div className="bg-slate-50 rounded-lg border border-slate-200 p-4">
                 <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Options Summary</h4>
                 <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-slate-600">
-                  <div><span className="text-slate-400">Dates:</span> {startDate} to {endDate}</div>
-                  <div><span className="text-slate-400">Min Samples:</span> {minSamples}</div>
-                  <div><span className="text-slate-400">Gap Size:</span> {gapSizeDays} days</div>
-                  <div><span className="text-slate-400">Pad Size:</span> {padSizeDays} days</div>
-                  <div title="Extreme learning machine: a fast single-layer neural network, trained here on each well's measurements and soil moisture to estimate water levels across long gaps. Each well's model is the mean of five, each with its own random weights."><span className="text-slate-400">Model:</span> ELM (500 units, λ=100, mean of 5 fits)</div>
-                  <div><span className="text-slate-400">Wells:</span> {qualifiedWellCount} qualified</div>
+                  <div><span className="text-slate-400">Months:</span> {span ? `${span.from} to ${span.to}` : '—'}</div>
+                  <div><span className="text-slate-400">Wells:</span> {qualifiedIds.size}, with {minObs}+ readings over {minSpanYears}+ years</div>
+                  <div><span className="text-slate-400">Gaps under 6 months:</span> PCHIP</div>
+                  <div><span className="text-slate-400">Longer gaps:</span> MC+LNN, else PCHIP</div>
+                  <div><span className="text-slate-400">Beyond each record:</span> up to {holdYears} years</div>
+                  <div><span className="text-slate-400">Check:</span> {runCheck ? `${CHECK_YEARS} years hidden per well` : 'off'}</div>
                 </div>
               </div>
             </div>
@@ -549,21 +350,14 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
                 <Loader2 className="w-8 h-8 text-amber-500 animate-spin" />
                 <p className="text-sm text-slate-600">{progressText}</p>
                 <div className="w-80 bg-slate-200 rounded-full h-2.5">
-                  <div className="bg-amber-500 h-2.5 rounded-full transition-all duration-300"
-                    style={{ width: `${progressPct}%` }} />
+                  <div className="bg-amber-500 h-2.5 rounded-full transition-all duration-300" style={{ width: `${progressPct}%` }} />
                 </div>
                 <p className="text-xs text-slate-400">{Math.round(progressPct)}%</p>
               </div>
-
-              {/* Log viewer */}
               <div className="bg-slate-50 rounded-lg border border-slate-200 overflow-hidden">
                 <div className="px-3 py-1.5 bg-slate-100 text-[10px] text-slate-500 font-mono">Log</div>
                 <div ref={logContainerRef} className="h-[200px] overflow-y-auto px-3 py-2 font-mono text-[11px] text-slate-600 space-y-0.5">
-                  {logMessages.map((msg, i) => (
-                    <div key={i} className={msg.startsWith('ERROR') ? 'text-red-600' : msg.includes('R²') ? 'text-emerald-700' : ''}>
-                      {msg}
-                    </div>
-                  ))}
+                  {logMessages.map((msg, i) => <div key={i} className={msg.startsWith('ERROR') ? 'text-red-600' : ''}>{msg}</div>)}
                 </div>
               </div>
             </div>
@@ -576,32 +370,30 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
                 <CheckCircle2 className="w-12 h-12 text-amber-500" />
                 <h3 className="text-lg font-semibold text-slate-800">Imputation Complete</h3>
                 <div className="text-sm text-slate-600 text-center space-y-1">
-                  <p>{Object.keys(result.wellMetrics).length} wells modeled &bull; {result.data.length} data rows</p>
+                  {(() => {
+                    const metrics = Object.values(result.wellMetrics);
+                    const byMcl = metrics.filter(m => m.filled === 'mc-lnn').length;
+                    return <p>{metrics.length} wells filled, {byMcl} by MC+LNN and {metrics.length - byMcl} by PCHIP and held readings only</p>;
+                  })()}
                   {(() => {
                     const c = summarizeChecks(result.wellMetrics);
                     return c && (
                       <p>
-                        Hidden readings check: the model was closer than PCHIP at {c.modelCloser} of {c.wells} wells
+                        Hidden readings check: MC+LNN was closer than PCHIP at {c.modelCloser} of {c.wells} wells
                         (median RMSE {c.medianModel.toFixed(2)} vs {c.medianPchip.toFixed(2)})
                       </p>
                     );
                   })()}
-                  <p>{result.params.startDate} to {result.params.endDate}</p>
+                  <p>{result.params.startDate.slice(0, 7)} to {result.params.endDate.slice(0, 7)}</p>
                   <p>{result.aquiferName}</p>
                 </div>
               </div>
-
-              {/* Log viewer (collapsed) */}
               <details className="bg-slate-50 rounded-lg border border-slate-200 overflow-hidden">
                 <summary className="px-3 py-1.5 bg-slate-100 text-[10px] text-slate-500 font-mono cursor-pointer hover:bg-slate-200">
                   Processing Log ({logMessages.length} entries)
                 </summary>
                 <div className="h-[150px] overflow-y-auto px-3 py-2 font-mono text-[11px] text-slate-600 space-y-0.5">
-                  {logMessages.map((msg, i) => (
-                    <div key={i} className={msg.startsWith('ERROR') ? 'text-red-600' : msg.includes('R²') ? 'text-emerald-700' : ''}>
-                      {msg}
-                    </div>
-                  ))}
+                  {logMessages.map((msg, i) => <div key={i} className={msg.startsWith('ERROR') ? 'text-red-600' : ''}>{msg}</div>)}
                 </div>
               </details>
             </div>
@@ -618,7 +410,6 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
               </button>
             )}
           </div>
-
           <div>
             {stepNumber && stepNumber > 1 && (
               <button onClick={() => setStep((stepNumber - 1) as Step)}
@@ -628,7 +419,6 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
               </button>
             )}
           </div>
-
           <div>
             {step === 1 && (
               <button onClick={() => setStep(2)} disabled={!step1Valid}

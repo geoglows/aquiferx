@@ -371,7 +371,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
     let live = true;
     setModelWellIds(null);
     readJson<ImputationModelResult>(selectedModelFilePath)
-      .then(m => { if (live) setModelWellIds(new Set((m?.data ?? []).map(r => r.well_id))); })
+      .then(m => { if (live) setModelWellIds(new Set(Object.keys(m?.data ?? {}))); })
       .catch(() => { if (live) setModelWellIds(new Set()); });
     return () => { live = false; };
   }, [dataSource, selectedModelFilePath]);

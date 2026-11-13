@@ -177,17 +177,20 @@ export function softImpute(X: Float64Array, T: number, n: number, maxIters = 100
   for (let it = 0; it < maxIters; it++) {
     if (it > 0) ({ values, vectors } = gram());
     // X ≈ U S Vᵀ with U = X V / s: the thresholded reconstruction is X · Σ_k v_k (1 - shrink / s_k) v_kᵀ over s_k > shrink
-    const P = new Float64Array(n * n);
+    const keep: number[] = [], fac: number[] = [];
     for (let k = 0; k < n; k++) {
       const s = Math.sqrt(Math.max(0, values[k]));
-      if (!(s > shrink)) continue;
-      const f = 1 - shrink / s;
-      for (let a = 0; a < n; a++) { const va = vectors[a * n + k] * f; if (va === 0) continue; for (let b = 0; b < n; b++) P[a * n + b] += va * vectors[b * n + k]; }
+      if (s > shrink) { keep.push(k); fac.push(1 - shrink / s); }
     }
-    recon.fill(0);
+    const r = keep.length;
+    const V = new Float64Array(n * r), Vf = new Float64Array(n * r);   // kept eigenvectors, and scaled by (1 - shrink / s)
+    for (let a = 0; a < n; a++) for (let q = 0; q < r; q++) { const v = vectors[a * n + keep[q]]; V[a * r + q] = v; Vf[a * r + q] = v * fac[q]; }
+    const XV = new Float64Array(r);
     for (let t = 0; t < T; t++) {
       const o = t * n;
-      for (let a = 0; a < n; a++) { const xa = Xf[o + a]; if (xa === 0) continue; const pa = a * n; for (let b = 0; b < n; b++) recon[o + b] += xa * P[pa + b]; }
+      XV.fill(0);
+      for (let a = 0; a < n; a++) { const xa = Xf[o + a]; if (xa === 0) continue; const va = a * r; for (let q = 0; q < r; q++) XV[q] += xa * V[va + q]; }
+      for (let b = 0; b < n; b++) { let v = 0; const vb = b * r; for (let q = 0; q < r; q++) v += XV[q] * Vf[vb + q]; recon[o + b] = v; }
     }
     let ssd = 0, oldSq = 0;
     for (let q = 0; q < T * n; q++) if (missing[q]) { const dv = Xf[q] - recon[q]; ssd += dv * dv; oldSq += Xf[q] * Xf[q]; }
@@ -328,18 +331,14 @@ function ridgePredict(X: Float64Array, p: number, train: number[], y: number[], 
       for (let j = 0; j < p; j++) s += Z[oa + j] * Z[ob + j];
       K[a * n + b] = s; K[b * n + a] = s;
     }
-    const C = new Float64Array(m * n);   // Za Zᵀ
-    for (let a = 0; a < m; a++) for (let b = 0; b < n; b++) {
-      let s = 0; const oa = a * p, ob = b * p;
-      for (let j = 0; j < p; j++) s += Za[oa + j] * Z[ob + j];
-      C[a * n + b] = s;
-    }
     for (const alpha of alphas) {
       const A = Float64Array.from(K);
       for (let i = 0; i < n; i++) A[i * n + i] += alpha;
       const coef = cholSolve(A, n, yc);
+      const w = new Float64Array(p);   // the primal weights, Zᵀ coef
+      for (let b = 0; b < n; b++) { const cb = coef[b], o = b * p; for (let j = 0; j < p; j++) w[j] += cb * Z[o + j]; }
       const pred = new Float64Array(m);
-      for (let a = 0; a < m; a++) { let s = my; for (let b = 0; b < n; b++) s += C[a * n + b] * coef[b]; pred[a] = s; }
+      for (let a = 0; a < m; a++) { let s = my; const o = a * p; for (let j = 0; j < p; j++) s += Za[o + j] * w[j]; pred[a] = s; }
       out.push(pred);
     }
   } else {

@@ -249,23 +249,24 @@ export interface RasterAnalysisMeta {
   colocated?: { wells: number; places: number };
 }
 
+/**
+ * A gap-filling model's settings. Version 2 models are made by MC+LNN (decision 88a); a file without `version` was made by
+ * the ELM and can only be deleted (decision 102), see isCurrentModel.
+ */
 export interface ImputationParams {
-  startDate: string;       // output start
-  endDate: string;         // output end
-  gldasStartDate: string;  // training start (full GLDAS range)
-  gldasEndDate: string;    // training end
-  minSamples: number;
-  gapSize: number;       // days
-  padSize: number;       // days
-  hiddenUnits: number;
-  lambda: number;
-  fits?: number;         // ELM fits averaged for each well; absent in models made before averaging, which used one
+  version: 2;
+  startDate: string;        // the model's first month (YYYY-MM-01): the aquifer's first reading
+  endDate: string;          // its last month: the aquifer's last reading
+  minObservations: number;  // a well is filled when it has at least this many readings
+  minTimeSpan: number;      //   over at least this many years
+  holdYears: number;        // months filled before a well's first reading and after its last, in years
+  check: boolean;           // whether the hidden-readings check ran
 }
 
 /**
- * A well's hold-out check: the readings between `from` and `to` were left out, the well was fitted again on the rest, and
- * the stretch was filled both by the model (shifted, as saved) and by the PCHIP curve across it. `model` and `pchip` are
- * the RMSE of each against the `n` hidden readings scored, in the region's length unit.
+ * A well's hold-out check: the readings between `from` and `to` were left out, MC+LNN filled the well again without them,
+ * and the stretch was also filled by the PCHIP curve across it. `model` and `pchip` are the RMSE of each against the `n`
+ * hidden readings, in the region's length unit.
  */
 export interface ImputationCheck {
   from: string;
@@ -276,18 +277,27 @@ export interface ImputationCheck {
 }
 
 export interface ImputationWellMetrics {
-  r2: number;
-  rmse: number;
-  check?: ImputationCheck;  // absent when the well has too few readings to hide a stretch, and in models made before the check
+  /** 'mc-lnn' when MC+LNN filled the well; 'simple' when it could not (PCHIP inside the record, readings held outside) */
+  filled: 'mc-lnn' | 'simple';
+  /** Why MC+LNN could not fill the well */
+  reason?: string;
+  neighbours?: number;
+  /** MC+LNN's estimates at the measured months, each made without that stretch of the record, against the monthly readings */
+  r2?: number;
+  rmse?: number;
+  check?: ImputationCheck;  // absent when the check was off or the well has too few readings to hide a stretch
 }
 
-export interface ImputationDataRow {
-  well_id: string;
-  date: string;          // ISO date, monthly
-  model: number | null;  // ELM prediction
-  pchip: number | null;  // PCHIP interpolation
-  combined: number;      // the saved series: pchip where available, else the model shifted to meet pchip (models made before
-                         // the shift hold the model unshifted)
+/**
+ * One well's monthly series from `start` (YYYY-MM-01), one entry per month: the filled value, how it was filled (`source`,
+ * one letter per month: p PCHIP between readings, m MC+LNN, h the first or last reading held), and MC+LNN's own estimate
+ * (`model`, null where it has none; absent when MC+LNN could not fill the well).
+ */
+export interface ImputationWellSeries {
+  start: string;
+  values: number[];
+  source: string;
+  model?: (number | null)[];
 }
 
 export interface ImputationModelResult {
@@ -301,7 +311,7 @@ export interface ImputationModelResult {
   createdAt: string;
   params: ImputationParams;
   wellMetrics: Record<string, ImputationWellMetrics>;
-  data: ImputationDataRow[];
+  data: Record<string, ImputationWellSeries>;
   log: string[];
 }
 
@@ -318,6 +328,9 @@ export interface ImputationModelMeta {
   createdAt: string;
   wellMetrics: Record<string, ImputationWellMetrics>;
 }
+
+/** False for a model made by the ELM (no params.version), which the app lists only so it can be deleted */
+export const isCurrentModel = (m: { params?: { version?: number } }) => m.params?.version === 2;
 
 /** What the map draws, set from the DISPLAY section of the left panel. */
 export interface MapDisplay {
