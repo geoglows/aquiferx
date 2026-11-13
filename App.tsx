@@ -1287,16 +1287,6 @@ const App: React.FC = () => {
                 )}
               </>
             )}
-            {selectedAquifer && (
-              <button
-                onClick={() => unlessSample('build a raster from it', () => setRasterDialogOpen(true))}
-                className="rfs-btn icon"
-                data-tip="Spatial Analysis"
-                aria-label="Spatial Analysis"
-              >
-                <Grid3x3 size={20} className="text-[#34d399]" />
-              </button>
-            )}
             {selectedAquifer && selectedDataType === 'wte' && (
               <button
                 onClick={handleOpenImputationWizard}
@@ -1305,6 +1295,16 @@ const App: React.FC = () => {
                 aria-label="Impute Gaps"
               >
                 <Wand2 size={20} className="text-[#fbbf24]" />
+              </button>
+            )}
+            {selectedAquifer && (
+              <button
+                onClick={() => unlessSample('build a raster from it', () => setRasterDialogOpen(true))}
+                className="rfs-btn icon"
+                data-tip="Spatial Analysis"
+                aria-label="Spatial Analysis"
+              >
+                <Grid3x3 size={20} className="text-[#34d399]" />
               </button>
             )}
           </div>
