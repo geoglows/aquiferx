@@ -48,11 +48,11 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
   const [holdYears, setHoldYears] = useState(10);
   const [runCheck, setRunCheck] = useState(true);
 
-  // --- Step 2: the title starts as the method's name, numbered when the aquifer already has one (decision 107a) ---
+  // --- Step 2: the title starts as the file's name, mc_lnn, numbered when the aquifer already has one (decision 107) ---
   const defaultTitle = useMemo(() => {
     for (let k = 1; ; k++) {
-      const t = k === 1 ? 'MC+LNN' : `MC+LNN ${k}`;
-      if (!existingModelCodes.includes(slugify(t))) return t;
+      const t = k === 1 ? 'mc_lnn' : `mc_lnn_${k}`;
+      if (!existingModelCodes.includes(t)) return t;
     }
   }, [existingModelCodes]);
   const [title, setTitle] = useState(defaultTitle);
@@ -325,7 +325,7 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
 
               <div>
                 <label className={labelCls}>Title</label>
-                <input type="text" value={title} onChange={e => setTitle(e.target.value.replace(/[^a-zA-Z0-9 _+-]/g, ''))}
+                <input type="text" value={title} onChange={e => setTitle(e.target.value.replace(/[^a-zA-Z0-9 _-]/g, ''))}
                   placeholder={defaultTitle} className={inputCls} />
                 {title && (
                   <div className="mt-1 flex items-center gap-2">

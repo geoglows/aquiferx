@@ -749,7 +749,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           <input
             autoFocus
             value={editValue}
-            onChange={e => setEditValue(e.target.value.replace(/[^a-zA-Z0-9 _+-]/g, ''))}
+            onChange={e => setEditValue(e.target.value.replace(/[^a-zA-Z0-9 _-]/g, ''))}
             onKeyDown={e => {
               if (e.key === 'Enter') {
                 const trimmed = editValue.trim();
