@@ -8,7 +8,7 @@ import { saveFiles, deleteFile, deleteFolder, readJson, renameAnalysis, download
 import SettingsDialog from './components/SettingsDialog';
 import ConfirmDialog from './components/import/ConfirmDialog';
 import { slugify } from './utils/strings';
-import MapView, { MapViewHandle, WELL_COUNT_COLORS } from './components/MapView';
+import MapView, { MapViewHandle, WELL_COUNT_COLORS, MODEL_WELL_COLORS, ModelWellStatus } from './components/MapView';
 import Sidebar from './components/Sidebar';
 import TimeSeriesChart from './components/TimeSeriesChart';
 import ImportDataHub from './components/import/ImportDataHub';
@@ -104,6 +104,12 @@ const App: React.FC = () => {
   const [modelMeta, setModelMeta] = useState<ImputationModelMeta[]>([]);
   const [imputationDialogOpen, setImputationDialogOpen] = useState(false);
   const [selectedModel, setSelectedModel] = useState<ImputationModelResult | null>(null);
+  // The open model's wells and how each was filled, for the map's well colours (decision 111a)
+  const modelWellStatus = useMemo<ModelWellStatus | null>(() => {
+    if (!selectedModel || !isCurrentModel(selectedModel) || selectedDataType !== 'wte') return null;
+    if (selectedModel.aquiferId !== selectedAquifer?.id || selectedModel.regionId !== selectedAquifer?.regionId) return null;
+    return new Map(Object.entries(selectedModel.wellMetrics).map(([id, m]) => [id, m.filled]));
+  }, [selectedModel, selectedAquifer?.id, selectedAquifer?.regionId, selectedDataType]);
   // A model made by the ELM, clicked: it can only be deleted (decision 102)
   const [oldModelNotice, setOldModelNotice] = useState<ImputationModelMeta | null>(null);
   const [showCombinedModel, setShowCombinedModel] = useState(false);
@@ -1324,6 +1330,7 @@ const App: React.FC = () => {
               selectedWells={selectedWells}
               selectedDataType={selectedDataType}
               wellColors={showTrends ? trendColors : null}
+              modelWellStatus={modelWellStatus}
               aquiferColors={showTrends && !selectedAquifer ? aquiferTrendColors : null}
               wellTimeRanges={wellTimeRanges}
               onRegionClick={(r) => {
@@ -1366,6 +1373,15 @@ const App: React.FC = () => {
                       <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#4b5563' }} />
                       <span className="text-xs text-[var(--text-dim)]">Inactive</span>
                     </div>
+                  </>
+                ) : modelWellStatus ? (
+                  <>
+                    {([['mc-lnn', 'Filled by MC+LNN'], ['simple', 'PCHIP and held readings only'], ['none', 'Not in the model']] as const).map(([key, label]) => (
+                      <div key={key} className="flex items-center gap-2 py-0.5">
+                        <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: MODEL_WELL_COLORS[key] }} />
+                        <span className="text-xs text-[var(--text-dim)]">{label}</span>
+                      </div>
+                    ))}
                   </>
                 ) : (
                   <>

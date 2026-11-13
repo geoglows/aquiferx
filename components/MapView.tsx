@@ -16,6 +16,10 @@ const BasemapIcon = () => (
 
 /** Well marker fill by how many measurements of the current data type a well has. App's legend uses the same values. */
 export const WELL_COUNT_COLORS = { none: '#ef4444', one: '#6b7280', many: '#0000ff' };
+/** With a model open (decision 111a): how the model filled each well, in the chart's colours */
+export const MODEL_WELL_COLORS = { 'mc-lnn': '#3b82f6', simple: '#ef4444', none: '#9ca3af' };
+const MODEL_WELL_LABELS = { 'mc-lnn': 'Filled by MC+LNN', simple: 'PCHIP and held readings only', none: 'Not in the model' };
+export type ModelWellStatus = Map<string, 'mc-lnn' | 'simple'>;
 
 const BASEMAPS = {
   'Topographic (Esri)': {
@@ -68,6 +72,8 @@ interface MapViewProps {
   selectedDataType?: string;
   wellColors?: Map<string, string> | null;
   aquiferColors?: Map<string, string> | null;
+  /** The open model's wells and how each was filled; wells missing from it are not in the model. Null with no model open. */
+  modelWellStatus?: ModelWellStatus | null;
   // Eligible-well time ranges for the active raster (null when the
   // Active Wells toggle is off). The per-frame active set is derived
   // here from the playback-frame context.
@@ -102,6 +108,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
   selectedDataType = 'wte',
   wellColors,
   aquiferColors,
+  modelWellStatus,
   wellTimeRanges,
   onRegionClick,
   onAquiferClick,
@@ -715,7 +722,9 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
         if (dateFilterPassingWells && !dateFilterPassingWells.has(wellKey)) return;
         visible.push(w);
         const trendColor = wellColors?.get(w.id);
-        const defaultColor = measurementCount === 0 ? WELL_COUNT_COLORS.none
+        const modelKey = modelWellStatus ? modelWellStatus.get(w.id) ?? 'none' : null;
+        const defaultColor = modelKey ? MODEL_WELL_COLORS[modelKey]
+          : measurementCount === 0 ? WELL_COUNT_COLORS.none
           : measurementCount === 1 ? WELL_COUNT_COLORS.one
           : WELL_COUNT_COLORS.many;
         const marker = L.circleMarker([w.lat, w.lng], {
@@ -733,6 +742,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
           const map = mapRef.current;
           const others = map ? wellsUnderPoint(map.latLngToContainerPoint(L.latLng(w.lat, w.lng))).length - 1 : 0;
           return `Well: ${w.name}<br/>ID: ${w.id}${w.gse ? `<br/>GSE: ${w.gse}${unit}` : ''}${w.depth != null ? `<br/>Well depth: ${w.depth}${unit}` : ''}<br/>Observations: ${measurementCount}`
+            + (modelKey ? `<br/>${MODEL_WELL_LABELS[modelKey]}` : '')
             + (others > 0 ? `<br/><i>${others} more well${others === 1 ? '' : 's'} here; click to choose</i>` : '');
         }, { direction: 'top' });
         marker.on('click', (e) => {
@@ -773,7 +783,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
       prevSelectedAquiferIdRef.current = null;
     }
     visibleWellsRef.current = visible;
-  }, [wells, selectedAquifer, wellMeasurementCounts, minObs, dateFilterPassingWells, wellColors, selectedRegion?.lengthUnit]);
+  }, [wells, selectedAquifer, wellMeasurementCounts, minObs, dateFilterPassingWells, wellColors, modelWellStatus, selectedRegion?.lengthUnit]);
 
   // Update marker styles when selection or raster active wells change — no clearing/recreation
   useEffect(() => {
@@ -787,7 +797,8 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
         ? (rasterActiveWellIds.has(wellId) ? '#22c55e' : '#4b5563')
         : null;
       const measurementCount = wellMeasurementCounts.get(wellKeyMap.get(wellId) || '') || 0;
-      const defaultFill = measurementCount === 0 ? WELL_COUNT_COLORS.none
+      const defaultFill = modelWellStatus ? MODEL_WELL_COLORS[modelWellStatus.get(wellId) ?? 'none']
+        : measurementCount === 0 ? WELL_COUNT_COLORS.none
         : measurementCount === 1 ? WELL_COUNT_COLORS.one
         : WELL_COUNT_COLORS.many;
       marker.setStyle({
@@ -797,7 +808,7 @@ const MapView = forwardRef<MapViewHandle, MapViewProps>(({
         weight: isSelected ? 2 : 1,
       });
     });
-  }, [selectedWells, wells, wellColors, rasterActiveWellIds, wellMeasurementCounts]);
+  }, [selectedWells, wells, wellColors, rasterActiveWellIds, wellMeasurementCounts, modelWellStatus]);
 
   // Well labels
   useEffect(() => {
