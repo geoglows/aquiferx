@@ -25,14 +25,17 @@ const COLORS = { pchip: '#ef4444', mcl: '#3b82f6', held: '#94a3b8', reading: '#2
 const KEY_OF: Record<string, 'pchip' | 'mcl' | 'held'> = { p: 'pchip', m: 'mcl', h: 'held' };
 const NAMES: Record<string, string> = {
   pchip: 'PCHIP', mcl: 'MC+LNN', held: 'Held reading', measurement: 'Reading', estimate: 'MC+LNN estimate',
-  curve: 'PCHIP', smooth: 'MAvg',
+  curve: 'PCHIP', smooth: 'MAvg', test: 'Test value',
 };
+const MS_PER_YEAR = 365.25 * 864e5;
 
 const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
   model, well, measurements, showCombined, onToggleCombined, lengthUnit,
   showSmooth = false, smoothMonths = 3, showGSE = false,
 }) => {
   const [logExpanded, setLogExpanded] = useState(false);
+  // MC+LNN's test values as dots beside its estimate; off to start with
+  const [showTests, setShowTests] = useState(false);
 
   const wellMetrics = model.wellMetrics[well.id];
   const series = model.data[well.id];
@@ -73,8 +76,20 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
         if (smoothed) rows[k].smooth = smoothed.get(monthTs[k]) ?? null;
       });
     } else {
-      // MC+LNN's own estimate for every month, and the PCHIP curve through the readings
-      series.model?.forEach((v, k) => { rows[k].estimate = v; });
+      // MC+LNN's estimate for every month, and its test values as dots if asked for
+      if (series.test) {
+        series.model?.forEach((v, k) => { rows[k].estimate = v; });
+        if (showTests) series.test.forEach(([k, v]) => { if (rows[k]) rows[k].test = v; });
+      } else if (series.model) {
+        // Older models kept the test values in place of the estimate in the months with readings: draw the line without them
+        const y0 = parseInt(series.start.slice(0, 4)), m0 = parseInt(series.start.slice(5, 7)) - 1;
+        const readK = new Set(readings.map(r => { const d = new Date(r.ts); return (d.getUTCFullYear() - y0) * 12 + d.getUTCMonth() - m0; }));
+        series.model.forEach((v, k) => {
+          if (!readK.has(k)) rows[k].estimate = v;
+          else if (showTests) rows[k].test = v;
+        });
+      }
+      // The PCHIP curve through the readings
       if (readings.length >= 2) {
         const first = readings[0].ts, last = readings[readings.length - 1].ts;
         const inside = monthTs.map((ts, k) => [ts, k] as const).filter(([ts]) => ts >= first && ts <= last);
@@ -94,7 +109,7 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
       rows[k].measurement = r.value;
     }
     return [...rows, ...extra].sort((a, b) => (a.date as number) - (b.date as number));
-  }, [series, monthTs, readings, showCombined, smoothed]);
+  }, [series, monthTs, readings, showCombined, smoothed, showTests]);
 
   const yDomain = useMemo(() => {
     let min = Infinity, max = -Infinity;
@@ -122,16 +137,23 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
   [chartData]);
 
   if (!series) {
+    // Which of the two settings the well misses (readings at the same time count once, as in Impute Gaps)
+    const times = [...new Set(readings.map(r => r.ts))];
+    const { minObservations: minObs, minTimeSpan: minSpan } = model.params;
+    const span = times.length ? (times[times.length - 1] - times[0]) / MS_PER_YEAR : 0;
+    const reason = times.length < Math.max(2, minObs)
+      ? `it has ${times.length} reading${times.length === 1 ? '' : 's'}, fewer than ${minObs}`
+      : `its readings span ${span.toFixed(1)} years, less than ${minSpan}`;
     return (
       <div className="flex items-center justify-center h-full text-sm text-[var(--text-faint)] px-4 text-center">
-        This well is not in the model: it has fewer than {model.params.minObservations} readings over {model.params.minTimeSpan} years.
+        This well is not in the model: {reason}.
       </div>
     );
   }
 
-  const line = (key: string, color: string, width = 1.5, dash?: string) => (
+  const line = (key: string, color: string, width = 1.5, dash?: string, connect = false) => (
     <Line key={key} type="monotone" dataKey={key} stroke={color} strokeWidth={width} strokeDasharray={dash}
-      dot={false} connectNulls={false} name={NAMES[key]} animationDuration={400} />
+      dot={false} connectNulls={connect} name={NAMES[key]} animationDuration={400} />
   );
 
   return (
@@ -145,17 +167,24 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
             <input type="checkbox" checked={showCombined} onChange={onToggleCombined} className="accent-amber-600" />
             Combined
           </label>
+          {!showCombined && wellMetrics?.filled === 'mc-lnn' && (
+            <label className="flex items-center gap-1 text-[10px] text-amber-800 cursor-pointer select-none"
+              title="MC+LNN's test values: at each month with readings, its value with that sixth of the well's record hidden. R² and RMSE compare them with the readings.">
+              <input type="checkbox" checked={showTests} onChange={e => setShowTests(e.target.checked)} className="accent-amber-600" />
+              Test values
+            </label>
+          )}
         </div>
         {wellMetrics && (
           <div className="flex items-center gap-2">
             {wellMetrics.filled === 'mc-lnn' ? (
               <>
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-medium cursor-help"
-                  title="MC+LNN's estimate at each month with readings, made without that stretch of the record, against the readings">
+                  title="MC+LNN's test values against the readings: at each month with readings, its value with that sixth of the record hidden (tick Test values to see them)">
                   R² = {wellMetrics.r2?.toFixed(3)}
                 </span>
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium cursor-help"
-                  title="MC+LNN's estimate at each month with readings, made without that stretch of the record, against the readings">
+                  title="MC+LNN's test values against the readings: at each month with readings, its value with that sixth of the record hidden (tick Test values to see them)">
                   RMSE = {wellMetrics.rmse?.toFixed(2)} {lengthUnit}
                 </span>
               </>
@@ -200,7 +229,11 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
             {showCombined
               ? [line('pchip', COLORS.pchip), line('mcl', COLORS.mcl), line('held', COLORS.held, 1.5, '4 3'),
                  ...(smoothed ? [line('smooth', COLORS.smooth, 2, '6 3')] : [])]
-              : [line('curve', COLORS.pchip, 1.5), line('estimate', COLORS.mcl, 1.5)]}
+              : [line('curve', COLORS.pchip, 1.5), line('estimate', COLORS.mcl, 1.5, undefined, true),
+                 ...(showTests ? [
+                   <Line key="test" type="monotone" dataKey="test" stroke={COLORS.mcl} strokeWidth={0} connectNulls={false}
+                     dot={{ r: 3, fill: 'var(--surface)', stroke: COLORS.mcl, strokeWidth: 1.5 }} name={NAMES.test} isAnimationActive={false} />,
+                 ] : [])]}
             <Line type="monotone" dataKey="measurement" stroke={COLORS.reading} strokeWidth={0}
               dot={{ fill: COLORS.reading, r: 3, strokeWidth: 0 }} connectNulls={false} name="Reading" isAnimationActive={false} />
 
@@ -211,6 +244,8 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
                     <span key={entry.value} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: entry.color || '#666' }}>
                       {entry.value === 'Reading' ? (
                         <svg width="8" height="8"><circle cx="4" cy="4" r="4" fill={COLORS.reading} /></svg>
+                      ) : entry.value === NAMES.test ? (
+                        <svg width="9" height="9"><circle cx="4.5" cy="4.5" r="3.5" fill="none" stroke={COLORS.mcl} strokeWidth="1.5" /></svg>
                       ) : entry.value === 'MAvg' || entry.value === 'Held reading' ? (
                         <svg width="14" height="2"><line x1="0" y1="1" x2="14" y2="1" stroke={entry.color} strokeWidth="2" strokeDasharray="3 2" /></svg>
                       ) : (

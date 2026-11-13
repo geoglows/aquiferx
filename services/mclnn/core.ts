@@ -363,10 +363,11 @@ function ridgePredict(X: Float64Array, p: number, train: number[], y: number[], 
 }
 
 /**
- * core.readout: the penalty is chosen by 6-block contiguous cross-validation over the measured months; the result predicts
- * every month, the measured ones holding their cross-fitted (out-of-block) predictions. Null under MIN_MEAS months.
+ * core.readout: the penalty is chosen by 6-block contiguous cross-validation over the measured months. `full` is the fit on
+ * every measured month, predicting every month; `test` holds, at the measured months, the cross-fitted (out-of-block)
+ * predictions. (The Python returns one array: `full` with `test` written over the measured months.) Null under MIN_MEAS.
  */
-function readout(X: Float64Array, p: number, T: number, ret: number[], yv: number[]): Float64Array | null {
+function readout(X: Float64Array, p: number, T: number, ret: number[], yv: number[]): { full: Float64Array; test: Float64Array } | null {
   const n = ret.length;
   if (n < MIN_MEAS) return null;
   const gid = new Array(n);
@@ -388,23 +389,24 @@ function readout(X: Float64Array, p: number, T: number, ret: number[], yv: numbe
   });
   const all = Array.from({ length: T }, (_, t) => t);
   const full = ridgePredict(X, p, ret, yv, all, [ALPHAS[best]])[0];
-  ret.forEach((t, i) => { full[t] = preds[best][i]; });
-  return full;
+  const test = new Float64Array(T).fill(NaN);
+  ret.forEach((t, i) => { test[t] = preds[best][i]; });
+  return { full, test };
 }
 
-/** core.climate_series: the mean over the seeds of the cross-fitted readouts; null under MIN_MEAS measured months */
-function climateSeries(U: Float64Array, T: number, d: number, series: Float64Array): Float64Array | null {
+/** core.climate_series: the mean over the seeds of the readouts, `full` and `test` kept apart; null under MIN_MEAS */
+function climateSeries(U: Float64Array, T: number, d: number, series: Float64Array): { full: Float64Array; test: Float64Array } | null {
   const ret: number[] = [], yv: number[] = [];
   for (let t = 0; t < T; t++) if (!Number.isNaN(series[t])) { ret.push(t); yv.push(series[t]); }
   if (ret.length < MIN_MEAS) return null;
-  const sum = new Float64Array(T);
+  const full = new Float64Array(T), test = new Float64Array(T);
   for (const { X, p } of reservoirFeatures(U, T, d)) {
     const r = readout(X, p, T, ret, yv);
     if (!r) return null;
-    for (let t = 0; t < T; t++) sum[t] += r[t];
+    for (let t = 0; t < T; t++) { full[t] += r.full[t]; test[t] += r.test[t]; }
   }
-  for (let t = 0; t < T; t++) sum[t] /= SEEDS;
-  return sum;
+  for (let t = 0; t < T; t++) { full[t] /= SEEDS; test[t] /= SEEDS; }
+  return { full, test };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -437,8 +439,10 @@ export function prepareBasin(raw: Float64Array[], calendarMonth: number[]): Basi
 }
 
 export interface TargetFill {
-  /** Inside the record: neighbours, season and trend (core.mc_lnn_predict on U[:, -3:]); cross-fitted at measured months */
+  /** Inside the record: neighbours, season and trend (core.mc_lnn_predict on U[:, -3:]), fitted on every measured month */
   inside: Float64Array;
+  /** The same readout's test values: at each measured month, predicted with that sixth of the record left out; NaN elsewhere */
+  insideTest: Float64Array;
   /** Outside the record: neighbours and season (core.extrap_predict) */
   outside: Float64Array | null;
   neighbours: number;
@@ -473,5 +477,5 @@ export function fillTarget(basin: Basin, i: number, series: Float64Array): Targe
   }
   const inside = climateSeries(Uin, T, dIn, series);
   if (!inside) return null;
-  return { inside, outside: climateSeries(Uout, T, dOut, series), neighbours: k };
+  return { inside: inside.full, insideTest: inside.test, outside: climateSeries(Uout, T, dOut, series)?.full ?? null, neighbours: k };
 }

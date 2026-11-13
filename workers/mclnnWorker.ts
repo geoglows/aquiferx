@@ -5,7 +5,7 @@
  *   in:  { type: 'init', raw, calendarMonth }   the basin's monthly matrix, once
  *        { type: 'task', task }                 one fill (FillTask)
  *   out: { type: 'ready' }
- *        { type: 'result', id, result }         result: { inside, outside, neighbours } or null
+ *        { type: 'result', id, result }         result: { inside, insideTest, outside, neighbours } or null
  *        { type: 'error', message }
  */
 import { basinOf, fillTask, FillTask } from '../services/imputationPipeline';
@@ -24,7 +24,7 @@ self.onmessage = (e: MessageEvent<{ type: 'init'; raw: Float64Array[]; calendarM
       if (!basin) throw new Error('MC+LNN worker used before init');
       const r = fillTask(basin, msg.task);
       if (!r) { post({ type: 'result', id: msg.task.id, result: null }); return; }
-      const transfer: Transferable[] = [r.inside.buffer as ArrayBuffer];
+      const transfer: Transferable[] = [r.inside.buffer as ArrayBuffer, r.insideTest.buffer as ArrayBuffer];
       if (r.outside) transfer.push(r.outside.buffer as ArrayBuffer);
       post({ type: 'result', id: msg.task.id, result: r }, transfer);
     }

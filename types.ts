@@ -297,7 +297,11 @@ export interface ImputationWellSeries {
   start: string;
   values: number[];
   source: string;
+  /** MC+LNN's estimate for every month, fitted on all the well's readings (wells MC+LNN filled) */
   model?: (number | null)[];
+  /** MC+LNN's test values, [index into values, value], one per month with readings, each predicted with that sixth of the
+   *  record left out; R² and RMSE come from them. Missing in models made before they were kept apart from `model`. */
+  test?: [number, number][];
 }
 
 export interface ImputationModelResult {

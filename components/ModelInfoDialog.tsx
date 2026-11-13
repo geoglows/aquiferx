@@ -77,7 +77,7 @@ const ModelInfoDialog: React.FC<ModelInfoDialogProps> = ({ meta, onClose }) => {
                   <div className={rowCls}><span className={labelCls}>By MC+LNN</span><span className={valueCls}>{byMcl.length}</span></div>
                   <div className={rowCls}><span className={labelCls}>PCHIP and held readings only</span><span className={valueCls}>{wellCount - byMcl.length}</span></div>
                   {medR2 !== null && (
-                    <div className={rowCls} title="MC+LNN's estimate at each month with readings, made without that stretch of the record, against the readings">
+                    <div className={rowCls} title="From MC+LNN's test values: at each month with readings, its value with that sixth of the record hidden, against the readings">
                       <span className={labelCls}>Median R², MC+LNN</span><span className={valueCls}>{medR2.toFixed(3)}</span>
                     </div>
                   )}

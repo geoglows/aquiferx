@@ -42,7 +42,7 @@ interface TargetPlan {
 
 /** One MC+LNN fill: matrix row `row` with the months `hidden` left out (a check), or none (the well's fill) */
 export interface FillTask { id: string; row: number; hidden: number[] }
-export interface FillResult { inside: Float64Array; outside: Float64Array | null; neighbours: number }
+export interface FillResult { inside: Float64Array; insideTest: Float64Array; outside: Float64Array | null; neighbours: number }
 
 export interface ImputationPlan {
   months: string[];          // the model's months, YYYY-MM-01
@@ -193,13 +193,18 @@ export async function assembleModel(
       if (longGap && Number.isFinite(inside)) { values.push(round(inside)); source += 'm'; }
       else { values.push(round(pchipAt[m - start])); source += 'p'; }
     }
-    data[well.id] = { start: plan.months[start], values, source, ...(fill ? { model } : {}) };
+    // MC+LNN's test values at the measured months, as [index into values, value]
+    const test: [number, number][] = [];
+    if (fill) raw[row].forEach((v, m) => {
+      if (!Number.isNaN(v) && m >= start && m <= end && Number.isFinite(fill.insideTest[m])) test.push([m - start, round(fill.insideTest[m])]);
+    });
+    data[well.id] = { start: plan.months[start], values, source, ...(fill ? { model, test } : {}) };
 
-    // Metrics: MC+LNN's cross-fitted estimates at the measured months against the monthly readings
+    // Metrics: MC+LNN's test values at the measured months against the monthly readings
     let metrics: ImputationWellMetrics;
     if (fill) {
       const obs: number[] = [], est: number[] = [];
-      raw[row].forEach((v, m) => { if (!Number.isNaN(v)) { obs.push(v); est.push(fill.inside[m]); } });
+      raw[row].forEach((v, m) => { if (!Number.isNaN(v)) { obs.push(v); est.push(fill.insideTest[m]); } });
       const mean = obs.reduce((a, b) => a + b, 0) / obs.length;
       const ssTot = obs.reduce((a, v) => a + (v - mean) ** 2, 0);
       const ssRes = obs.reduce((a, v, i) => a + (v - est[i]) ** 2, 0);
