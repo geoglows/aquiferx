@@ -15,6 +15,8 @@ interface ModelTimeSeriesProps {
   /** Combined: the filled series, coloured by how each month was filled. Otherwise MC+LNN's own estimate beside the readings. */
   showCombined: boolean;
   onToggleCombined: () => void;
+  /** False for a well MC+LNN could not fill: no Combined checkbox, the saved series only */
+  canToggleCombined?: boolean;
   lengthUnit: 'ft' | 'm';
   showSmooth?: boolean;
   smoothMonths?: number;
@@ -30,7 +32,7 @@ const NAMES: Record<string, string> = {
 const MS_PER_YEAR = 365.25 * 864e5;
 
 const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
-  model, well, measurements, showCombined, onToggleCombined, lengthUnit,
+  model, well, measurements, showCombined, onToggleCombined, canToggleCombined = true, lengthUnit,
   showSmooth = false, smoothMonths = 3, showGSE = false,
 }) => {
   const [logExpanded, setLogExpanded] = useState(false);
@@ -162,11 +164,13 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
       <div className="flex items-center justify-between px-3 py-1.5 bg-amber-50 border-b border-amber-200">
         <div className="flex items-center gap-3">
           <span className="text-xs font-semibold text-amber-800">Model: {model.title}</span>
-          <label className="flex items-center gap-1 text-[10px] text-amber-800 cursor-pointer select-none"
-            title="Ticked: the filled series, coloured by how each month was filled. Unticked: MC+LNN's own estimate for every month beside the readings.">
-            <input type="checkbox" checked={showCombined} onChange={onToggleCombined} className="accent-amber-600" />
-            Combined
-          </label>
+          {canToggleCombined && (
+            <label className="flex items-center gap-1 text-[10px] text-amber-800 cursor-pointer select-none"
+              title="Ticked: PCHIP and MC+LNN combined into the series the model saved, coloured by how each month was filled. Unticked: the two as full lines beside the readings.">
+              <input type="checkbox" checked={showCombined} onChange={onToggleCombined} className="accent-amber-600" />
+              Combined
+            </label>
+          )}
           {!showCombined && wellMetrics?.filled === 'mc-lnn' && (
             <label className="flex items-center gap-1 text-[10px] text-amber-800 cursor-pointer select-none"
               title="MC+LNN's test values: at each month with readings, its value with that sixth of the well's record hidden. R² and RMSE compare them with the readings.">
@@ -227,7 +231,9 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
             />
 
             {showCombined
-              ? [line('pchip', COLORS.pchip), line('mcl', COLORS.mcl), line('held', COLORS.held, 1.5, '4 3'),
+              ? [...(series.source.includes('p') ? [line('pchip', COLORS.pchip)] : []),
+                 ...(series.source.includes('m') ? [line('mcl', COLORS.mcl)] : []),
+                 ...(series.source.includes('h') ? [line('held', COLORS.held, 1.5, '4 3')] : []),
                  ...(smoothed ? [line('smooth', COLORS.smooth, 2, '6 3')] : [])]
               : [line('curve', COLORS.pchip, 1.5), line('estimate', COLORS.mcl, 1.5, undefined, true),
                  ...(showTests ? [

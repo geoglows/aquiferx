@@ -110,6 +110,9 @@ const App: React.FC = () => {
     if (selectedModel.aquiferId !== selectedAquifer?.id || selectedModel.regionId !== selectedAquifer?.regionId) return null;
     return new Map(Object.entries(selectedModel.wellMetrics).map(([id, m]) => [id, m.filled]));
   }, [selectedModel, selectedAquifer?.id, selectedAquifer?.regionId, selectedDataType]);
+  // A well MC+LNN could not fill has no MC+LNN line to compare, so its chart always shows the saved series (decision 112a)
+  const modelWellHasEstimate = !!selectedModel && selectedWells.length === 1
+    && selectedModel.wellMetrics?.[selectedWells[0].id]?.filled === 'mc-lnn';
   // A model made by the ELM, clicked: it can only be deleted (decision 102)
   const [oldModelNotice, setOldModelNotice] = useState<ImputationModelMeta | null>(null);
   const [showCombinedModel, setShowCombinedModel] = useState(false);
@@ -1596,7 +1599,7 @@ const App: React.FC = () => {
                               </label>
                             </>
                           )}
-                          {!(selectedModel && selectedWells.length === 1 && !showCombinedModel) && (
+                          {!(selectedModel && selectedWells.length === 1 && !showCombinedModel && modelWellHasEstimate) && (
                             <>
                               <label className="flex items-center gap-1.5 text-xs text-[var(--text-dim)] cursor-pointer select-none">
                                 <input type="checkbox" checked={showSmooth} onChange={(e) => setShowSmooth(e.target.checked)} className="rfs-check" />
@@ -1754,7 +1757,8 @@ const App: React.FC = () => {
                         model={selectedModel}
                         well={selectedWells[0]}
                         measurements={measurements}
-                        showCombined={showCombinedModel}
+                        showCombined={showCombinedModel || !modelWellHasEstimate}
+                        canToggleCombined={modelWellHasEstimate}
                         onToggleCombined={() => {
                           setShowCombinedModel(p => {
                             if (p) setShowSmooth(false); // reset smooth when switching to separated
