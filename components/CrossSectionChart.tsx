@@ -3,6 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
 import { CrossSectionProfile } from '../types';
+import { niceDomain } from '../utils/chartAxes';
 
 interface CrossSectionChartProps {
   profile: CrossSectionProfile;
@@ -21,6 +22,9 @@ const CrossSectionChart: React.FC<CrossSectionChartProps> = ({ profile, frameIdx
   }, [profile, frameIdx]);
 
   const unitLabel = lengthUnit === 'm' ? 'm' : 'ft';
+  // Fixed over every date, on round values
+  const yDomain = useMemo(() => niceDomain(profile.elevationRange[0], profile.elevationRange[1]), [profile]);
+  const fmt = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -30,7 +34,7 @@ const CrossSectionChart: React.FC<CrossSectionChartProps> = ({ profile, frameIdx
           dataKey="distance"
           type="number"
           domain={['dataMin', 'dataMax']}
-          tickFormatter={(v: number) => v.toFixed(0)}
+          tickFormatter={fmt}
           stroke="var(--chart-axis)"
           fontSize={10}
           label={{ value: `Distance (${unitLabel})`, position: 'insideBottom', offset: -2, style: { fill: 'var(--chart-text)', fontSize: 10 } }}
@@ -38,8 +42,9 @@ const CrossSectionChart: React.FC<CrossSectionChartProps> = ({ profile, frameIdx
         <YAxis
           stroke="var(--chart-axis)"
           fontSize={10}
-          domain={[profile.elevationRange[0], profile.elevationRange[1]]}
-          tickFormatter={(v: number) => v.toFixed(0)}
+          domain={yDomain}
+          allowDataOverflow
+          tickFormatter={fmt}
           label={{ value: `Elevation (${unitLabel})`, angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: 'var(--chart-text)', fontSize: 10 } }}
         />
         <Tooltip
@@ -50,7 +55,7 @@ const CrossSectionChart: React.FC<CrossSectionChartProps> = ({ profile, frameIdx
             return (
               <div className="rfs-tip px-2 py-1.5 text-[10px]">
                 <div className="text-[var(--text-faint)] mb-0.5">{profile.frameDates[frameIdx]}</div>
-                <div className="text-[var(--text-dim)]">Distance: {p.distance.toFixed(0)} {unitLabel}</div>
+                <div className="text-[var(--text-dim)]">Distance: {fmt(p.distance)} {unitLabel}</div>
                 <div className="text-blue-700 font-medium">Elevation: {p.elevation.toFixed(1)} {unitLabel}</div>
               </div>
             );

@@ -5,6 +5,7 @@ import {
 import { Settings } from 'lucide-react';
 import { RasterFrameStats } from '../types';
 import { dateTime } from '../utils/dates';
+import { niceDomain, yearTicks } from '../utils/chartAxes';
 
 interface RasterStatsChartProps {
   stats: RasterFrameStats[];
@@ -70,9 +71,12 @@ const RasterStatsChart: React.FC<RasterStatsChartProps> = ({
       if (showIqr) { lo = Math.min(lo, d.p25); hi = Math.max(hi, d.p75); }
       if (showMinMax) { lo = Math.min(lo, d.min); hi = Math.max(hi, d.max); }
     }
-    const pad = (hi - lo) * 0.05 || 1;
-    return [Math.floor(lo - pad), Math.ceil(hi + pad)];
+    return niceDomain(lo, hi);
   }, [chartData, showStd, showMedian, showIqr, showMinMax]);
+
+  const xTicks = useMemo(() =>
+    chartData.length === 0 ? [] : yearTicks(chartData[0].date, chartData[chartData.length - 1].date),
+  [chartData]);
 
   if (chartData.length === 0) return <div className="text-sm text-[var(--text-faint)] p-4">No statistics available.</div>;
 
@@ -111,13 +115,15 @@ const RasterStatsChart: React.FC<RasterStatsChartProps> = ({
         <ComposedChart data={chartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
           <XAxis
-            dataKey="date" type="number" domain={['dataMin', 'dataMax']}
-            tickFormatter={(t: number) => new Date(t).getFullYear().toString()}
+            dataKey="date" type="number" domain={['dataMin', 'dataMax']} ticks={xTicks}
+            tickFormatter={(t: number) => new Date(t).getUTCFullYear().toString()}
             stroke="var(--chart-axis)" fontSize={10}
           />
           <YAxis
             stroke="var(--chart-axis)" fontSize={10}
             domain={yDomain}
+            // The bands are stacked on transparent areas that start at zero; without this the axis stretched down to 0
+            allowDataOverflow
             tickFormatter={(v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 1 })}
             label={{ value: `${dataTypeName} (${dataTypeUnit})`, angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: 'var(--chart-text)', fontSize: 10 } }}
           />

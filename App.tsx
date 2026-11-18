@@ -22,6 +22,7 @@ import ModelInfoDialog from './components/ModelInfoDialog';
 import RasterOverlay from './components/RasterOverlay';
 import CrossSectionChart from './components/CrossSectionChart';
 import { computeStorageChange } from './utils/storageVolume';
+import { yearTicks } from './utils/chartAxes';
 import RasterStatsChart from './components/RasterStatsChart';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
@@ -1583,7 +1584,7 @@ const App: React.FC = () => {
                             Cross Section A–A'
                           </h3>
                           <span className="text-xs text-[var(--text-faint)]">
-                            ({crossSectionProfile.totalLength.toFixed(0)} {selectedRegion?.lengthUnit || 'ft'})
+                            ({crossSectionProfile.totalLength.toLocaleString(undefined, { maximumFractionDigits: 0 })} {selectedRegion?.lengthUnit || 'ft'})
                           </span>
                         </>
                       ) : rasterResult ? (
@@ -1827,7 +1828,8 @@ const App: React.FC = () => {
                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                           <XAxis
                             dataKey="date" type="number" domain={['dataMin', 'dataMax']}
-                            tickFormatter={(t: number) => new Date(t).getFullYear().toString()}
+                            ticks={yearTicks(storageChartData[0].date, storageChartData[storageChartData.length - 1].date)}
+                            tickFormatter={(t: number) => new Date(t).getUTCFullYear().toString()}
                             stroke="var(--chart-axis)" fontSize={10}
                           />
                           {/* Compact ticks (-1.5M) leave room for the unit label; the tooltip gives full values */}

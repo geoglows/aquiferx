@@ -546,8 +546,14 @@ const RasterOverlay: React.FC<RasterOverlayProps> = ({
     const group = L.layerGroup().addTo(map);
     crossSectionLayerRef.current = group;
 
-    // Cross-section line
+    // Cross-section line, on a white edge so it shows over the dark end of the color ramps
     const lineColor = '#1e5a8a';
+    L.polyline([crossSectionStart, crossSectionEnd], {
+      color: '#fff',
+      weight: 6,
+      opacity: 0.9,
+      interactive: false,
+    }).addTo(group);
     L.polyline([crossSectionStart, crossSectionEnd], {
       color: lineColor,
       weight: 2.5,
