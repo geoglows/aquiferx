@@ -235,6 +235,17 @@ export async function runRasterAnalysis(
 
   console.log(`[RasterAnalysis] ${wellInterp.size}/${wells.length} wells qualified (method=${temporal.method}, minObs=${temporal.minObservations}, minSpan=${temporal.minTimeSpan}yr)`);
 
+  // The wells' values before any log transform, for the statistics, and the first and last map date each well has a value
+  const wellValues = [...wellInterp.values()].map(e => e.values.slice());
+  const wellSpans: Record<string, [string, string]> = {};
+  for (const [id, { values }] of wellInterp) {
+    const first = values.findIndex(v => v !== null && Number.isFinite(v));
+    if (first < 0) continue;
+    let last = values.length - 1;
+    while (values[last] === null || !Number.isFinite(values[last]!)) last--;
+    wellSpans[id] = [intervalDates[first], intervalDates[last]];
+  }
+
   // Apply log transform to well values before spatial interpolation.
   // Non-positive values have no log — treat them as missing rather than
   // letting NaN/-Infinity poison the variogram and the whole raster.
@@ -384,16 +395,16 @@ export async function runRasterAnalysis(
     frames.push({ date: intervalDates[ti], values: gridValues });
   }
 
-  // Step 6: Compute per-frame statistics from well-level values
+  // Step 6: Compute per-frame statistics from well-level values, in the data's own units
   onProgress('Computing statistics...', 82);
   await tick();
 
   const stats: RasterFrameStats[] = [];
   for (let ti = 0; ti < intervalDates.length; ti++) {
     const vals: number[] = [];
-    for (const [, { values }] of wellInterp) {
+    for (const values of wellValues) {
       const v = values[ti];
-      if (v !== null) vals.push(v);
+      if (v !== null && Number.isFinite(v)) vals.push(v);
     }
     if (vals.length === 0) {
       stats.push({ date: intervalDates[ti], count: 0, min: 0, max: 0, mean: 0, std: 0, median: 0, p25: 0, p75: 0 });
@@ -485,6 +496,7 @@ export async function runRasterAnalysis(
     generatedAt: new Date().toISOString(),
     stats,
     colocated,
+    wellSpans,
   };
 
   // Save to My Data — per-aquifer subfolder with raster_ prefix.

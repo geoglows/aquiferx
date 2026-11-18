@@ -222,6 +222,8 @@ export interface RasterAnalysisResult {
   /** Wells closer than the place distance, and the places they share, averaged into one point each
    *  (maps made before Spatial Analysis kept one well per place, at 10 m) */
   colocated?: { wells: number; places: number };
+  /** Each well on the maps: the first and last map date at which it has a value (maps made before November 2026 lack it) */
+  wellSpans?: Record<string, [string, string]>;
 }
 
 export interface CrossSectionProfile {

@@ -675,7 +675,19 @@ const App: React.FC = () => {
   const wellTimeRanges = useMemo<Map<string, [number, number]> | null>(() => {
     if (!showActiveWells || !rasterResult) return null;
 
+    // A map made since November 2026 saves the dates each of its wells has a value
+    if (rasterResult.wellSpans) {
+      const shown = new Set(filteredWells.map(w => w.id));
+      const ranges = new Map<string, [number, number]>();
+      for (const [id, [first, last]] of Object.entries(rasterResult.wellSpans)) {
+        if (shown.has(id)) ranges.set(id, [Date.parse(first), Date.parse(last)]);
+      }
+      return ranges;
+    }
+
+    // Older maps: worked out again from the readings, less the wells left out at shared places
     const opts = rasterResult.options;
+    const leftOut = new Set((opts?.places?.leftOut ?? []).map(x => x.id));
     const dataType = rasterResult.dataType;
     const minObs = opts?.temporal.minObservations ?? 2;
     const minSpanYears = opts?.temporal.minTimeSpan ?? 0;
@@ -701,6 +713,7 @@ const App: React.FC = () => {
 
     const ranges = new Map<string, [number, number]>();
     for (const w of filteredWells) {
+      if (leftOut.has(w.id)) continue;
       const entry = byWellKey.get(`${w.regionId}:${w.aquiferId}:${w.id}`);
       if (!entry || entry.count < Math.max(2, minObs)) continue;
       const spanYears = (entry.maxT - entry.minT) / (365.25 * 24 * 60 * 60 * 1000);
