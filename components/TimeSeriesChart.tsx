@@ -491,7 +491,12 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
         : finalChartData.length > 0
           ? (() => { const range = (finalChartData[finalChartData.length - 1].date as number) - (finalChartData[0].date as number); const pad = range * 0.02; return [finalChartData[0].date as number - pad, finalChartData[finalChartData.length - 1].date as number + pad] as [number, number]; })()
           : ['auto', 'auto'];
-  const xTicks = xDomain[0] === 'auto' ? { ticks: [] as number[], format: formatXAxis } : dateTicks(xDomain[0], xDomain[1] as number);
+  // Unzoomed, the axis also stretches to take in every point (allowDataOverflow is off), so the ticks cover the data too. With
+  // ticks for the trend window alone, a 30-year window over a 110-year record left the first 80 years unlabelled.
+  const xTickRange: [number, number] | null = xDomain[0] === 'auto' ? null
+    : zoomLeft != null && zoomRight != null ? xDomain as [number, number]
+    : finalChartData.reduce<[number, number]>((r, p) => [Math.min(r[0], p.date as number), Math.max(r[1], p.date as number)], xDomain as [number, number]);
+  const xTicks = xTickRange ? dateTicks(xTickRange[0], xTickRange[1]) : { ticks: [] as number[], format: formatXAxis };
 
   const wellNameMap = new Map<string, string>();
   for (const w of selectedWells) {
