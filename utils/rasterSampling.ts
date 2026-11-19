@@ -31,11 +31,11 @@ export function sampleCrossSection(
 
   const profiles: (number | null)[][] = frames.map(frame => {
     return samplePoints.map(pt => {
-      // Convert to fractional grid coordinates
-      const col = (pt.lng - minLng) / dx;
-      const row = (pt.lat - minLat) / dy;
+      // Fractional grid coordinates, measured between cell centers: a cell's value belongs to its center, half a cell in
+      // from its corner (rasterAnalysis)
+      const col = (pt.lng - minLng) / dx - 0.5;
+      const row = (pt.lat - minLat) / dy - 0.5;
 
-      // Check bounds (with 0.5-cell margin for interpolation)
       if (col < 0 || col > nx - 1 || row < 0 || row > ny - 1) return null;
 
       // Bilinear interpolation indices

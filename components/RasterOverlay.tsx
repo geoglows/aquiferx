@@ -167,10 +167,11 @@ function generateContourLines(
           return Math.abs(d) < 1e-10 ? 0.5 : (level - v1) / d;
         };
 
-        const topPt = L.latLng(minLat + (row + 1) * dy, minLng + (col + lerp(tl, tr)) * dx);
-        const botPt = L.latLng(minLat + row * dy, minLng + (col + lerp(bl, br)) * dx);
-        const leftPt = L.latLng(minLat + (row + lerp(bl, tl)) * dy, minLng + col * dx);
-        const rightPt = L.latLng(minLat + (row + lerp(br, tr)) * dy, minLng + (col + 1) * dx);
+        // A cell's value belongs to its center, half a cell in from its corner
+        const topPt = L.latLng(minLat + (row + 1.5) * dy, minLng + (col + 0.5 + lerp(tl, tr)) * dx);
+        const botPt = L.latLng(minLat + (row + 0.5) * dy, minLng + (col + 0.5 + lerp(bl, br)) * dx);
+        const leftPt = L.latLng(minLat + (row + 0.5 + lerp(bl, tl)) * dy, minLng + (col + 0.5) * dx);
+        const rightPt = L.latLng(minLat + (row + 0.5 + lerp(br, tr)) * dy, minLng + (col + 1.5) * dx);
 
         switch (caseIdx) {
           case 1: case 14:

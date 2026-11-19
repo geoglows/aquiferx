@@ -5,7 +5,7 @@ import {
 import { Settings } from 'lucide-react';
 import { RasterFrameStats } from '../types';
 import { dateTime } from '../utils/dates';
-import { niceDomain, yearTicks } from '../utils/chartAxes';
+import { niceAxis, stepsForHeight, yearTicks } from '../utils/chartAxes';
 
 interface RasterStatsChartProps {
   stats: RasterFrameStats[];
@@ -60,7 +60,8 @@ const RasterStatsChart: React.FC<RasterStatsChartProps> = ({
     }),
   [stats, showStd, showIqr, showMinMax]);
 
-  const yDomain = useMemo(() => {
+  const [chartH, setChartH] = useState(0);
+  const yAxis = useMemo(() => {
     let lo = Infinity, hi = -Infinity;
     for (const d of chartData) {
       // Mean is always shown
@@ -71,8 +72,8 @@ const RasterStatsChart: React.FC<RasterStatsChartProps> = ({
       if (showIqr) { lo = Math.min(lo, d.p25); hi = Math.max(hi, d.p75); }
       if (showMinMax) { lo = Math.min(lo, d.min); hi = Math.max(hi, d.max); }
     }
-    return niceDomain(lo, hi);
-  }, [chartData, showStd, showMedian, showIqr, showMinMax]);
+    return niceAxis(lo, hi, stepsForHeight(chartH));
+  }, [chartData, showStd, showMedian, showIqr, showMinMax, chartH]);
 
   const xTicks = useMemo(() =>
     chartData.length === 0 ? [] : yearTicks(chartData[0].date, chartData[chartData.length - 1].date),
@@ -111,7 +112,7 @@ const RasterStatsChart: React.FC<RasterStatsChartProps> = ({
           </div>
         )}
       </div>
-      <ResponsiveContainer width="100%" height="100%">
+      <ResponsiveContainer width="100%" height="100%" onResize={(_, h) => setChartH(h)}>
         <ComposedChart data={chartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
           <XAxis
@@ -121,7 +122,8 @@ const RasterStatsChart: React.FC<RasterStatsChartProps> = ({
           />
           <YAxis
             stroke="var(--chart-axis)" fontSize={10}
-            domain={yDomain}
+            domain={yAxis?.domain}
+            ticks={yAxis?.ticks}
             // The bands are stacked on transparent areas that start at zero; without this the axis stretched down to 0
             allowDataOverflow
             tickFormatter={(v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 1 })}

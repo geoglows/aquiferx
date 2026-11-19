@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useEffect, useCallback } from 'react';
 import { Well, Measurement } from '../types';
 import { interpolatePCHIP } from '../utils/interpolation';
 import { cssVar, useTheme } from '../utils/theme';
+import { niceAxis, yearTicks } from '../utils/chartAxes';
 
 const PREVIEW_COLORS = [
   '#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899',
@@ -112,10 +113,10 @@ const PchipPreviewCanvas: React.FC<PchipPreviewCanvasProps> = ({
       if (shadeRange.max > xMax) xMax = shadeRange.max;
     }
 
-    // Add 5% Y padding
-    const yPad = (yMax - yMin) * 0.05 || 1;
-    yMin -= yPad;
-    yMax += yPad;
+    // Round elevations on the y axis (chartAxes.niceAxis), which also sets its range
+    const yAxis = niceAxis(yMin, yMax, 4);
+    if (yAxis) { yMin = yAxis.domain[0]; yMax = yAxis.domain[1]; }
+    const yTicks = yAxis?.ticks ?? [];
 
     const toX = (v: number) => margin.left + ((v - xMin) / (xMax - xMin)) * plotW;
     const toY = (v: number) => margin.top + (1 - (v - yMin) / (yMax - yMin)) * plotH;
@@ -137,8 +138,8 @@ const PchipPreviewCanvas: React.FC<PchipPreviewCanvasProps> = ({
     // Grid lines
     ctx.strokeStyle = cssVar('--chart-grid');
     ctx.lineWidth = 0.5;
-    for (let i = 0; i <= 4; i++) {
-      const y = margin.top + (i / 4) * plotH;
+    for (const v of yTicks) {
+      const y = toY(v);
       ctx.beginPath();
       ctx.moveTo(margin.left, y);
       ctx.lineTo(W - margin.right, y);
@@ -189,23 +190,18 @@ const PchipPreviewCanvas: React.FC<PchipPreviewCanvasProps> = ({
     ctx.fillStyle = cssVar('--chart-text');
     ctx.font = '10px system-ui, sans-serif';
     ctx.textAlign = 'center';
-    const startYear = new Date(xMin).getFullYear();
-    const endYear = new Date(xMax).getFullYear();
-    const yearStep = Math.max(1, Math.round((endYear - startYear) / 8));
-    for (let y = startYear; y <= endYear; y += yearStep) {
-      const t = new Date(y, 0, 1).getTime();
+    // Round years (1950, 1960, ...), where they fell on 1951, 1962, 1973
+    for (const t of yearTicks(xMin, xMax, 9)) {
       const px = toX(t);
       if (px >= margin.left && px <= W - margin.right) {
-        ctx.fillText(String(y), px, H - 5);
+        ctx.fillText(String(new Date(t).getUTCFullYear()), px, H - 5);
       }
     }
 
     // Y-axis labels
     ctx.textAlign = 'right';
-    for (let i = 0; i <= 4; i++) {
-      const val = yMin + (1 - i / 4) * (yMax - yMin);
-      const py = margin.top + (i / 4) * plotH;
-      ctx.fillText(val.toFixed(0), margin.left - 4, py + 3);
+    for (const v of yTicks) {
+      ctx.fillText(v.toLocaleString(undefined, { maximumFractionDigits: 2 }), margin.left - 4, toY(v) + 3);
     }
   }, [wellSeries, startTs, endTs, shadeRange, theme]);
 

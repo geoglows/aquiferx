@@ -21,8 +21,9 @@ import RasterInfoDialog from './components/RasterInfoDialog';
 import ModelInfoDialog from './components/ModelInfoDialog';
 import RasterOverlay from './components/RasterOverlay';
 import CrossSectionChart from './components/CrossSectionChart';
+import { fetchGseBatch } from './services/gseLookup';
 import { computeStorageChange } from './utils/storageVolume';
-import { yearTicks } from './utils/chartAxes';
+import { niceAxis, stepsForHeight, yearTicks } from './utils/chartAxes';
 import RasterStatsChart from './components/RasterStatsChart';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
@@ -118,6 +119,9 @@ const App: React.FC = () => {
   const [oldModelNotice, setOldModelNotice] = useState<ImputationModelMeta | null>(null);
   const [showCombinedModel, setShowCombinedModel] = useState(false);
   const [crossSectionProfile, setCrossSectionProfile] = useState<CrossSectionProfile | null>(null);
+  // The cross section's GSE checkbox, and the ground surface fetched for the line drawn (key: its ends and unit)
+  const [showSectionGround, setShowSectionGround] = useState(false);
+  const [sectionGround, setSectionGround] = useState<{ key: string; values?: (number | null)[]; source?: string; error?: string } | null>(null);
   const [activeTimeSeriesTab, setActiveTimeSeriesTab] = useState<'waterLevel' | 'storageChange' | 'rasterStats' | 'crossSection'>('waterLevel');
   // Playback frame state lives in RasterFrameContext (provider above App)
   // so 500ms ticks don't re-render this whole component — see
@@ -285,6 +289,31 @@ const App: React.FC = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crossSectionProfile]);
+
+  // Fetch the ground surface at the line's samples once per line, when GSE is checked, from the same source as the
+  // wells' GSE (services/gseLookup.ts)
+  const sectionKey = crossSectionProfile
+    ? [crossSectionProfile.start.lat, crossSectionProfile.start.lng, crossSectionProfile.end.lat, crossSectionProfile.end.lng, selectedRegion?.lengthUnit || 'ft'].join(',')
+    : '';
+  useEffect(() => {
+    // Fetched already for this line; a fetch cut off by unchecking, or one that failed, starts again
+    if (!showSectionGround || !crossSectionProfile || (sectionGround?.key === sectionKey && sectionGround.values)) return;
+    let cancelled = false;
+    const { start, end, distances } = crossSectionProfile;
+    const n = distances.length;
+    const points = distances.map((_, i) => {
+      const t = n > 1 ? i / (n - 1) : 0;
+      return { id: String(i), lat: start.lat + t * (end.lat - start.lat), lng: start.lng + t * (end.lng - start.lng) };
+    });
+    setSectionGround({ key: sectionKey });
+    fetchGseBatch(points, { lengthUnit: selectedRegion?.lengthUnit || 'ft' })
+      .then(r => {
+        if (!cancelled) setSectionGround({ key: sectionKey, values: points.map(p => r.values.get(p.id) ?? null), source: r.source });
+      })
+      .catch(e => { if (!cancelled) setSectionGround({ key: sectionKey, error: String(e?.message || e) }); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSectionGround, sectionKey]);
 
   // Compute the data time range (in years) for the selected region/data type
   const dataTimeRangeYears = useMemo(() => {
@@ -786,6 +815,18 @@ const App: React.FC = () => {
       return row;
     });
   }, [allRasterResults, storageCoeff, storageVolumeUnit, selectedRegion?.lengthUnit]);
+
+  // The storage chart's y axis over every curve on it, with as many round ticks as its height has room for
+  const [storageChartH, setStorageChartH] = useState(0);
+  const storageAxis = useMemo(() => {
+    let lo = Infinity, hi = -Infinity;
+    for (const row of storageChartData) {
+      for (const [k, v] of Object.entries(row)) {
+        if (k !== 'date' && Number.isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+      }
+    }
+    return niceAxis(lo, hi, stepsForHeight(storageChartH));
+  }, [storageChartData, storageChartH]);
 
   const handleWellClick = (well: Well, shiftKey: boolean) => {
     if (shiftKey) {
@@ -1533,7 +1574,7 @@ const App: React.FC = () => {
                           onClick={() => setActiveTimeSeriesTab('rasterStats')}
                           className={`px-3 py-1 text-[11px] font-medium rounded-t border border-b-0 transition-colors ${
                             effectiveTab === 'rasterStats'
-                              ? 'bg-[var(--surface)] border-[var(--border)] text-[#c4b5fd]'
+                              ? 'bg-[var(--surface)] border-[var(--border)] text-[var(--raster)]'
                               : 'bg-[var(--bg)] text-[var(--text-faint)] border-transparent hover:text-[var(--text-dim)]'
                           }`}
                         >
@@ -1749,8 +1790,23 @@ const App: React.FC = () => {
                           {activeDataType.unit === 'm' ? 'Meters' : activeDataType.unit === 'ft' ? 'Feet' : activeDataType.unit} ({activeDataType.code.toUpperCase()})
                         </div>
                       ) : (
-                        <div className="text-[10px] text-[var(--text-faint)]">
-                          <RasterFrame>{frame => frame?.date || ''}</RasterFrame>
+                        <div className="flex items-center gap-4">
+                          {effectiveTab === 'crossSection' && rasterResult?.dataType === 'wte' && (
+                            <>
+                              {showSectionGround && sectionGround?.key === sectionKey && (
+                                <span className="text-[10px] text-[var(--text-faint)]" title={sectionGround.source}>
+                                  {sectionGround.error ? 'Ground surface unavailable' : sectionGround.values ? '' : 'Loading ground surface…'}
+                                </span>
+                              )}
+                              <label className="flex items-center gap-1.5 text-xs text-[var(--text-dim)] cursor-pointer select-none" title="Show the ground surface elevation (GSE) along the line">
+                                <input type="checkbox" checked={showSectionGround} onChange={(e) => setShowSectionGround(e.target.checked)} className="rfs-check" />
+                                GSE
+                              </label>
+                            </>
+                          )}
+                          <div className="text-[10px] text-[var(--text-faint)]">
+                            <RasterFrame>{frame => frame?.date || ''}</RasterFrame>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -1819,11 +1875,12 @@ const App: React.FC = () => {
                           profile={crossSectionProfile}
                           frameIdx={crossSectionProfile.frameDates.indexOf(frame?.date || crossSectionProfile.frameDates[0])}
                           lengthUnit={selectedRegion?.lengthUnit || 'ft'}
+                          ground={showSectionGround && rasterResult?.dataType === 'wte' && sectionGround?.key === sectionKey ? sectionGround.values : undefined}
                         />
                       )}</RasterFrame>
                     ) : rasterResult && storageChartData.length > 0 && (
                       <RasterFrame>{frame => (
-                      <ResponsiveContainer width="100%" height="100%">
+                      <ResponsiveContainer width="100%" height="100%" onResize={(_, h) => setStorageChartH(h)}>
                         <LineChart data={storageChartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                           <XAxis
@@ -1834,6 +1891,8 @@ const App: React.FC = () => {
                           />
                           {/* Compact ticks (-1.5M) leave room for the unit label; the tooltip gives full values */}
                           <YAxis stroke="var(--chart-axis)" fontSize={10}
+                            domain={storageAxis?.domain}
+                            ticks={storageAxis?.ticks}
                             tickFormatter={(v: number) => v.toLocaleString(undefined, { notation: 'compact', maximumFractionDigits: 1 })}
                             label={allRasterResults.length === 1 ? { value: storageVolumeUnit, angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: 'var(--chart-text)', fontSize: 10 } } : undefined}
                           />

@@ -6,7 +6,7 @@ import {
 import { Measurement, Well, DataType } from '../types';
 import { interpolatePCHIP, kernelSmooth } from '../utils/interpolation';
 import { dateTime } from '../utils/dates';
-import { niceDomain } from '../utils/chartAxes';
+import { dateTicks, niceDomain } from '../utils/chartAxes';
 import { MIN_TREND_SPAN_YEARS, MS_PER_YEAR } from '../utils/trends';
 
 // Tailwind 400s. These were the 500s, chosen when the plot sat on white; on a
@@ -20,7 +20,7 @@ const SERIES_COLORS = [
 
 // Ground surface elevation. Saddle brown at #8B4513 was nearly invisible here;
 // this is the same hue carried up to sit alongside the palette above.
-const GSE_COLOR = '#c08457';
+export const GSE_COLOR = '#c08457';
 
 
 const SMOOTH_COLOR = '#f97316'; // orange
@@ -481,6 +481,17 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     const d = new Date(tickItem);
     return `${d.getMonth() + 1}/${d.getFullYear()}`;
   };
+  // The date range shown: the zoom, the trend window, the maps' dates, or the data, each padded 2%
+  const xDomain: [number, number] | ['auto', 'auto'] = zoomLeft != null && zoomRight != null
+    ? [zoomLeft, zoomRight]
+    : trendWindowStart !== undefined
+      ? (() => { const range = Date.now() - trendWindowStart; const pad = range * 0.02; return [trendWindowStart - pad, Date.now() + pad] as [number, number]; })()
+      : rasterTimeRange
+        ? (() => { const range = rasterTimeRange[1] - rasterTimeRange[0]; const pad = range * 0.02; return [rasterTimeRange[0] - pad, rasterTimeRange[1] + pad] as [number, number]; })()
+        : finalChartData.length > 0
+          ? (() => { const range = (finalChartData[finalChartData.length - 1].date as number) - (finalChartData[0].date as number); const pad = range * 0.02; return [finalChartData[0].date as number - pad, finalChartData[finalChartData.length - 1].date as number + pad] as [number, number]; })()
+          : ['auto', 'auto'];
+  const xTicks = xDomain[0] === 'auto' ? { ticks: [] as number[], format: formatXAxis } : dateTicks(xDomain[0], xDomain[1] as number);
 
   const wellNameMap = new Map<string, string>();
   for (const w of selectedWells) {
@@ -589,17 +600,10 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
           <XAxis
             dataKey="date"
             type="number"
-            domain={zoomLeft != null && zoomRight != null
-              ? [zoomLeft, zoomRight]
-              : trendWindowStart !== undefined
-                ? (() => { const range = Date.now() - trendWindowStart; const pad = range * 0.02; return [trendWindowStart - pad, Date.now() + pad]; })()
-                : rasterTimeRange
-                  ? (() => { const range = rasterTimeRange[1] - rasterTimeRange[0]; const pad = range * 0.02; return [rasterTimeRange[0] - pad, rasterTimeRange[1] + pad]; })()
-                  : finalChartData.length > 0
-                    ? (() => { const range = (finalChartData[finalChartData.length - 1].date as number) - (finalChartData[0].date as number); const pad = range * 0.02; return [finalChartData[0].date as number - pad, finalChartData[finalChartData.length - 1].date as number + pad]; })()
-                    : ['auto', 'auto']}
+            domain={xDomain}
             allowDataOverflow={zoomLeft != null}
-            tickFormatter={formatXAxis}
+            ticks={xTicks.ticks.length ? xTicks.ticks : undefined}
+            tickFormatter={xTicks.ticks.length ? xTicks.format : formatXAxis}
             stroke="#475569"
             fontSize={11}
             tick={{ fill: 'var(--chart-text)' }}

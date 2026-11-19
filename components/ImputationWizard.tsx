@@ -6,6 +6,7 @@ import { ImputationPipelineInput } from '../services/imputationPipeline';
 import { startImputation, AnalysisRun } from '../services/analysisClient';
 import { isPipelineCancelled } from '../services/pipelineCancel';
 import { slugify } from '../utils/strings';
+import { countTicks } from '../utils/chartAxes';
 import PchipPreviewCanvas from './PchipPreviewCanvas';
 import { summarizeChecks, CHECK_YEARS } from '../utils/imputationSeries';
 
@@ -112,6 +113,8 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
     }
     return Array.from({ length: nBins }, (_, b) => ({ label: `${y0 + (b >> 1)} ${b & 1 ? 'H2' : 'H1'}`, filled: filled[b], other: other[b] }));
   }, [readingTimes, qualifiedIds]);
+  // Round counts from 0 on the bars' axis
+  const densityTicks = useMemo(() => countTicks(Math.max(0, ...densityData.map(d => d.filled + d.other))), [densityData]);
 
   const step1Valid = qualifiedIds.size > 0 && holdYears >= 0;
   const step2Valid = title.trim().length > 0 && !hasConflict;
@@ -244,7 +247,7 @@ const ImputationWizard: React.FC<ImputationWizardProps> = ({
                       <BarChart data={densityData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                         <XAxis dataKey="label" stroke="var(--chart-axis)" fontSize={9} interval="preserveStartEnd" />
-                        <YAxis stroke="var(--chart-axis)" fontSize={10} />
+                        <YAxis stroke="var(--chart-axis)" fontSize={10} ticks={densityTicks} domain={[0, densityTicks[densityTicks.length - 1]]} />
                         <Tooltip
                           content={({ payload }) => {
                             if (!payload || payload.length === 0) return null;

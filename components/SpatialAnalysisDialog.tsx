@@ -19,6 +19,7 @@ import {
   findPlaces, describePlaces, chooseWell, placeReportRows, KeepChoice, Place, PlacePoint, Reading,
   KEEP_RULE_LABELS, PLACE_REPORT_HEADERS, NEIGHBOR_COMPARISON,
 } from '../services/sharedLocations';
+import { countTicks } from '../utils/chartAxes';
 import PchipPreviewCanvas from './PchipPreviewCanvas';
 
 interface SpatialAnalysisDialogProps {
@@ -408,6 +409,8 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
       label: `${y0 + (b >> 1)} ${b & 1 ? 'H2' : 'H1'}`, onMap: onMap[b], other: other[b],
     }));
   }, [readings, mapIds]);
+  // Round counts from 0 on the bars' axis
+  const densityTicks = useMemo(() => countTicks(Math.max(0, ...densityData.map(d => d.onMap + d.other))), [densityData]);
 
   const toPoint = (w: Well): PlacePoint => ({ id: w.id, name: w.name, lat: w.lat, lng: w.lng, ...(w.depth != null ? { depth: w.depth } : {}) });
 
@@ -575,7 +578,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                       <BarChart data={densityData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                         <XAxis dataKey="label" stroke="var(--chart-axis)" fontSize={9} interval="preserveStartEnd" />
-                        <YAxis stroke="var(--chart-axis)" fontSize={10} />
+                        <YAxis stroke="var(--chart-axis)" fontSize={10} ticks={densityTicks} domain={[0, densityTicks[densityTicks.length - 1]]} />
                         <Tooltip
                           content={({ payload }) => {
                             if (!payload || payload.length === 0) return null;
@@ -655,7 +658,7 @@ const SpatialAnalysisDialog: React.FC<SpatialAnalysisDialogProps> = ({
                     <div className="flex items-center gap-3 text-xs">
                       <span className="text-emerald-600 font-medium">{qualifiedWellCount} wells qualify</span>
                       {omittedWellCount > 0 && (
-                        <span className="text-slate-400">{omittedWellCount} omitted</span>
+                        <span className="text-slate-400">{omittedWellCount} left out</span>
                       )}
                     </div>
                   </div>
