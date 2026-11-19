@@ -84,6 +84,8 @@ const CrossSectionChart: React.FC<CrossSectionChartProps> = ({ profile, frameIdx
         <Area
           type="monotone"
           dataKey="elevation"
+          // Shade below the water table to the foot of the axis. Recharts' default base is 0, which shades above a water table below sea level
+          baseValue="dataMin"
           stroke="#60a5fa"
           strokeWidth={1.5}
           fill="#93c5fd"
