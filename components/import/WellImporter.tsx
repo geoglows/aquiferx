@@ -13,6 +13,7 @@ import CrsPickerPanel from './CrsPickerPanel';
 import ColumnMapperModal from './ColumnMapperModal';
 import ConfirmDialog from './ConfirmDialog';
 import { listRegions, readJson, readText } from '../../services/dataStore';
+import { hasGse } from '../../utils/geo';
 
 interface WellImporterProps {
   regionId: string;
@@ -565,11 +566,19 @@ const WellImporter: React.FC<WellImporterProps> = ({
       const isAquiferScoped = dataSource === 'usgs' && usgsScope === 'aquifer' && usgsScopeAquiferId;
 
       // Append keeps the wells already in the region, but takes their depth
-      // from the file when it gives one: the only way to add depths later
-      // without Replace All deleting the measurements
+      // from the file when it gives one, and an elevation (the file's or the
+      // lookup's) when they have none: the way to add either later without
+      // Replace All deleting the measurements. An elevation already there
+      // stays, since the depths already converted with it would not move.
       const depthById = new Map(processedWells.filter(w => w.well_depth).map(w => [w.well_id, w.well_depth]));
+      const gseById = new Map(processedWells.filter(w => hasGse(parseFloat(w.gse))).map(w => [w.well_id, w.gse]));
       const withFileDepths = (existing: Record<string, string>[]) =>
-        existing.map(r => depthById.has(r.well_id) ? { ...r, well_depth: depthById.get(r.well_id)! } : r);
+        existing.map(r => {
+          let out = r;
+          if (depthById.has(r.well_id)) out = { ...out, well_depth: depthById.get(r.well_id)! };
+          if (gseById.has(r.well_id) && !hasGse(parseFloat(r.gse))) out = { ...out, gse: gseById.get(r.well_id)! };
+          return out;
+        });
 
       if (isAquiferScoped) {
         // Aquifer-scoped: always merge with other aquifers' wells
@@ -700,9 +709,7 @@ const WellImporter: React.FC<WellImporterProps> = ({
             </div>
             <p className="text-xs text-slate-400 mt-1">
               {importMode === 'append'
-                ? (file?.mapping['well_depth']
-                    ? 'New wells will be added. Wells already in the region (by ID) are kept, with the well depth from the file where it gives one.'
-                    : 'New wells will be added. Duplicates (by ID) are skipped.')
+                ? `New wells will be added. Wells already in the region (by ID) are kept, and get an elevation if they have none${file?.mapping['well_depth'] ? ', and the well depth from the file where it gives one' : ''}.`
                 : usgsScope === 'aquifer' && usgsScopeAquiferId
                   ? 'Existing wells in this aquifer will be replaced. Other aquifers are not affected.'
                   : 'All existing wells and measurements will be deleted first.'}

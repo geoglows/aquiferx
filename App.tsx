@@ -7,6 +7,8 @@ import { toCsv, escapeCsvField, WELLS_CSV_HEADERS } from './services/importUtils
 import { saveFiles, deleteFile, deleteFolder, readJson, renameAnalysis, downloadRegion, copyToMyData, DataSource } from './services/dataStore';
 import SettingsDialog from './components/SettingsDialog';
 import ConfirmDialog from './components/import/ConfirmDialog';
+import MissingElevationsDialog from './components/MissingElevationsDialog';
+import { hasGse } from './utils/geo';
 import { slugify } from './utils/strings';
 import MapView, { MapViewHandle, WELL_COUNT_COLORS, MODEL_WELL_COLORS, ModelWellStatus } from './components/MapView';
 import Sidebar from './components/Sidebar';
@@ -851,6 +853,13 @@ const App: React.FC = () => {
   // Regions whose length unit and single-unit setting are fixed: wells store
   // ground elevation in the region's unit and sit in its aquifers.
   const regionsWithWells = useMemo(() => new Set(wells.map(w => w.regionId)), [wells]);
+  // Wells with no ground surface elevation, for the region menu's lookup
+  const missingGseCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const w of wells) if (!hasGse(w.gse)) counts.set(w.regionId, (counts.get(w.regionId) ?? 0) + 1);
+    return counts;
+  }, [wells]);
+  const [elevationsRegionId, setElevationsRegionId] = useState<string | null>(null);
   const aquiferWellCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const w of wells) {
@@ -1235,6 +1244,8 @@ const App: React.FC = () => {
         regionsWithWells={regionsWithWells}
         aquiferWellCounts={aquiferWellCounts}
         onDownloadRegion={handleDownloadRegion}
+        missingGseCounts={missingGseCounts}
+        onLookUpElevations={setElevationsRegionId}
         onDeleteRegion={handleDeleteRegion}
         onRenameAquifer={handleRenameAquifer}
         onDeleteAquifer={handleDeleteAquifer}
@@ -1970,6 +1981,18 @@ const App: React.FC = () => {
         />
       )}
 
+      {elevationsRegionId && (() => {
+        const r = regions.find(x => x.id === elevationsRegionId);
+        return r ? (
+          <MissingElevationsDialog
+            regionId={r.id}
+            regionName={r.name}
+            lengthUnit={r.lengthUnit}
+            onClose={() => setElevationsRegionId(null)}
+            onSaved={handleDataChanged}
+          />
+        ) : null;
+      })()}
       {copyPrompt && (
         <ConfirmDialog
           title="Sample Data is read-only"

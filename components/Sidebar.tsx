@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Region, Aquifer, RasterAnalysisMeta, ImputationModelMeta, MapDisplay, isCurrentModel } from '../types';
-import { MapPin, Droplets, MoreVertical, Pencil, Trash2, Download, Layers, Loader2, Info, Check, X as XIcon, ChevronRight, ChevronDown, Activity, Eye, EyeOff, Copy, Plus, Upload, Settings } from 'lucide-react';
+import { MapPin, Droplets, MoreVertical, Pencil, Trash2, Download, Layers, Loader2, Info, Check, X as XIcon, ChevronRight, ChevronDown, Activity, Eye, EyeOff, Copy, Plus, Upload, Settings, Mountain } from 'lucide-react';
 import type { DataSource } from '../services/dataStore';
 import PanelActions from './PanelActions';
 import { useTheme } from '../utils/theme';
@@ -28,6 +28,9 @@ interface SidebarProps {
   /** Wells in each aquifer, keyed `${regionId}:${aquiferId}`, shown after its name. */
   aquiferWellCounts: Map<string, number>;
   onDownloadRegion: (id: string) => void;
+  /** Wells without a ground surface elevation in each region */
+  missingGseCounts: Map<string, number>;
+  onLookUpElevations: (id: string) => void;
   onDeleteRegion: (id: string) => void | Promise<void>;
   onRenameAquifer: (id: string, newName: string) => void;
   onDeleteAquifer: (id: string) => void;
@@ -93,6 +96,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   regionsWithWells,
   aquiferWellCounts,
   onDownloadRegion,
+  missingGseCounts,
+  onLookUpElevations,
   onDeleteRegion,
   onRenameAquifer,
   onDeleteAquifer,
@@ -1152,6 +1157,16 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <Download size={12} />
                 <span>Download</span>
               </button>
+              {!readOnly && (missingGseCounts.get(r.id) ?? 0) > 0 && (
+                <button
+                  onClick={() => { setMenuOpen(null); onLookUpElevations(r.id); }}
+                  className="rfs-opt"
+                  title={`${missingGseCounts.get(r.id)!.toLocaleString()} wells have no ground surface elevation`}
+                >
+                  <Mountain size={12} />
+                  <span>Look up missing elevations</span>
+                </button>
+              )}
               {!readOnly && (
                 <button
                   onClick={() => startDelete(`region-${r.id}`)}
