@@ -14,12 +14,12 @@ export interface UploadedFile {
   type: 'geojson' | 'csv';
 }
 
+// The order of day, month and year. Each reads /, . or - between the parts,
+// one or two digits for the day and month, and four or two for the year.
 export const DATE_FORMATS = [
   { label: 'YYYY-MM-DD (2024-01-15)', value: 'iso' },
   { label: 'MM/DD/YYYY (01/15/2024)', value: 'us' },
-  { label: 'DD/MM/YYYY (15/01/2024)', value: 'eu' },
-  { label: 'M/D/YYYY (1/15/2024)', value: 'us-short' },
-  { label: 'D/M/YYYY (15/1/2024)', value: 'eu-short' },
+  { label: 'DD/MM/YYYY (15/01/2024, 15.01.2024)', value: 'eu' },
 ];
 
 // Split a CSV line respecting quoted fields
@@ -151,85 +151,56 @@ export function isWellDepthColumn(column: string): boolean {
   return ['depth', 'well depth', 'welldepth', 'total depth', 'well total depth', 'total well depth', 'depth of well', 'well constructed depth'].includes(s);
 }
 
-// Parse date based on format
+// A date of three numbers with one separator, and an optional time of day
+// after it (dropped: measurements are dated by the day, as the USGS
+// download keeps them)
+const DATE_PARTS = /^(\d{1,4})([/.-])(\d{1,2})\2(\d{1,4})(?:[T\s]+\d{1,2}:\d{2}.*)?$/;
+
+/**
+ * A date as YYYY-MM-DD, read in the given order of day, month and year, or
+ * '' when it can't be read that way: another layout (15-Jan-2024), a month
+ * over 12 or a day the month doesn't have. The importer skips and counts
+ * those rows, since a stored date the app can't read loses the measurement.
+ */
 export function parseDate(dateStr: string, format: string): string {
-  if (!dateStr) return '';
-
-  let parts: string[];
-  let year: string, month: string, day: string;
-
-  try {
-    switch (format) {
-      case 'iso':
-        parts = dateStr.split('-');
-        if (parts.length === 3) {
-          // Zero-pad so lexicographic comparisons (cutoffs, sorts, dedup
-          // keys) work — "2024-1-5" would sort/compare incorrectly
-          return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
-        }
-        break;
-      case 'us':
-      case 'us-short':
-        parts = dateStr.split('/');
-        if (parts.length === 3) {
-          month = parts[0].padStart(2, '0');
-          day = parts[1].padStart(2, '0');
-          year = parts[2].length === 2
-            ? (parseInt(parts[2], 10) >= 50 ? '19' : '20') + parts[2]
-            : parts[2];
-          return `${year}-${month}-${day}`;
-        }
-        break;
-      case 'eu':
-      case 'eu-short':
-        parts = dateStr.split('/');
-        if (parts.length === 3) {
-          day = parts[0].padStart(2, '0');
-          month = parts[1].padStart(2, '0');
-          year = parts[2].length === 2
-            ? (parseInt(parts[2], 10) >= 50 ? '19' : '20') + parts[2]
-            : parts[2];
-          return `${year}-${month}-${day}`;
-        }
-        break;
-    }
-  } catch {
-    // Fall through
-  }
-
-  return dateStr;
+  const m = DATE_PARTS.exec((dateStr || '').trim());
+  if (!m) return '';
+  const [, a, , b, c] = m;
+  // 'us-short' and 'eu-short' were menu entries once, read the same way
+  const order = format.startsWith('us') ? 'mdy' : format.startsWith('eu') ? 'dmy' : 'ymd';
+  let [y, mo, d] = order === 'ymd' ? [a, b, c] : order === 'mdy' ? [c, a, b] : [c, b, a];
+  // A two-digit year only at the end: 15/01/24 read year first would pass as 2015-01-24
+  if (y.length === 2 && order !== 'ymd') y = (parseInt(y, 10) >= 50 ? '19' : '20') + y;
+  else if (y.length !== 4) return '';
+  const year = parseInt(y, 10), month = parseInt(mo, 10), day = parseInt(d, 10);
+  if (month < 1 || month > 12 || day < 1) return '';
+  if (day > new Date(Date.UTC(year, month, 0)).getUTCDate()) return '';
+  return `${y}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
-// Detect date format from sample values
+/**
+ * Guess the order of a date column from all of its values: year first when
+ * every date starts with four digits; else day first when any first number
+ * is over 12, month first when any second number is; else day first for
+ * dates written with points (15.01.2024), the way of the countries that use
+ * them, and month first otherwise.
+ */
 export function detectDateFormat(rows: Record<string, string>[], dateCol: string): string {
-  const samples: string[] = [];
+  let any = false, allYearFirst = true, firstOver12 = false, secondOver12 = false, dots = false;
   for (const row of rows) {
-    const val = row[dateCol]?.trim();
-    if (val && samples.length < 20) samples.push(val);
+    const m = DATE_PARTS.exec((row[dateCol] || '').trim());
+    if (!m) continue;
+    any = true;
+    if (m[1].length === 4) continue;
+    allYearFirst = false;
+    if (parseInt(m[1], 10) > 12) firstOver12 = true;
+    if (parseInt(m[3], 10) > 12) secondOver12 = true;
+    if (m[2] === '.') dots = true;
   }
-  if (samples.length === 0) return 'iso';
-
-  if (samples.every(s => /^\d{4}-\d{1,2}-\d{1,2}$/.test(s))) return 'iso';
-
-  const slashSamples = samples.filter(s => /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(s));
-  if (slashSamples.length > 0) {
-    let hasFirstOver12 = false;
-    let hasSecondOver12 = false;
-    let hasShortParts = false;
-    for (const s of slashSamples) {
-      const parts = s.split('/');
-      const first = parseInt(parts[0], 10);
-      const second = parseInt(parts[1], 10);
-      if (first > 12) hasFirstOver12 = true;
-      if (second > 12) hasSecondOver12 = true;
-      if (parts[0].length === 1 || parts[1].length === 1) hasShortParts = true;
-    }
-    if (hasFirstOver12) return hasShortParts ? 'eu-short' : 'eu';
-    if (hasSecondOver12) return hasShortParts ? 'us-short' : 'us';
-    return hasShortParts ? 'us-short' : 'us';
-  }
-
-  return 'iso';
+  if (!any || allYearFirst) return 'iso';
+  if (firstOver12) return 'eu';
+  if (secondOver12) return 'us';
+  return dots ? 'eu' : 'us';
 }
 
 // Generate folder name from region name

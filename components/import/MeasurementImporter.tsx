@@ -72,6 +72,8 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
   const [file, setFile] = useState<UploadedFile | null>(null);
   const [showMapper, setShowMapper] = useState(false);
   const [dateFormat, setDateFormat] = useState('iso');
+  // The format as the menu writes it, such as DD/MM/YYYY
+  const dateFormatLabel = (DATE_FORMATS.find(f => f.value === dateFormat)?.label ?? dateFormat).split(' (')[0];
   const [existingMode, setExistingMode] = useState<ExistingMode>('add');
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
@@ -160,6 +162,9 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     wellsOutside: number;
     skippedNonNumeric: number;
     nonNumericExamples: string[];
+    /** Values whose date could not be read in the chosen format */
+    skippedBadDate: number;
+    badDateExamples: string[];
     skippedNoGse: number;
     /** Measurements for a well and date the region already had: skipped (Add new only) or overwritten (Add and update) */
     existingSkipped: number;
@@ -508,6 +513,9 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
   const updateMapping = (key: string, value: string) => {
     if (!file) return;
     setFile({ ...file, mapping: { ...file.mapping, [key]: value } });
+    if (key === 'date' && value && Array.isArray(file.data)) {
+      setDateFormat(detectDateFormat(file.data as Record<string, string>[], value));
+    }
   };
 
   // Build an UploadedFile from validated USGS measurements.
@@ -1235,9 +1243,10 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       const summaryByType: Record<string, number> = {};
       const typeNames: Record<string, string> = {};
       let totalDupsCollapsed = 0;
-      let skippedNonNumeric = 0, skippedNoGse = 0;
+      let skippedNonNumeric = 0, skippedBadDate = 0, skippedNoGse = 0;
       let existingSkipped = 0, existingUpdated = 0;
       const nonNumericExamples: string[] = [];
+      const badDateExamples: string[] = [];
 
       // One unified per-type pipeline for every source — the old separate
       // multi-type/single-type branches duplicated this logic and drifted
@@ -1261,9 +1270,13 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
           gseOf: wid => effectiveGseMap[wid] || 0,
         });
         skippedNonNumeric += skipped.nonNumeric;
+        skippedBadDate += skipped.badDate;
         skippedNoGse += skipped.noGse;
         for (const v of skipped.nonNumericExamples) {
           if (nonNumericExamples.length < 3 && !nonNumericExamples.includes(v)) nonNumericExamples.push(v);
+        }
+        for (const v of skipped.badDateExamples) {
+          if (badDateExamples.length < 3 && !badDateExamples.includes(v)) badDateExamples.push(v);
         }
         const deduped = dedupMeasurements(built, duplicateStrategy);
         totalDupsCollapsed += deduped.collapsed;
@@ -1280,6 +1293,9 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         });
         for (const x of skipped.nonNumericRows) {
           report.push(reportRow('Not a number', x.source, x.wellId, x.source[dateCol] || '', x.value, 'skipped'));
+        }
+        for (const x of skipped.badDateRows) {
+          report.push(reportRow('Date not read', x.source, x.wellId, x.source[dateCol] || '', x.value, 'skipped'));
         }
         for (const x of skipped.noGseRows) {
           report.push(reportRow('Depth with no ground surface elevation', x.source, x.wellId, x.source[dateCol] || '', x.value, 'skipped'));
@@ -1343,6 +1359,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         const reasons = [
           rows.length < allRows.length && `${allRows.length - rows.length} rows have no well that could be found (check the column mapping and the well matching)`,
           skippedNonNumeric > 0 && `${skippedNonNumeric} values are not numbers, such as ${nonNumericExamples.map(v => `"${v}"`).join(', ')}`,
+          skippedBadDate > 0 && `${skippedBadDate} values have a date that can't be read as ${dateFormatLabel}${badDateExamples.length ? `, such as ${badDateExamples.map(v => `"${v}"`).join(', ')}` : ''} (check the Date Format)`,
           skippedNoGse > 0 && `${skippedNoGse} depths belong to wells with no ground surface elevation`,
         ].filter(Boolean);
         setError(`No measurements were imported: ${reasons.length ? reasons.join('; ') : 'the file has no values in the chosen columns'}.`);
@@ -1406,6 +1423,8 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
         wellsOutside,
         skippedNonNumeric,
         nonNumericExamples,
+        skippedBadDate,
+        badDateExamples,
         skippedNoGse,
         existingSkipped,
         existingUpdated,
@@ -1549,6 +1568,22 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
     if (duplicateGroups === 0) return null;
     return { duplicateGroups, extraRows };
   }, [file, dataSource, dateFormat]);
+  // Dates in the file that the chosen format can't read: their rows are
+  // skipped at save, so say so while the format can still be changed
+  const unreadDates = useMemo(() => {
+    if (!file || dataSource !== 'upload') return null;
+    const dateCol = file.mapping['date'];
+    if (!dateCol) return null;
+    let count = 0;
+    const examples: string[] = [];
+    for (const r of file.data as Record<string, string>[]) {
+      const raw = (r[dateCol] || '').trim();
+      if (!raw || parseDate(raw, dateFormat)) continue;
+      count++;
+      if (examples.length < 3 && !examples.includes(raw)) examples.push(raw);
+    }
+    return count > 0 ? { count, examples } : null;
+  }, [file, dataSource, dateFormat]);
   const hasMatchResults = !!matchResults && matchResults.length > 0;
   const isBootstrap = existingWellCount === 0;
 
@@ -1651,6 +1686,14 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
               {importSummary.skippedNonNumeric.toLocaleString()} value{importSummary.skippedNonNumeric !== 1 ? 's' : ''} skipped because{' '}
               {importSummary.skippedNonNumeric !== 1 ? 'they are' : 'it is'} not a number, such as{' '}
               {importSummary.nonNumericExamples.map(v => `"${v}"`).join(', ')}
+            </p>
+          )}
+          {importSummary.skippedBadDate > 0 && (
+            <p className="text-xs text-amber-700 mb-2">
+              <AlertTriangle size={12} className="inline mr-1" />
+              {importSummary.skippedBadDate.toLocaleString()} value{importSummary.skippedBadDate !== 1 ? 's' : ''} skipped because{' '}
+              {importSummary.skippedBadDate !== 1 ? 'their dates' : 'its date'} could not be read
+              {importSummary.badDateExamples.length > 0 && <>, such as {importSummary.badDateExamples.map(v => `"${v}"`).join(', ')}</>}
             </p>
           )}
           {importSummary.skippedNoGse > 0 && (
@@ -2087,6 +2130,15 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
                     ))}
                   </select>
                 </div>
+              )}
+              {unreadDates && (
+                <p className="text-xs text-amber-700 flex items-start gap-1">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  <span>
+                    {unreadDates.count.toLocaleString()} date{unreadDates.count !== 1 ? 's' : ''} can't be read as {dateFormatLabel}, such as{' '}
+                    {unreadDates.examples.map(v => `"${v}"`).join(', ')}. {unreadDates.count !== 1 ? 'Their rows' : 'Its row'} will be skipped.
+                  </span>
+                </p>
               )}
             </div>
           </div>

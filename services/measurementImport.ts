@@ -32,10 +32,15 @@ export interface SkippedRows {
   nonNumeric: number;
   /** A few of those values, to show what was skipped */
   nonNumericExamples: string[];
+  /** Values whose date is empty or can't be read in the chosen format, such as "15-Jan-2024" */
+  badDate: number;
+  /** A few of those dates */
+  badDateExamples: string[];
   /** Depths to water whose well has no ground surface elevation to convert them with */
   noGse: number;
   /** The source rows behind each count, for the import report */
   nonNumericRows: { source: Record<string, string>; wellId: string; value: string }[];
+  badDateRows: { source: Record<string, string>; wellId: string; value: string }[];
   noGseRows: { source: Record<string, string>; wellId: string; value: string }[];
 }
 
@@ -58,10 +63,10 @@ export const IMPORT_REPORT_HEADERS = ['issue', 'row', 'well_id', 'well_name', 'd
 
 /**
  * Build normalized measurement rows for one data type from source CSV rows.
- * Rows without a resolvable well, date, or value are dropped, and so are
- * values that are not numbers and depths that can't be converted (counted
- * in `skipped`): stored, they would be ignored on load, or mix depths into
- * elevations.
+ * Rows without a resolvable well or a value are dropped. Values that are not
+ * numbers, values whose date can't be read and depths that can't be
+ * converted are dropped and counted in `skipped`: stored, they would be
+ * ignored on load, or mix depths into elevations.
  */
 export function buildMeasurementRows(
   sourceRows: Record<string, string>[],
@@ -77,11 +82,25 @@ export function buildMeasurementRows(
 ): { rows: MeasurementRow[]; skipped: SkippedRows; sourceOf: Map<MeasurementRow, Record<string, string>> } {
   const out: MeasurementRow[] = [];
   const sourceOf = new Map<MeasurementRow, Record<string, string>>();
-  const skipped: SkippedRows = { nonNumeric: 0, nonNumericExamples: [], noGse: 0, nonNumericRows: [], noGseRows: [] };
+  const skipped: SkippedRows = {
+    nonNumeric: 0, nonNumericExamples: [], badDate: 0, badDateExamples: [], noGse: 0,
+    nonNumericRows: [], badDateRows: [], noGseRows: [],
+  };
   for (const r of sourceRows) {
     const wid = opts.rowToWellId(r);
     const raw = (r[opts.valueCol] || '').trim();
-    if (!wid || !r[opts.dateCol] || !raw) continue;
+    // An empty value cell is a parameter not measured in that sample
+    if (!wid || !raw) continue;
+    const date = parseDate(r[opts.dateCol], opts.dateFormat);
+    if (!date) {
+      const rawDate = (r[opts.dateCol] || '').trim();
+      skipped.badDate++;
+      skipped.badDateRows.push({ source: r, wellId: wid, value: raw });
+      if (rawDate && skipped.badDateExamples.length < 3 && !skipped.badDateExamples.includes(rawDate)) {
+        skipped.badDateExamples.push(rawDate);
+      }
+      continue;
+    }
     // Number() rather than parseFloat: "12 mg/L" or "12,5" must not pass as 12
     const num = Number(raw);
     if (!isFinite(num)) {
@@ -100,7 +119,7 @@ export function buildMeasurementRows(
     }
     const row: MeasurementRow = {
       well_id: wid,
-      date: parseDate(r[opts.dateCol], opts.dateFormat),
+      date,
       value,
       aquifer_id: opts.resolveAquifer(r),
     };
