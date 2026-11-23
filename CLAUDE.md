@@ -45,7 +45,7 @@
 - **No pre-staging empty types**: a data type exists in a region exactly when its `data_{code}.csv` exists on disk. There is no way to "declare a type in advance" — importing data is the only action that creates one. DataTypeEditor renames and deletes non-catalog customs; new ones come only from the measurement importer
 - **Custom codes must not collide with catalog codes**: DataTypeEditor and the importer's detection panel both enforce this
 - Single-unit regions (the default for new regions): aquifer section dimmed in UI, all data auto-assigned `aquifer_id=0`. Single-unit and the length unit can change in Edit Region only until the region has wells
-- CSV delimiter auto-detection (comma vs tab)
+- CSV delimiter auto-detection (comma, tab or semicolon); in semicolon files `12,5` and `1.234,5` are read as 12.5 and 1234.5
 - Date format auto-detection (ISO, US, EU variants)
 - Measurement values stored in `value` column (not `wte`)
 - A region folder (sample, My Data record prefix, or backup zip) holds: `region.json`, `region.geojson`, `aquifers.geojson`, `wells.csv`, `data_{code}.csv`, and per-aquifer `raster_*.json` / `model_*.json`

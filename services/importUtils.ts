@@ -55,14 +55,40 @@ export function splitCSVLine(line: string, delimiter: string): string[] {
   return fields;
 }
 
+// The column separator, from the first line: a tab if it has one, else a
+// semicolon if it has more of them than commas (spreadsheets set up for
+// much of Europe and Latin America save CSV that way), else a comma
+function detectDelimiter(firstLine: string): string {
+  if (firstLine.includes('\t')) return '\t';
+  const count = (ch: string) => firstLine.split(ch).length - 1;
+  return count(';') > count(',') ? ';' : ',';
+}
+
+// A number written with a decimal comma, as in "12,5", "-0,25" or "1.234,5"
+// (points grouping the thousands)
+const DECIMAL_COMMA = /^[-+]?(\d+|\d{1,3}(\.\d{3})+),\d+$/;
+
+/** "12,5" → "12.5" and "1.234,5" → "1234.5"; anything else is returned as it is. */
+export function fromDecimalComma(field: string): string {
+  return DECIMAL_COMMA.test(field) ? field.replace(/\./g, '').replace(',', '.') : field;
+}
+
 // Tokenize CSV text into records. Parses character-by-character over the
 // whole text (not line-by-line) so quoted fields may contain delimiters
-// and newlines. Delimiter (comma vs tab) is detected from the first line.
+// and newlines. Files separated by semicolons write decimals with a comma,
+// so in those every number like "12,5" is read as 12.5.
 function parseCsvRecords(text: string): string[][] {
   if (!text) return [];
   const firstLineEnd = text.indexOf('\n');
   const firstLine = firstLineEnd === -1 ? text : text.slice(0, firstLineEnd);
-  const delimiter = firstLine.includes('\t') ? '\t' : ',';
+  const delimiter = detectDelimiter(firstLine);
+  if (delimiter === ';') {
+    return parseCsvRecordsWith(text, delimiter).map((record, i) => (i === 0 ? record : record.map(fromDecimalComma)));
+  }
+  return parseCsvRecordsWith(text, delimiter);
+}
+
+function parseCsvRecordsWith(text: string, delimiter: string): string[][] {
 
   const records: string[][] = [];
   let fields: string[] = [];
