@@ -87,3 +87,12 @@ export function cellAreaM2(lat: number, dxDeg: number, dyDeg: number): number {
   const heightM = R * toRad(dyDeg);
   return Math.abs(widthM * heightM);
 }
+
+/**
+ * Whether a well has a ground surface elevation. wells.csv stores a missing
+ * one as 0 or blank (both load as 0), so 0 means none; an elevation below
+ * sea level, as in Death Valley or the Dead Sea, is a real one.
+ */
+export function hasGse(gse: number | null | undefined): gse is number {
+  return gse != null && Number.isFinite(gse) && gse !== 0;
+}

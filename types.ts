@@ -71,7 +71,7 @@ export interface Well {
   name: string;
   lat: number;
   lng: number;
-  gse: number; // Ground Surface Elevation
+  gse: number; // Ground Surface Elevation; 0 when unknown (utils/geo hasGse)
   /** Depth of the finished well below the ground, in the region's length unit; undefined when unknown */
   depth?: number;
   aquiferId: string;

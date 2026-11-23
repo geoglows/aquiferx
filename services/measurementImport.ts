@@ -6,6 +6,7 @@
  * this logic were where the importer's bugs lived).
  */
 import { parseDate } from './importUtils';
+import { hasGse } from '../utils/geo';
 
 // Type alias (not interface) so it picks up the implicit index signature
 // and stays assignable to the CSV writer's Record<string, string>
@@ -114,7 +115,7 @@ export function buildMeasurementRows(
     let value = raw;
     if (opts.convertDepthToWte) {
       const gse = opts.gseOf(wid);
-      if (!(gse > 0)) { skipped.noGse++; skipped.noGseRows.push({ source: r, wellId: wid, value: raw }); continue; }
+      if (!hasGse(gse)) { skipped.noGse++; skipped.noGseRows.push({ source: r, wellId: wid, value: raw }); continue; }
       value = depthToWte(num, gse);
     }
     const row: MeasurementRow = {

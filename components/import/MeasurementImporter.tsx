@@ -5,6 +5,7 @@ import { PlacedWell } from '../../services/sharedLocations';
 import { fetchUSGSMeasurements, validateUSGSMeasurements, USGSDataQualityReport, USGSMeasurement, USGSDataSpan, computeDataSpan, filterByDateRange, getUSGSApiKey, setUSGSApiKey } from '../../services/usgsApi';
 import { loadCatalog } from '../../services/catalog';
 import { compareNames } from '../../utils/strings';
+import { hasGse } from '../../utils/geo';
 import {
   MeasurementRow, MEASUREMENT_CSV_HEADERS, ImportReportRow, IMPORT_REPORT_HEADERS,
   buildMeasurementRows, dedupMeasurements, mergeAppend, mergeFullRefresh,
@@ -526,8 +527,8 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
   const buildUSGSFile = (measurements: USGSMeasurement[], label: string) => {
     const rows: { well_id: string; date: string; value: string; aquifer_id: string }[] = [];
     for (const m of measurements) {
-      const gse = wellGseMap[m.siteId] || 0;
-      if (gse <= 0) continue;
+      const gse = wellGseMap[m.siteId];
+      if (!hasGse(gse)) continue;
       rows.push({
         well_id: m.siteId,
         date: m.date,
@@ -607,7 +608,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       // Drop records whose well has no usable GSE — depth-to-water can't be
       // converted to an elevation without it, and storing the raw depth
       // would silently mix units within one series
-      const measurements = validated.filter(m => (wellGseMap[m.siteId] || 0) > 0);
+      const measurements = validated.filter(m => hasGse(wellGseMap[m.siteId]));
       const noGseCount = validated.length - measurements.length;
       if (noGseCount > 0) {
         report.dropped.count += noGseCount;
@@ -1237,7 +1238,7 @@ const MeasurementImporter: React.FC<MeasurementImporterProps> = ({
       // Effective GSE lookup used by depth→elevation conversion (new wells
       // included)
       const effectiveGseMap: Record<string, number> = { ...wellGseMap };
-      for (const w of newWellRecords) if (w.gse) effectiveGseMap[w.well_id] = w.gse;
+      for (const w of newWellRecords) if (hasGse(w.gse)) effectiveGseMap[w.well_id] = w.gse;
 
       // Collect summary counts as we write each data file
       const summaryByType: Record<string, number> = {};

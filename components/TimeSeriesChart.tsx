@@ -7,6 +7,7 @@ import { Measurement, Well, DataType } from '../types';
 import { interpolatePCHIP, kernelSmooth } from '../utils/interpolation';
 import { dateTime } from '../utils/dates';
 import { dateTicks, niceDomain } from '../utils/chartAxes';
+import { hasGse } from '../utils/geo';
 import { MIN_TREND_SPAN_YEARS, MS_PER_YEAR } from '../utils/trends';
 
 // Tailwind 400s. These were the 500s, chosen when the plot sat on white; on a
@@ -334,7 +335,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
     if (!showGSE) return ['auto', 'auto'] as const;
     const gseValues = selectedWells
       .map(w => w.gse)
-      .filter(v => v != null && !isNaN(v));
+      .filter(hasGse);
     if (gseValues.length === 0) return ['auto', 'auto'] as const;
 
     const allValues: number[] = [];
@@ -725,7 +726,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ measurements, selecte
             );
           })}
           {showGSE && dataType.code === 'wte' && selectedWells.map((well) => {
-            if (well.gse == null || isNaN(well.gse)) return null;
+            if (!hasGse(well.gse)) return null;
             return (
               <ReferenceLine
                 key={`gse_${well.id}`}

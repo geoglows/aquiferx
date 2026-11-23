@@ -7,6 +7,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { interpolatePCHIP, smoothModelCombined } from '../utils/interpolation';
 import { niceDomain, yearTicks as yearTicksBetween } from '../utils/chartAxes';
 import { summarizeChecks } from '../utils/imputationSeries';
+import { hasGse } from '../utils/geo';
 
 interface ModelTimeSeriesProps {
   model: ImputationModelResult;
@@ -122,7 +123,7 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
         if (v > max) max = v;
       }
     }
-    if (showGSE && well.gse != null && !isNaN(well.gse)) {
+    if (showGSE && hasGse(well.gse)) {
       if (well.gse < min) min = well.gse;
       if (well.gse > max) max = well.gse;
     }
@@ -263,7 +264,7 @@ const ModelTimeSeries: React.FC<ModelTimeSeriesProps> = ({
                 </div>
               )}
             />
-            {showGSE && well.gse != null && !isNaN(well.gse) && (
+            {showGSE && hasGse(well.gse) && (
               <ReferenceLine y={well.gse} stroke="#8B4513" strokeDasharray="6 3" strokeWidth={1.5}
                 label={{ value: 'GSE', position: 'right', fill: '#8B4513', fontSize: 10 }} />
             )}
